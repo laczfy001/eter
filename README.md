@@ -1,5 +1,3 @@
-Designed and directed by laczfy001. The code was written with Claude, Anthropic's AI assistant.
-
 # Éter
 
 Radio playout and automation for Linux: two players, a cartwall, a music library, a scheduler
@@ -80,3 +78,5 @@ Source comments are in Hungarian.
 Éter is free software under the [GNU General Public License v3.0 or later](LICENSE).
 Third-party components and their licences are listed in
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+Designed and directed by laczfy001. The code was written with Claude, Anthropic's AI assistant.
