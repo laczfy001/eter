@@ -1,3 +1,5 @@
+Designed and directed by laczfy001. The code was written with Claude, Anthropic's AI assistant.
+
 # Éter
 
 Radio playout and automation for Linux: two players, a cartwall, a music library, a scheduler
