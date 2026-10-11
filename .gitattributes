@@ -1,0 +1,5 @@
+# Shell scripts must keep LF line endings on every platform (the Windows build runs them in MSYS2).
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.ttf binary

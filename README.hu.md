@@ -1,7 +1,7 @@
 # Éter
 
-Rádiós adáslebonyolító Linuxra: két lejátszó, cartwall, hangtár, ütemező és mix editor egyetlen
-asztali alkalmazásban. Egyetlen AppImage fájlként fut.
+Rádiós adáslebonyolító Linuxra és Windowsra: két lejátszó, cartwall, hangtár, ütemező és mix editor
+egyetlen asztali alkalmazásban.
 
 *English: [README.md](README.md)*
 
@@ -25,6 +25,8 @@ asztali alkalmazásban. Egyetlen AppImage fájlként fut.
 
 ## Telepítés
 
+### Linux
+
 Töltsd le a legfrissebb `Eter-…-x86_64.AppImage` fájlt a Releases oldalról, majd:
 
     chmod +x Eter-*-x86_64.AppImage
@@ -34,10 +36,24 @@ Töltsd le a legfrissebb `Eter-…-x86_64.AppImage` fájlt a Releases oldalról,
 disztribúciók), a hanghoz PipeWire, PulseAudio, ALSA vagy JACK.
 
 A hangtár helye `~/.local/share/eter/library.sqlite`, a hangkártya-beállításoké
-`~/.config/Eter/Eter.conf`. A hangfájlokat a program nem másolja és nem módosítja, a hangtár
-csak hivatkozik rájuk.
+`~/.config/Eter/Eter.conf`.
 
-Hasznos kapcsolók: `--backend pulseaudio|alsa|jack`, `--db FÁJL` (másik adatbázis),
+### Windows
+
+Töltsd le az `Eter-…-win64.zip` fájlt a Releases oldalról, csomagold ki bárhová, és indítsd el az
+`eter.exe`-t (64 bites Windows 10 vagy 11). A program nincs digitálisan aláírva, ezért az első
+indításkor a Windows „ismeretlen kiadó” figyelmeztetést adhat. A hang WASAPI-n megy. A hangtár helye
+`%LOCALAPPDATA%\eter\library.sqlite`, a hangkártya-beállítások a rendszerleíró adatbázisban vannak
+(`HKEY_CURRENT_USER\Software\Eter`).
+
+A windowsos változat új, és jóval kevesebb tesztelést kapott, mint a linuxos.
+
+### Mindkettő
+
+A hangfájlokat a program nem másolja és nem módosítja, a hangtár csak hivatkozik rájuk.
+
+Hasznos kapcsolók: `--backend NÉV` (Linuxon `pulseaudio`, `alsa`, `jack`; Windowson `wasapi`,
+`dsound`), `--db FÁJL` (másik adatbázis),
 `--selftest FÁJL` (a hangmotor ellenőrzése egy hangfájllal), `--help`.
 
 ## Fordítás forrásból
@@ -55,8 +71,20 @@ AppImage készítése (első alkalommal letölti a linuxdeploy eszközt):
 
     scripts/build_appimage.sh    # eredmény: build/Eter-<verzió>-x86_64.AppImage
 
-Ha egy `v0.10.1` formájú címkét (tag) töltesz fel, a `.github/workflows/build.yml` munkafolyamat
-megépíti az AppImage-et, és egy kiadáshoz (release) csatolja.
+Windowson, [MSYS2](https://www.msys2.org/) **UCRT64** parancssorban:
+
+    pacman -S --needed git make diffutils zip mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake \
+        mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-qt6-base
+    scripts/build_ffmpeg.sh
+    scripts/build_windows.sh     # eredmény: build/Eter-<verzió>-win64.zip
+
+VS Code-ból: telepítsd az MSYS2-t az alapértelmezett helyére (`C:\msys64`), nyisd meg a projekt
+mappáját, majd Terminal → Run Task…, és futtasd sorban az „Éter: 1 … 4” nevű feladatokat (az első
+kettőt csak egyszer kell). Utána a Ctrl+Shift+B újraépíti a csomagot. A projekt olyan útvonalon
+legyen, amelyben nincs szóköz és ékezetes betű, például `C:\eter`.
+
+Ha egy `v0.11.0` formájú címkét (tag) töltesz fel, a `.github/workflows/build.yml` munkafolyamat
+megépíti az AppImage-et és a windowsos zipet, és egy kiadáshoz (release) csatolja őket.
 
 ## Fordítások
 
@@ -64,7 +92,15 @@ A felület szövegei a forrásban magyarul vannak, `TR("magyar szöveg")` alakba
 megfelelőjük az `i18n/en.json` fájlban van. Módosítás után `python3 scripts/gen_i18n.py`
 generálja újra a táblát.
 
+## Készítők
+
+Tervezte és irányította: laczfy001. A kódot Claude, az Anthropic MI-asszisztense írta.
+
 ## Licenc
 
 Az Éter szabad szoftver, a [GNU General Public License 3.0 vagy újabb](LICENSE) feltételei
 szerint. A felhasznált könyvtárak és licenceik: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+## Készítők
+
+Tervezte és irányította: laczfy001. A kódot Claude, az Anthropic MI-asszisztense írta.

@@ -148,7 +148,9 @@ int main(int argc, char **argv)
 {
     // Alapból X11 (Wayland alatt XWayland) – ott a rendszer rajzolja az ablakkeretet;
     // ha az nem érhető el, natív Wayland. A QT_QPA_PLATFORM változóval felülbírálható.
+#ifdef Q_OS_LINUX
     if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) qputenv("QT_QPA_PLATFORM", "xcb;wayland");
+#endif
     // Az önteszthez nem kell kijelző: felület nélküli alkalmazásként fut.
     bool headless = false;
     for (int i = 1; i < argc; ++i)
@@ -177,7 +179,7 @@ int main(int argc, char **argv)
     parser.setApplicationDescription(QStringLiteral("Éter – rádiós adáslebonyolító"));
     parser.addHelpOption();
     parser.addVersionOption();
-    QCommandLineOption backendOpt("backend", QStringLiteral("Hangrendszer: pulseaudio, alsa, jack vagy null."), "név");
+    QCommandLineOption backendOpt("backend", QStringLiteral("Hangrendszer: pulseaudio, alsa, jack (Linux), wasapi, dsound (Windows) vagy null."), "név");
     QCommandLineOption selfTestOpt("selftest", QStringLiteral("Hangmotor önteszt a megadott hangfájllal."), "fájl");
     QCommandLineOption shotOpt("screenshot", QStringLiteral("Képernyőkép mentése és kilépés (fejlesztéshez)."), "png");
     QCommandLineOption iconOpt("write-icon", QStringLiteral("Az alkalmazásikon mentése PNG-be."), "png");

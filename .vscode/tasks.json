@@ -1,0 +1,39 @@
+{
+    // Windows: build Éter from VS Code through MSYS2 (UCRT64). See "Build from source" in README.md.
+    // Terminal → Run Build Task (Ctrl+Shift+B) runs the default task.
+    "version": "2.0.0",
+    "options": {
+        "env": { "MSYSTEM": "UCRT64", "CHERE_INVOKING": "1" }
+    },
+    "tasks": [
+        {
+            "label": "Éter: 1. install build tools (first time only)",
+            "type": "process",
+            "command": "C:\\msys64\\usr\\bin\\bash.exe",
+            "args": ["-lc", "pacman -S --needed --noconfirm git make diffutils zip mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-qt6-base"],
+            "problemMatcher": []
+        },
+        {
+            "label": "Éter: 2. build FFmpeg (first time only)",
+            "type": "process",
+            "command": "C:\\msys64\\usr\\bin\\bash.exe",
+            "args": ["-lc", "scripts/build_ffmpeg.sh"],
+            "problemMatcher": []
+        },
+        {
+            "label": "Éter: 3. build the Windows package",
+            "type": "process",
+            "command": "C:\\msys64\\usr\\bin\\bash.exe",
+            "args": ["-lc", "scripts/build_windows.sh"],
+            "problemMatcher": ["$gcc"],
+            "group": { "kind": "build", "isDefault": true }
+        },
+        {
+            "label": "Éter: 4. run",
+            "type": "process",
+            "command": "C:\\msys64\\usr\\bin\\bash.exe",
+            "args": ["-lc", "build/Eter-*-win64/eter.exe"],
+            "problemMatcher": []
+        }
+    ]
+}

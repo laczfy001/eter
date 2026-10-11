@@ -4,6 +4,10 @@
 #define MA_NO_RESOURCE_MANAGER
 #define MA_NO_NODE_GRAPH
 #define MA_NO_ENGINE
+// Windows: a Qt a főszálon egyszálas (STA) COM-ot használ. A miniaudio alapból többszálas módot kér, ami ott
+// nem sikerül, mégis lezárja utána a COM-ot – ezzel a Qt-ét bontja le, és a WASAPI megnyitása összeomlik.
+// Egyszálas móddal a nyitás és a zárás párban marad. (2 = COINIT_APARTMENTTHREADED)
+#define MA_COINIT_VALUE 2
 #define MINIAUDIO_IMPLEMENTATION
 #include "i18n.h"
 #undef slots   // a Qt kulcsszava ütközne az itteni `slots` taggal
@@ -146,15 +150,18 @@ bool Engine::init(const std::string &backend, std::string *err)
     const ma_backend *list = nullptr;
     ma_uint32 count = 0;
     // Automatikus sorrend: PulseAudio (PipeWire alatt is ez szól), ALSA, JACK.
-    static const ma_backend autoList[] = {ma_backend_pulseaudio, ma_backend_alsa, ma_backend_jack,
-                                          ma_backend_null};
+    // Windowson: WASAPI, ennek híján DirectSound. Amelyik rendszer az adott gépen nincs, azt a miniaudio átugorja.
+    static const ma_backend autoList[] = {ma_backend_wasapi, ma_backend_dsound, ma_backend_pulseaudio, ma_backend_alsa,
+                                          ma_backend_jack, ma_backend_null};
     if (backend == "pulseaudio") one = ma_backend_pulseaudio;
+    else if (backend == "wasapi") one = ma_backend_wasapi;
+    else if (backend == "dsound") one = ma_backend_dsound;
     else if (backend == "alsa") one = ma_backend_alsa;
     else if (backend == "jack") one = ma_backend_jack;
     else if (backend == "null") one = ma_backend_null;
     else {
         list = autoList;
-        count = 4;
+        count = sizeof(autoList) / sizeof(autoList[0]);
     }
     if (!list) {
         list = &one;
@@ -190,6 +197,8 @@ std::string Engine::backendName() const
     case ma_backend_pulseaudio: return "PulseAudio / PipeWire";
     case ma_backend_alsa: return "ALSA";
     case ma_backend_jack: return "JACK";
+    case ma_backend_wasapi: return "WASAPI";
+    case ma_backend_dsound: return "DirectSound";
     case ma_backend_null: return i18n::textStd("nincs hangeszköz (néma)");
     default: return ma_get_backend_name(impl_->ctx.backend);
     }

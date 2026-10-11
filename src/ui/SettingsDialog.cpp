@@ -62,9 +62,14 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
     auto *backendLabel = new QLabel(TR("Háttérrendszer"));
     backend_ = new QComboBox;
     backend_->addItem(TR("Automatikus"), QString());
+#ifdef Q_OS_WIN
+    backend_->addItem(QStringLiteral("WASAPI"), QStringLiteral("wasapi"));
+    backend_->addItem(QStringLiteral("DirectSound"), QStringLiteral("dsound"));
+#else
     backend_->addItem(TR("PulseAudio / PipeWire"), QStringLiteral("pulseaudio"));
     backend_->addItem(TR("ALSA (közvetlen)"), QStringLiteral("alsa"));
     backend_->addItem(TR("JACK"), QStringLiteral("jack"));
+#endif
     backend_->setMinimumWidth(220);
     backendLabel->setBuddy(backend_);
     auto *rate = new QLabel(TR("Belső mintavétel: 48 000 Hz, sztereó"));

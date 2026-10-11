@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.21)
-project(eter VERSION 0.10.1 LANGUAGES C CXX)
+project(eter VERSION 0.11.2 LANGUAGES C CXX)
+if(WIN32)
+    enable_language(RC)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -56,7 +59,18 @@ target_link_libraries(eter PRIVATE
     "${FFMPEG_ROOT}/lib/libavutil.a"
     Threads::Threads ${CMAKE_DL_LIBS} m
 )
-target_link_options(eter PRIVATE -Wl,-Bsymbolic)
+if(WIN32)
+    # Windows: ablakos program (konzol nélkül), ikonnal és verzióadatokkal; a windows.h ne definiáljon min/max makrót.
+    set_target_properties(eter PROPERTIES WIN32_EXECUTABLE ON)
+    target_compile_definitions(eter PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    configure_file(packaging/eter.rc.in "${CMAKE_BINARY_DIR}/eter.rc" @ONLY)
+    target_sources(eter PRIVATE "${CMAKE_BINARY_DIR}/eter.rc")
+    target_link_libraries(eter PRIVATE bcrypt ole32 winmm)   # a statikus FFmpeg és a miniaudio rendszerkönyvtárai
+else()
+    target_link_options(eter PRIVATE -Wl,-Bsymbolic)
+endif()
 
 install(TARGETS eter RUNTIME DESTINATION bin)
-install(FILES packaging/eter.desktop DESTINATION share/applications)
+if(UNIX)
+    install(FILES packaging/eter.desktop DESTINATION share/applications)
+endif()

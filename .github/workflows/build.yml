@@ -58,3 +58,69 @@ jobs:
         with:
           files: build/Eter-*-x86_64.AppImage
           generate_release_notes: true
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git make diffutils zip
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-nasm
+            mingw-w64-ucrt-x86_64-qt6-base
+
+      - name: Cache FFmpeg
+        id: ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: third_party/ffmpeg
+          key: ffmpeg-windows-ucrt64-${{ hashFiles('scripts/build_ffmpeg.sh') }}
+
+      - name: Build FFmpeg (audio decoders only, static)
+        if: steps.ffmpeg.outputs.cache-hit != 'true'
+        run: scripts/build_ffmpeg.sh
+
+      - name: Build Windows package
+        run: scripts/build_windows.sh
+
+      - name: Create a test tone
+        shell: pwsh
+        run: |
+          $code = @'
+          import math, struct, wave
+          with wave.open('selftest.wav', 'wb') as w:
+              w.setnchannels(2); w.setsampwidth(2); w.setframerate(48000)
+              w.writeframes(b''.join(struct.pack('<hh', *(2 * [int(8000 * math.sin(i * 0.0576))])) for i in range(48000 * 5)))
+          '@
+          $code | python -
+
+      - name: Audio engine self-test
+        run: |
+          cd build/Eter-*-win64
+          rc=0
+          ./eter.exe --backend null --selftest ../../selftest.wav > ../../selftest.log 2>&1 || rc=$?
+          cat ../../selftest.log
+          exit $rc
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Eter-Windows
+          path: build/Eter-*-win64.zip
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/Eter-*-win64.zip
+          generate_release_notes: true

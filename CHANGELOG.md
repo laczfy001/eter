@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.2
+- Windows: fixed a crash at start when opening the WASAPI output.
+- The Windows build script copes with source files dated in the future.
+
+## 0.11.1
+- VS Code build tasks for Windows (`.vscode/tasks.json`).
+
+## 0.11.0
+- Windows build (64-bit, WASAPI or DirectSound audio), packaged as a zip by `scripts/build_windows.sh` and the GitHub workflow.
+
 ## 0.10.1
 - Repository prepared for publication: licence, English README, build workflow, third-party notices.
 - The AppImage build script downloads its packaging tools and writes `Eter-<version>-x86_64.AppImage`.
