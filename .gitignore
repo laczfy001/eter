@@ -1,0 +1,17 @@
+# Build output
+/build/
+/third_party/ffmpeg/
+*.AppImage
+*.tar.gz
+
+# Local data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+CMakeLists.txt.user

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Éter
+GenericName=Radio playout
+GenericName[hu]=Rádiós adáslebonyolító
+Comment=Radio playout and automation with two players
+Comment[hu]=Rádiós adáslebonyolító két lejátszóval
+Exec=eter %F
+Icon=eter
+Categories=AudioVideo;Audio;
+Terminal=false
