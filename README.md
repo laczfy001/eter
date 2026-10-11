@@ -1,6 +1,6 @@
 # Éter
 
-Radio playout and automation for Linux: two players, a cartwall, a music library, a scheduler
+Radio playout and automation for Linux & Windows: two players, a cartwall, a music library, a scheduler
 and a mix editor in one desktop application. It ships as a single AppImage.
 
 *Magyar leírás: [README.hu.md](README.hu.md)*
