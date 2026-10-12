@@ -27,6 +27,7 @@ class MixEditorPage;
 class PlaylistEditorPage;
 class CartwallPanel;
 class ItemEditorDialog;
+class TimedEventsPage;
 class QStackedWidget;
 
 class MainWindow : public QMainWindow {
@@ -62,6 +63,8 @@ public:
     ItemEditorDialog *openItemEditor(int itemId = 0);
     void showLeft(int view);          // 0: playlist, 1: cartwall
     PlaylistTable *playlistTable() { return table_; }
+    TimedEventsPage *eventsPage() { return eventsPage_; }
+    bool following() const { return follow_; }
     void setMode(Mode mode);
     SchedulerPage *schedulerPage() { return schedPage_; }
     MixEditorPage *mixPage() { return mixPage_; }
@@ -212,7 +215,19 @@ private:
     Scheduler scheduler_;
     SchedulerPage *schedPage_ = nullptr;
     QStackedWidget *stack_ = nullptr;
-    QToolButton *tabLive_ = nullptr, *tabSched_ = nullptr, *tabMix_ = nullptr;
+    QToolButton *tabLive_ = nullptr, *tabSched_ = nullptr, *tabMix_ = nullptr, *tabEvents_ = nullptr;
+    TimedEventsPage *eventsPage_ = nullptr;
+    QVector<TimedEvent> events_;
+    void runTimedEvents();
+    void fireTimedEvent(const TimedEvent &e);
+    int pendingStartRowId_ = -1;          // időzítve indítandó sor, amint készenlétbe kerül
+    QDateTime pendingStartUntil_;
+    // A playlist követi az adásban lévő elemet, amíg kézzel el nem görgetik róla.
+    bool follow_ = true, programmaticScroll_ = false;
+    int followedRowId_ = -1;
+    int followTargetView() const;          // az adásban lévő (ennek híján a készenlétben álló) elem sora a táblázatban
+    bool followTargetVisible() const;
+    void followPlaying();
     MixEditorPage *mixPage_ = nullptr;
     PlaylistEditorPage *plPage_ = nullptr;
     CartwallPanel *cartPanel_ = nullptr;

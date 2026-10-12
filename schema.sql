@@ -1,4 +1,4 @@
--- Éter – rádiós adáslebonyolító · SQLite séma, 6. verzió
+-- Éter – rádiós adáslebonyolító · SQLite séma, 7. verzió
 --
 -- Egyezmények:
 --   * időtartam és pozíció: egész ezredmásodperc (_ms)
@@ -219,6 +219,24 @@ CREATE TABLE carts (
 ) STRICT, WITHOUT ROWID;
 
 -- ---------------------------------------------------------------------
+-- Időzített események: egy hangtárelem vagy egy mentett playlist adott
+-- időpontban a playlistbe kerül (következőként vagy a végére), vagy elindul.
+-- Egyszeri (on_date) vagy hetente ismétlődő (weekdays: 1. bit hétfő … 7. bit vasárnap).
+-- ---------------------------------------------------------------------
+CREATE TABLE timed_events (
+    id                INTEGER PRIMARY KEY,
+    enabled           INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+    item_id           INTEGER REFERENCES items(id) ON DELETE CASCADE,
+    saved_playlist_id INTEGER REFERENCES saved_playlists(id) ON DELETE CASCADE,
+    action            TEXT NOT NULL DEFAULT 'next' CHECK (action IN ('next','end','start')),
+    time_s            INTEGER NOT NULL CHECK (time_s BETWEEN 0 AND 86399),
+    on_date           TEXT,
+    weekdays          INTEGER NOT NULL DEFAULT 0,
+    last_fired_at     INTEGER,
+    CHECK ((item_id IS NULL) <> (saved_playlist_id IS NULL))
+) STRICT;
+
+-- ---------------------------------------------------------------------
 -- Adásnapló: mi szólt ténylegesen (jogdíjjelentéshez is)
 -- A cím és az előadó másolatként is bekerül, hogy a napló akkor is
 -- olvasható maradjon, ha az elemet később törlik a hangtárból.
@@ -254,6 +272,6 @@ INSERT INTO settings (key, value) VALUES
 
 -- Kategóriákat a felhasználó hoz létre, ezért nincs előre feltöltött lista.
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;
 
 COMMIT;

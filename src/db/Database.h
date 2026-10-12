@@ -98,6 +98,21 @@ struct Cart {
     qint64 durationMs = 0;
 };
 
+// Időzített esemény: egy hangtárelem vagy egy mentett playlist adott időpontban bekerül a playlistbe,
+// vagy azonnal elindul. Egyszeri (adott napon) vagy hetente ismétlődő (a kijelölt napokon).
+struct TimedEvent {
+    int id = 0;
+    bool enabled = true;
+    int itemId = 0;                 // hangtárelem, vagy …
+    int playlistId = 0;             // … mentett playlist (a kettő közül pontosan az egyik)
+    QString action = "next";        // "next": következőként, "end": a playlist végére, "start": azonnal indul
+    int timeS = 0;                  // a nap ennyiedik másodperce
+    QDate date;                     // egyszeri esemény napja; érvénytelen: hetente ismétlődik
+    int weekdays = 0;               // ismétlődő esemény napjai: 1. bit hétfő … 7. bit vasárnap
+    qint64 lastFiredAt = 0;         // a legutóbbi teljesült alkalom (Unix idő), hogy ne fusson kétszer
+    QString label;                  // megjelenítéshez: az elem címe vagy a playlist neve
+};
+
 // A rendszeróra; fejlesztői teszthez eltolható.
 namespace eter {
 QDateTime now();
@@ -169,6 +184,12 @@ public:
     void setCart(int wallId, const Cart &cart);
     void clearCart(int wallId, int slot);
 
+    // Időzített események
+    QVector<TimedEvent> timedEvents();
+    int saveTimedEvent(const TimedEvent &e);            // id == 0: új; visszaadja az azonosítót
+    void deleteTimedEvent(int id);
+    void markEventFired(int id, qint64 occurrence, bool disable);
+
     // Mentett playlistek
     QVector<SavedPlaylist> savedPlaylists();
     QVector<Item> savedPlaylistItems(int playlistId);
@@ -222,6 +243,7 @@ signals:
     void itemsChanged();
     void clocksChanged();
     void savedPlaylistsChanged();
+    void timedEventsChanged();
 
 private:
     bool createSchema(QString *err);

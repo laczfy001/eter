@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.0
+- Timed events: send a library item or a saved playlist to the playlist (as next or at the end) or start it on air, once on a date or weekly on chosen days.
+- The main playlist follows the item on air, unless you scroll away from it; scrolling back to it turns following on again.
+
 ## 0.11.2
 - Windows: fixed a crash at start when opening the WASAPI output.
 - The Windows build script copes with source files dated in the future.

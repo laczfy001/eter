@@ -8,6 +8,8 @@
 #include "ui/Theme.h"
 
 #include <QApplication>
+#include "ui/TimedEventsPage.h"
+#include <QKeyEvent>
 #include <QSettings>
 #include "i18n.h"
 #include <QSpinBox>
@@ -189,11 +191,13 @@ int main(int argc, char **argv)
     QCommandLineOption plTestOpt("pltest", QStringLiteral("Playlist szerkesztő forgatókönyv (fejlesztéshez)."));
     QCommandLineOption cartTestOpt("carttest", QStringLiteral("Cartwall forgatókönyv (fejlesztéshez)."));
     QCommandLineOption editTestOpt("edittest", QStringLiteral("Elemszerkesztő forgatókönyv (fejlesztéshez)."));
+    QCommandLineOption nextTestOpt("nexttest", QStringLiteral("Asszisztált váltás forgatókönyv (fejlesztéshez)."));
+    QCommandLineOption eventTestOpt("eventtest", QStringLiteral("Időzítések forgatókönyve (fejlesztéshez)."));
     QCommandLineOption mixTestOpt("mixtest", QStringLiteral("Mix forgatókönyv (fejlesztéshez)."));
     QCommandLineOption recTestOpt("rectest", QStringLiteral("Felvétel forgatókönyv (fejlesztéshez)."));
     QCommandLineOption schedTestOpt("schedtest", QStringLiteral("Ütemező forgatókönyv (fejlesztéshez)."));
     QCommandLineOption fakeTimeOpt("fake-time", QStringLiteral("A program órája ettől az időponttól indul (fejlesztéshez)."), "ÓÓ:pp:mm");
-    parser.addOptions({backendOpt, dbOpt, selfTestOpt, shotOpt, iconOpt, uiTestOpt, importTestOpt, schedTestOpt, fakeTimeOpt, mixTestOpt, recTestOpt, plTestOpt, cartTestOpt, editTestOpt});
+    parser.addOptions({backendOpt, dbOpt, selfTestOpt, shotOpt, iconOpt, uiTestOpt, importTestOpt, schedTestOpt, fakeTimeOpt, mixTestOpt, recTestOpt, plTestOpt, cartTestOpt, editTestOpt, nextTestOpt, eventTestOpt});
     parser.addPositionalArgument("fájlok", QStringLiteral("Induláskor importálandó hangfájlok vagy mappák."), "[fájlok…]");
     parser.process(app);
 
@@ -221,7 +225,7 @@ int main(int argc, char **argv)
     MainWindow window(&db, parser.value(backendOpt));
     window.show();
     const QStringList files = parser.positionalArguments();
-    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt)) window.library()->importPaths(files);
+    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(nextTestOpt)) window.library()->importPaths(files);
 
     if (parser.isSet(importTestOpt)) {
         // Az importáló ablak teljes útja: mappa, kategóriaválasztás, beolvasás.
@@ -717,6 +721,125 @@ int main(int argc, char **argv)
             });
         });
     }
+    if (parser.isSet(nextTestOpt)) {
+        // Asszisztált mód: a Szóköz (Következő) elindítja a készenlétben állót, és kiúsztatja, ami szól.
+        const int cat = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        QVector<int> ids;
+        for (const QString &f : files) {
+            eter::Decoder dec;
+            if (!dec.open(f.toStdString())) continue;
+            Item it;
+            it.categoryId = cat;
+            it.path = QFileInfo(f).absoluteFilePath();
+            it.title = QFileInfo(f).completeBaseName();
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            ids << db.addItem(it);
+        }
+        db.notifyItemsChanged();
+        window.appendItems(ids);
+        window.setMode(MainWindow::Assist);
+        auto report = [&window](const char *when) {
+            auto &a = window.engine()->source(eter::Engine::Player1);
+            auto &b = window.engine()->source(eter::Engine::Player2);
+            std::printf("%-22s %s | P1 %s%s  P2 %s%s\n", when, qPrintable(window.debugState()), a.playing() ? "szól" : "áll", a.fading() ? " (úszik)" : "",
+                        b.playing() ? "szól" : "áll", b.fading() ? " (úszik)" : "");
+        };
+        const bool key = qEnvironmentVariableIsSet("ETER_TEST_KEY");     // valódi billentyűleütéssel
+        auto press = [&window, key] {
+            if (!key) { window.next(); return; }
+            QWidget *target = QApplication::focusWidget() ? QApplication::focusWidget() : &window;
+            std::printf("  szóköz ide: %s (%s)\n", target->metaObject()->className(), qPrintable(target->objectName()));
+            QKeyEvent down(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier, QStringLiteral(" "));
+            QApplication::sendEvent(target, &down);
+            QKeyEvent up(QEvent::KeyRelease, Qt::Key_Space, Qt::NoModifier, QStringLiteral(" "));
+            QApplication::sendEvent(target, &up);
+        };
+        QTimer::singleShot(500, &window, press);
+        QTimer::singleShot(1500, &window, [=] { report("első indítás után"); });
+        QTimer::singleShot(3000, &window, press);
+        QTimer::singleShot(3500, &window, [=] { report("második után 0,5 mp"); });
+        QTimer::singleShot(6500, &window, [=] { report("második után 3,5 mp"); });
+        QTimer::singleShot(7000, &window, press);
+        QTimer::singleShot(10500, &window, [=] { report("harmadik után 3,5 mp"); QApplication::exit(0); });
+    }
+    if (parser.isSet(eventTestOpt)) {
+        // Időzítések és a playlist követése: események a következő másodpercekre, kézi görgetés.
+        const int music = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        const int plCat = db.addCategory(QStringLiteral("Blokkok"), "playlist", "#7c5cff");
+        QVector<int> ids;
+        for (const QString &f : files) {
+            eter::Decoder dec;
+            if (!dec.open(f.toStdString())) continue;
+            Item it;
+            it.categoryId = music;
+            it.path = QFileInfo(f).absoluteFilePath();
+            it.title = QFileInfo(f).completeBaseName();
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            ids << db.addItem(it);
+        }
+        db.notifyItemsChanged();
+        const int pl = db.saveSavedPlaylist(0, plCat, QStringLiteral("Hírblokk"), {ids[1], ids[2]});
+        // Hosszú lista, hogy legyen mit görgetni: 30 sor.
+        QVector<int> many;
+        for (int i = 0; i < 30; ++i) many << ids[i % ids.size()];
+        window.appendItems(many);
+        const QDateTime now = eter::now();
+        auto ev = [&db, now](int item, int playlist, const char *action, int inSec, bool weekly, bool enabled, int dayShift = 0) {
+            TimedEvent e;
+            e.itemId = item;
+            e.playlistId = playlist;
+            e.action = action;
+            const QDateTime at = now.addSecs(inSec);
+            e.timeS = at.time().hour() * 3600 + at.time().minute() * 60 + at.time().second();
+            if (weekly) e.weekdays = 1 << ((at.date().addDays(dayShift).dayOfWeek() - 1));
+            else e.date = at.date().addDays(dayShift);
+            e.enabled = enabled;
+            return db.saveTimedEvent(e);
+        };
+        const int e1 = ev(ids[3], 0, "next", 3, false, true);        // egyszeri, következőként
+        const int e2 = ev(0, pl, "end", 5, true, true);              // hetente ma, playlist a végére
+        const int e3 = ev(ids[4], 0, "start", 8, false, true);       // egyszeri, azonnal indul
+        const int e4 = ev(ids[0], 0, "next", 4, false, false);       // kikapcsolt: nem fut
+        const int e5 = ev(ids[0], 0, "next", 4, true, true, 1);      // hetente, de holnap: nem fut
+        const int e6 = ev(ids[0], 0, "next", -120, false, true);     // két perce lett volna: kimarad
+        Q_UNUSED(e2); Q_UNUSED(e4); Q_UNUSED(e5);
+        PlaylistTable *table = window.playlistTable();
+        auto rowsText = [&window]() {
+            QString s = window.debugState();
+            QStringList parts = s.split("  ");
+            QStringList out;
+            for (const QString &p : parts) if (!p.contains("=played") && !p.startsWith("P")) out << p;
+            return out.mid(0, 6).join("  ") + QStringLiteral("  … (%1 sor)").arg(parts.size() - 2);
+        };
+        auto report = [&window, table, rowsText](const char *when) {
+            std::printf("%-30s követés: %d | görgetés %d/%d | %s\n", when, window.following(), table->verticalScrollBar()->value(),
+                        table->verticalScrollBar()->maximum(), qPrintable(rowsText()));
+        };
+        window.setMode(MainWindow::Assist);
+        QTimer::singleShot(500, &window, [&window] { window.next(); });
+        QTimer::singleShot(1500, &window, [=] { report("indulás után"); });
+        QTimer::singleShot(4200, &window, [=] { report("3 mp: következőként"); });
+        QTimer::singleShot(6200, &window, [=] { report("5 mp: playlist a végére"); });
+        QTimer::singleShot(9500, &window, [=] { report("8 mp: azonnal indul"); });
+        QTimer::singleShot(10000, &window, [=, &window, &db] {
+            for (const TimedEvent &e : db.timedEvents())
+                std::printf("  esemény %d: aktív %d, lefutott %s | %s | %s | %s\n", e.id, e.enabled, e.lastFiredAt ? "igen" : "nem",
+                            qPrintable(TimedEventsPage::daysText(e)), qPrintable(TimedEventsPage::actionText(e.action)), qPrintable(e.label));
+            std::printf("  (e1=%d e3=%d e6=%d)\n", e1, e3, e6);
+            // Kézi görgetés a lista aljára: a követés kikapcsol.
+            table->verticalScrollBar()->setValue(table->verticalScrollBar()->maximum());
+            report("kézzel a lista aljára");
+            window.next();
+        });
+        QTimer::singleShot(11500, &window, [=] { report("új elem indult (nem ugrik)"); });
+        QTimer::singleShot(11600, &window, [=] {
+            // Vissza az adásban lévő elemhez: a követés újra bekapcsol.
+            table->verticalScrollBar()->setValue(0);
+            report("kézzel vissza a tetejére");
+        });
+        QTimer::singleShot(11700, &window, [&window] { window.next(); });
+        QTimer::singleShot(13000, &window, [=] { report("új elem indult (követ)"); QApplication::exit(0); });
+    }
     if (parser.isSet(recTestOpt)) {
         // Felvétel a Mix editorban: indítás, néhány másodperc, leállítás; létrejött-e a voice track.
         const int cat = db.categories().isEmpty() ? db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff")
@@ -806,7 +929,7 @@ int main(int argc, char **argv)
         if (qEnvironmentVariableIsSet("ETER_SHOT_SCHED")) {
             const QString which = qEnvironmentVariable("ETER_SHOT_SCHED");
             const QString tab = which == "mix" ? TR("Mix editor") : which == "pl" ? TR("Playlist szerkesztő")
-                              : which == "live" ? TR("Adás") : which == "set" ? TR("Beállítások") : TR("Ütemező");
+                              : which == "live" ? TR("Adás") : which == "set" ? TR("Beállítások") : which == "ev" ? TR("Időzítések") : TR("Ütemező");
             if (which == "edit" && db.itemCount() > 0) window.openItemEditor(db.items().first().id);
             for (QToolButton *b : window.findChildren<QToolButton *>())
                 if (b->text() == tab) b->click();

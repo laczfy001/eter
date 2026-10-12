@@ -80,6 +80,7 @@ signals:
     void addToPlaylist(const QVector<int> &itemIds);
     void previewRequested();
     void editRequested(int itemId);
+    void scheduleRequested(int itemId);
     void selectionTouched();
     void message(const QString &text);
 

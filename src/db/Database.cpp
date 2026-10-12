@@ -91,7 +91,7 @@ bool Database::open(const QString &path, QString *err)
     int v = version;
     if (v == 0) {
         if (!createSchema(err)) return false;
-        v = 6;
+        v = 7;
     }
     if (v == 1) {
         // 2. séma: az automatikusan megtalált mix pont eltárolása az ütemező pontosabb tervezéséhez.
@@ -162,6 +162,22 @@ bool Database::open(const QString &path, QString *err)
                "file_path TEXT, label TEXT NOT NULL DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0, "
                "PRIMARY KEY (wall_id, slot)) STRICT, WITHOUT ROWID");
         q.exec("PRAGMA user_version = 6");
+        v = 6;
+    }
+    if (v == 6) {
+        // 7. séma: időzített események.
+        q.exec("CREATE TABLE timed_events ("
+               "id INTEGER PRIMARY KEY, "
+               "enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)), "
+               "item_id INTEGER REFERENCES items(id) ON DELETE CASCADE, "
+               "saved_playlist_id INTEGER REFERENCES saved_playlists(id) ON DELETE CASCADE, "
+               "action TEXT NOT NULL DEFAULT 'next' CHECK (action IN ('next','end','start')), "
+               "time_s INTEGER NOT NULL CHECK (time_s BETWEEN 0 AND 86399), "
+               "on_date TEXT, "
+               "weekdays INTEGER NOT NULL DEFAULT 0, "
+               "last_fired_at INTEGER, "
+               "CHECK ((item_id IS NULL) <> (saved_playlist_id IS NULL))) STRICT");
+        q.exec("PRAGMA user_version = 7");
     }
     housekeeping();
     return true;
@@ -504,6 +520,76 @@ void Database::setEntryGroup(int entryId, int groupId, const QString &groupName)
     q.addBindValue(groupId > 0 ? QVariant(groupName) : QVariant());
     q.addBindValue(entryId);
     run(q);
+}
+
+// -------------------------------------------------------- időzített események
+
+QVector<TimedEvent> Database::timedEvents()
+{
+    QVector<TimedEvent> out;
+    QSqlQuery q("SELECT e.id, e.enabled, COALESCE(e.item_id, 0), COALESCE(e.saved_playlist_id, 0), e.action, e.time_s, "
+                "COALESCE(e.on_date, ''), e.weekdays, COALESCE(e.last_fired_at, 0), COALESCE(i.title, p.name, '') "
+                "FROM timed_events e LEFT JOIN items i ON i.id = e.item_id "
+                "LEFT JOIN saved_playlists p ON p.id = e.saved_playlist_id ORDER BY e.time_s, e.id");
+    while (q.next()) {
+        TimedEvent e;
+        e.id = q.value(0).toInt();
+        e.enabled = q.value(1).toBool();
+        e.itemId = q.value(2).toInt();
+        e.playlistId = q.value(3).toInt();
+        e.action = q.value(4).toString();
+        e.timeS = q.value(5).toInt();
+        e.date = QDate::fromString(q.value(6).toString(), Qt::ISODate);
+        e.weekdays = q.value(7).toInt();
+        e.lastFiredAt = q.value(8).toLongLong();
+        e.label = q.value(9).toString();
+        out.push_back(e);
+    }
+    return out;
+}
+
+int Database::saveTimedEvent(const TimedEvent &e)
+{
+    QSqlQuery q;
+    if (e.id > 0)
+        q.prepare("UPDATE timed_events SET enabled = ?, item_id = ?, saved_playlist_id = ?, action = ?, time_s = ?, "
+                  "on_date = ?, weekdays = ?, last_fired_at = ? WHERE id = ?");
+    else
+        q.prepare("INSERT INTO timed_events (enabled, item_id, saved_playlist_id, action, time_s, on_date, weekdays, last_fired_at) "
+                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    q.addBindValue(e.enabled ? 1 : 0);
+    q.addBindValue(e.itemId > 0 ? QVariant(e.itemId) : QVariant());
+    q.addBindValue(e.itemId > 0 || e.playlistId <= 0 ? QVariant() : QVariant(e.playlistId));
+    q.addBindValue(e.action);
+    q.addBindValue(std::clamp(e.timeS, 0, 86399));
+    q.addBindValue(e.date.isValid() ? QVariant(e.date.toString(Qt::ISODate)) : QVariant());
+    q.addBindValue(e.weekdays);
+    q.addBindValue(e.lastFiredAt > 0 ? QVariant(e.lastFiredAt) : QVariant());
+    if (e.id > 0) q.addBindValue(e.id);
+    if (!run(q)) return 0;
+    const int id = e.id > 0 ? e.id : q.lastInsertId().toInt();
+    emit timedEventsChanged();
+    return id;
+}
+
+void Database::deleteTimedEvent(int id)
+{
+    QSqlQuery q;
+    q.prepare("DELETE FROM timed_events WHERE id = ?");
+    q.addBindValue(id);
+    run(q);
+    emit timedEventsChanged();
+}
+
+void Database::markEventFired(int id, qint64 occurrence, bool disable)
+{
+    QSqlQuery q;
+    q.prepare(disable ? "UPDATE timed_events SET last_fired_at = ?, enabled = 0 WHERE id = ?"
+                      : "UPDATE timed_events SET last_fired_at = ? WHERE id = ?");
+    q.addBindValue(occurrence);
+    q.addBindValue(id);
+    run(q);
+    emit timedEventsChanged();
 }
 
 // ---------------------------------------------------------------- cartwall

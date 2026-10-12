@@ -439,6 +439,7 @@ void LibraryPanel::contextMenu(const QPoint &pos)
     menu.addAction(TR("Hozzáadás a playlisthez"), this, [this, ids] { emit addToPlaylist(ids); });
     menu.addAction(TR("Előhallgatás"), this, [this] { emit previewRequested(); });
     menu.addAction(TR("Szerkesztés… (adatok, intro, outro)"), this, [this, ids] { emit editRequested(ids.first()); });
+    menu.addAction(TR("Időzítés…"), this, [this, ids] { emit scheduleRequested(ids.first()); });
     menu.addSeparator();
     QMenu *move = menu.addMenu(TR("Áthelyezés másik kategóriába"));
     for (const Category &c : db_->itemCategories()) {

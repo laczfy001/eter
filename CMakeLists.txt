@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(eter VERSION 0.11.2 LANGUAGES C CXX)
+project(eter VERSION 0.12.0 LANGUAGES C CXX)
 if(WIN32)
     enable_language(RC)
 endif()
@@ -40,6 +40,7 @@ add_executable(eter
     src/ui/PlaylistEditorPage.cpp
     src/ui/CartwallPanel.cpp
     src/ui/ItemEditor.cpp
+    src/ui/TimedEventsPage.cpp
     src/sched/Scheduler.cpp
     src/ui/SettingsDialog.cpp
     resources/resources.qrc

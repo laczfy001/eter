@@ -6,6 +6,8 @@
 #include "PlaylistEditorPage.h"
 #include "CartwallPanel.h"
 #include "ItemEditor.h"
+#include "TimedEventsPage.h"
+#include <QScrollBar>
 #include "PlaylistTable.h"
 #include "SchedulerPage.h"
 #include "SettingsDialog.h"
@@ -187,6 +189,8 @@ void MainWindow::buildUi()
     connect(tabMix_, &QToolButton::clicked, this, [this] { showPage(2); });
     tabPl_ = addTab(TR("Playlist szerkesztő"), true, TR("Egyéni playlistek összeállítása és mentése"));
     connect(tabPl_, &QToolButton::clicked, this, [this] { showPage(3); });
+    tabEvents_ = addTab(TR("Időzítések"), true, TR("Elem vagy playlist időzített beküldése a playlistbe vagy adásba"));
+    connect(tabEvents_, &QToolButton::clicked, this, [this] { showPage(4); });
     auto *settingsTab = addTab(TR("Beállítások"), true, TR("Hangkimenetek beállítása"));
     settingsTab->setCheckable(false);
     connect(settingsTab, &QToolButton::clicked, this, &MainWindow::openSettings);
@@ -232,6 +236,10 @@ void MainWindow::buildUi()
     connect(library_, &LibraryPanel::addToPlaylist, this, [this](const QVector<int> &ids) { appendItems(ids); });
     connect(library_, &LibraryPanel::message, this, [this](const QString &m) { say(m, 9000); });
     connect(library_, &LibraryPanel::editRequested, this, [this](int id) { openItemEditor(id); });
+    connect(library_, &LibraryPanel::scheduleRequested, this, [this](int id) {
+        showPage(4);
+        eventsPage_->newForItem(id);
+    });
     connect(library_, &LibraryPanel::selectionTouched, this, [this] { lastSelectionInLibrary_ = true; });
     connect(library_, &LibraryPanel::previewRequested, this, [this] {
         lastSelectionInLibrary_ = true;
@@ -277,6 +285,11 @@ void MainWindow::buildUi()
     connect(plPage_, &PlaylistEditorPage::editRequested, this, [this](int id) { openItemEditor(id); });
     connect(plPage_, &PlaylistEditorPage::insertRequested, this, [this](int id) { insertSavedPlaylist(id); });
     stack_->addWidget(plPage_);
+    eventsPage_ = new TimedEventsPage(db_);
+    connect(eventsPage_, &TimedEventsPage::message, this, [this](const QString &m) { say(m, 8000); });
+    stack_->addWidget(eventsPage_);
+    events_ = db_->timedEvents();
+    connect(db_, &Database::timedEventsChanged, this, [this] { events_ = db_->timedEvents(); });
     bodyLayout->addWidget(stack_, 1);
     root->addWidget(body, 1);
     showPage(0);
@@ -538,6 +551,16 @@ QWidget *MainWindow::buildPlaylistPanel()
     connect(table_, &PlaylistTable::spacePressed, this, &MainWindow::next);
     connect(table_, &PlaylistTable::rowMoved, this, &MainWindow::onViewRowMoved);
     table_->setContextMenuPolicy(Qt::CustomContextMenu);
+    // Kézi görgetés: ha az adásban lévő elem kikerül a látható részből, a lista nem ugrik vissza rá,
+    // amíg vissza nem görgetnek hozzá.
+    connect(table_->verticalScrollBar(), &QScrollBar::valueChanged, this, [this] {
+        if (programmaticScroll_) return;
+        const bool visible = followTargetVisible();
+        if (visible != follow_) {
+            follow_ = visible;
+            if (follow_) followedRowId_ = -1;
+        }
+    });
     connect(table_, &QWidget::customContextMenuRequested, this, &MainWindow::playlistContextMenu);
     connect(table_, &PlaylistTable::itemsDropped, this, [this](const QVector<int> &ids, int at) {
         appendItems(ids, insertIndexForView(at));
@@ -889,7 +912,119 @@ void MainWindow::tick()
         applySchedule();
         updateStartTimes();
         autoGenerate();
+        runTimedEvents();
+        followPlaying();
     }
+}
+
+// ------------------------------------------------------------ időzítések
+
+// Az esedékes időzített események végrehajtása. Egy alkalom csak egyszer fut le, és csak akkor,
+// ha az időpontja legfeljebb egy perce múlt el (ha a program akkor nem futott, kimarad).
+void MainWindow::runTimedEvents()
+{
+    const QDateTime now = eter::now();
+    for (const TimedEvent &e : QVector<TimedEvent>(events_)) {
+        if (!e.enabled) continue;
+        const QDateTime at = TimedEventsPage::nextOccurrence(e, now.addSecs(-60));
+        if (!at.isValid() || at > now) continue;
+        const qint64 occ = at.toSecsSinceEpoch();
+        if (e.lastFiredAt >= occ) continue;
+        db_->markEventFired(e.id, occ, e.date.isValid());     // egyszeri esemény után kikapcsol
+        events_ = db_->timedEvents();
+        fireTimedEvent(e);
+    }
+    // Az időzítve indítandó elem indítása, amint a készenlétben álló lejátszóba került.
+    if (pendingStartRowId_ >= 0) {
+        const int standby = standbyPlayer();
+        if (standby >= 0 && players_[standby]->rowId == pendingStartRowId_) {
+            pendingStartRowId_ = -1;
+            int onAir = -1;
+            for (int i = 0; i < 2; ++i)
+                if (players_[i]->isPlaying() && !leaving(i)) onAir = i;
+            startStandby(onAir, fadeMs_);
+        } else if (!rowById(pendingStartRowId_) || now > pendingStartUntil_) {
+            pendingStartRowId_ = -1;
+            say(TR("Az időzített elem nem indulhatott el: egyik lejátszó sem szabadult fel időben."), 10000);
+        }
+    }
+}
+
+void MainWindow::fireTimedEvent(const TimedEvent &e)
+{
+    QVector<int> ids;
+    QString name = e.label;
+    int groupId = 0;
+    if (e.itemId) {
+        ids << e.itemId;
+    } else {
+        for (const Item &it : db_->savedPlaylistItems(e.playlistId)) ids << it.id;
+        groupId = db_->nextGroupId();
+    }
+    if (ids.isEmpty()) {
+        say(TR("Időzítés: „%1” üres vagy már nincs meg, kimaradt.").arg(name), 10000);
+        return;
+    }
+    const int before = rows_.size();
+    // „Következőként” és „Azonnal indul”: a szóló elem mögé, a várakozók elé.
+    const int at = e.action == QLatin1String("end") ? -1 : firstMovable();
+    appendItems(ids, at, groupId, name);
+    if (rows_.size() == before) return;
+    const int first = at;                                   // a beszúrt első elem helye (a végére kerülőnél nem kell)
+    if (e.action == QLatin1String("start") && first >= 0) {
+        pendingStartRowId_ = rows_[first].id;
+        pendingStartUntil_ = eter::now().addSecs(30);
+        say(TR("Időzítés: „%1” indul.").arg(name), 8000);
+        runTimedEvents();                                   // ha a lejátszó szabad, azonnal indul
+    } else {
+        say(e.action == QLatin1String("end") ? TR("Időzítés: „%1” a playlist végére került.").arg(name)
+                                             : TR("Időzítés: „%1” következőként a playlistbe került.").arg(name), 8000);
+    }
+}
+
+// ------------------------------------------------------------ követés
+
+int MainWindow::followTargetView() const
+{
+    // Az adásban lévő elem; ha kettő szól (átúsztatás), az újabb. Ha semmi sem szól, a készenlétben álló.
+    int index = -1;
+    for (int i = 0; i < rows_.size(); ++i)
+        if (rows_[i].state == Row::Playing) index = i;
+    if (index < 0)
+        for (int i = 0; i < rows_.size() && index < 0; ++i)
+            if (rows_[i].state == Row::Cued) index = i;
+    if (index < 0) return -1;
+    for (int v = 0; v < view_.size(); ++v) {
+        if (view_[v].row == index) return v;
+        if (view_[v].row < 0 && index >= view_[v].first && index < view_[v].first + view_[v].count
+            && !expanded_.contains(rows_[index].groupId))
+            return v;                                       // becsukott blokkban: a fejléce
+    }
+    return -1;
+}
+
+bool MainWindow::followTargetVisible() const
+{
+    const int v = followTargetView();
+    if (v < 0) return true;
+    const QRect r = table_->visualRect(table_->model()->index(v, 1));
+    return r.isValid() && r.bottom() > 0 && r.top() < table_->viewport()->height();
+}
+
+// Ha a követés be van kapcsolva, az adásban lévő elem a lista tetejére kerül (előtte egy sorral),
+// amikor új elem indul, vagy amikor kikerülne a látható részből.
+void MainWindow::followPlaying()
+{
+    if (!follow_ || !table_) return;
+    const int v = followTargetView();
+    if (v < 0) return;
+    const int rowIndex = view_[v].row >= 0 ? view_[v].row : view_[v].first;
+    const int id = rowIndex < rows_.size() ? rows_[rowIndex].id : -1;
+    if (id == followedRowId_ && followTargetVisible()) return;
+    followedRowId_ = id;
+    programmaticScroll_ = true;
+    table_->scrollTo(table_->model()->index(std::max(0, v - 1), 0), QAbstractItemView::PositionAtTop);
+    programmaticScroll_ = false;
 }
 
 void MainWindow::updateClock()
@@ -1666,6 +1801,9 @@ void MainWindow::clearList()
 
 void MainWindow::refreshTable()
 {
+    // Az újraépítés közbeni görgetés nem kézi görgetés.
+    programmaticScroll_ = true;
+    struct Restore { MainWindow *w; ~Restore() { w->programmaticScroll_ = false; w->followPlaying(); } } restore{this};
     const int selected = selectedRowId();
     const int selectedHead = selectedHeaderRowId();
     rebuildView();
@@ -2022,6 +2160,7 @@ void MainWindow::showPage(int page)
     tabSched_->setChecked(page == 1);
     tabMix_->setChecked(page == 2);
     tabPl_->setChecked(page == 3);
+    tabEvents_->setChecked(page == 4);
     if (page != 2 && mixPage_) mixPage_->stopPreview();
 }
 
