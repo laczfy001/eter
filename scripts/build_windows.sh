@@ -22,6 +22,8 @@ cmake --build "$BUILD"
 rm -rf "$DIST" "$ROOT/build/$NAME.zip"
 mkdir -p "$DIST"
 cp "$BUILD/eter.exe" "$DIST/"
+# Szerkesztő mód indítója: egy másik gépen futó playout playlistjének szerkesztése.
+printf '@echo off\r\nstart "" "%%~dp0eter.exe" --editor\r\n' > "$DIST/Eter-szerkeszto.cmd"
 
 # Qt libraries and plugins
 DEPLOY=""

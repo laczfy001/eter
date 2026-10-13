@@ -28,6 +28,11 @@ class PlaylistEditorPage;
 class CartwallPanel;
 class ItemEditorDialog;
 class TimedEventsPage;
+class MiniMix;
+namespace remote { class Server; class Connection; }
+class QJsonObject;
+class QPainter;
+class QStyleOptionViewItem;
 class QStackedWidget;
 
 class MainWindow : public QMainWindow {
@@ -65,6 +70,9 @@ public:
     PlaylistTable *playlistTable() { return table_; }
     TimedEventsPage *eventsPage() { return eventsPage_; }
     bool following() const { return follow_; }
+    void expandStandbyTransition();       // fejlesztői ellenőrzéshez: a készenlétben álló sor átmenetének lenyitása
+    bool miniOpen() const;
+    class MiniMixCanvas *miniCanvas();
     void setMode(Mode mode);
     SchedulerPage *schedulerPage() { return schedPage_; }
     MixEditorPage *mixPage() { return mixPage_; }
@@ -96,9 +104,22 @@ private:
         QDateTime fixedAt;                // fix kezdési időpont, ha van
         int groupId = 0;                  // kézzel készített playlist blokkja; 0 = nincs
         QString groupName;
+        // Ráfektetés: az elem nem a lejátszókon szól, hanem az előtte és utána álló elem átmenete fölött,
+        // egy külön csatornán; a kezdése a két elem közti mix ponthoz képest.
+        bool overlay = false;
+        qint64 overlayOffsetMs = 0;
+        double overlayDuckDb = 0;
+        int overlayVoice = -1;            // szóló ráfektetett elem csatornája (0 vagy 1), különben −1
     };
     // A táblázat egy sora: playlist-sor, vagy egy blokk fejléce (row < 0; first/count: a blokk sorai).
-    struct ViewRow { int row = -1; int first = 0; int count = 0; };
+    // Item: playlist-sor (row); Header: blokk fejléce (first, count); Hour: óraelválasztó (first: az óra első sora);
+    // Wave: a fölötte lévő sor (row) lenyitott mini mix editora.
+    struct ViewRow {
+        enum Kind { Item, Header, Hour, Wave };
+        int row = -1, first = 0, count = 0;
+        Kind kind = Item;
+        int hourKey = 0;
+    };
     QVector<ViewRow> view_;
     QSet<int> expanded_;                  // a kinyitott blokkok
     QVector<QString> startText_;          // a sorok „Kezdés" szövege
@@ -167,7 +188,6 @@ private:
     void persistOrder();
     void reconcile();
     bool loadIntoPlayer(Row &row, int player);
-    void loadRowInto(int rowId, int player);
     void onPlayerFinished(int player);
     void onPlayerEjected(int player);
     void syncRowStates();
@@ -228,6 +248,18 @@ private:
     int followTargetView() const;          // az adásban lévő (ennek híján a készenlétben álló) elem sora a táblázatban
     bool followTargetVisible() const;
     void followPlaying();
+    // Lenyitható mini mix editor: a sor és a következő elem átmenete.
+    int expandedRowId_ = -1;
+    QPointer<MiniMix> mini_;
+    int miniView_ = -1;
+    int nextPlayableAfter(int index) const;
+    void toggleMini(int rowId);
+    void updateMini();
+    void placeMini();                                      // a mini szerkesztő a lenyitott sor helyére
+    QSet<int> customFrom_, vtFrom_;       // azok a sorok, amelyekből egyedi mix (illetve voice track) visz a következőbe
+public:
+    void paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, int v) const;
+private:
     MixEditorPage *mixPage_ = nullptr;
     PlaylistEditorPage *plPage_ = nullptr;
     CartwallPanel *cartPanel_ = nullptr;
@@ -241,6 +273,31 @@ private:
     int vtLogId_ = 0;
     int vtDoneTo_ = -1;                   // ehhez a bejövő sorhoz a voice track már elindult
     struct { int toRowId = -1; int player = -1; qint64 startFrame = 0; int itemId = 0; double duckDb = -9; } vtPending_;
+    double vtDuckGain_ = 1.0;
+    // Ráfektetett elemek
+    struct OverlayVoice { int rowId = -1; int logId = 0; double duckGain = 1.0; };
+    OverlayVoice ovl_[eter::Engine::kOverlayVoices];
+    bool overlayTargets(int index, int *a, int *c) const;   // aktív ráfektetés: az előtte (a) és utána (c) álló elem
+    bool overlayActive(int index) const { return overlayTargets(index, nullptr, nullptr); }
+    void runOverlays();
+    bool startOverlay(Row &row);
+    void endOverlay(int voice, const QString &reason);
+    void applyDuck();
+public:
+    // A sor ráfektetése az előtte és utána álló elem átmenetére (vagy a ráfektetés megszüntetése).
+    bool setRowOverlay(int rowId, bool on, qint64 offsetMs = 0, double duckDb = 0);
+    void loadRowInto(int rowId, int player);           // kézi betöltés egy lejátszóba
+    // Távoli szerkesztés: a beállítások szerint elindítja vagy leállítja a szolgáltatást.
+    void configureRemote();
+    QString remoteStatus() const;
+    QJsonObject remoteState() const;                   // a playlist élő állapota a szerkesztőknek
+    QJsonObject remoteLibrary();                       // a hangtár a szerkesztőknek
+    QString applyRemoteOp(const QJsonObject &m);       // üres: sikerült; különben a hiba szövege
+private:
+    remote::Server *remote_ = nullptr;
+    QTimer *remoteStateTimer_ = nullptr, *remoteLibTimer_ = nullptr;
+    int remoteTick_ = 0;
+    QString remoteError_;
     QLabel *schedStatus_ = nullptr;
     int lastGenerateMinute_ = -1;
     bool waitingForFixed_ = false;

@@ -147,6 +147,8 @@ CREATE TABLE playlist_entries (
                   CHECK (status IN ('pending','playing','played','skipped')),
     group_id      INTEGER,                   -- kézzel készített playlist blokkja a fő playlistben
     group_name    TEXT,
+    overlay_offset_ms INTEGER,               -- ráfektetett elem: a kezdése a szomszédos átmenet mix pontjához képest
+    overlay_duck_db   REAL NOT NULL DEFAULT 0, -- ennyivel halkul alatta a zene
     UNIQUE (playlist_id, position)
 ) STRICT;
 
@@ -272,6 +274,6 @@ INSERT INTO settings (key, value) VALUES
 
 -- Kategóriákat a felhasználó hoz létre, ezért nincs előre feltöltött lista.
 
-PRAGMA user_version = 7;
+PRAGMA user_version = 8;
 
 COMMIT;

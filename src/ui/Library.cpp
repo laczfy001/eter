@@ -1,5 +1,7 @@
 #include "i18n.h"
 #include "Library.h"
+
+#include <QMessageBox>
 #include "Theme.h"
 #include "audio/Decoder.h"
 
@@ -456,6 +458,14 @@ void LibraryPanel::contextMenu(const QPoint &pos)
 void LibraryPanel::deleteSelected()
 {
     const QVector<int> ids = selectedItemIds();
+    if (ids.isEmpty()) return;
+    // A törléssel az elem beállításai (intro, outro, mixek) is elvesznek: rákérdezünk.
+    const QString what = ids.size() == 1 ? TR("Törlöd a kijelölt elemet a hangtárból?")
+                                         : TR("Törlöd a kijelölt %1 elemet a hangtárból?").arg(ids.size());
+    if (QMessageBox::question(this, TR("Törlés a hangtárból"),
+                              what + QStringLiteral("\n\n") + TR("A fájlok a lemezen megmaradnak, de az elemek beállításai (intro, outro, egyedi mixek) elvesznek."),
+                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
     int removed = 0, blocked = 0;
     db_->beginBatch();
     for (int id : ids) {
@@ -883,6 +893,9 @@ void CategoriesDialog::save()
 void CategoriesDialog::remove()
 {
     if (!editingId_) return;
+    if (QMessageBox::question(this, TR("Kategória törlése"), TR("Törlöd a kijelölt kategóriát?"),
+                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
     QString err;
     if (!db_->deleteCategory(editingId_, &err)) {
         info_->setText(err);

@@ -1,5 +1,6 @@
 #include "i18n.h"
 #include "Database.h"
+#include <QSet>
 
 #include <QDateTime>
 #include <QDir>
@@ -91,7 +92,7 @@ bool Database::open(const QString &path, QString *err)
     int v = version;
     if (v == 0) {
         if (!createSchema(err)) return false;
-        v = 7;
+        v = 8;
     }
     if (v == 1) {
         // 2. séma: az automatikusan megtalált mix pont eltárolása az ütemező pontosabb tervezéséhez.
@@ -178,6 +179,14 @@ bool Database::open(const QString &path, QString *err)
                "last_fired_at INTEGER, "
                "CHECK ((item_id IS NULL) <> (saved_playlist_id IS NULL))) STRICT");
         q.exec("PRAGMA user_version = 7");
+        v = 7;
+    }
+    if (v == 7) {
+        // 8. séma: az átmenetre ráfektetett playlist-elemek.
+        q.exec("ALTER TABLE playlist_entries ADD COLUMN overlay_offset_ms INTEGER");
+        q.exec("ALTER TABLE playlist_entries ADD COLUMN overlay_duck_db REAL NOT NULL DEFAULT 0");
+        q.exec("PRAGMA user_version = 8");
+        v = 8;
     }
     housekeeping();
     return true;
@@ -512,6 +521,16 @@ int Database::nextGroupId()
     return id;
 }
 
+void Database::setEntryOverlay(int entryId, bool on, qint64 offsetMs, double duckDb)
+{
+    QSqlQuery q;
+    q.prepare("UPDATE playlist_entries SET overlay_offset_ms = ?, overlay_duck_db = ? WHERE id = ?");
+    q.addBindValue(on ? QVariant(offsetMs) : QVariant());
+    q.addBindValue(on ? duckDb : 0.0);
+    q.addBindValue(entryId);
+    run(q);
+}
+
 void Database::setEntryGroup(int entryId, int groupId, const QString &groupName)
 {
     QSqlQuery q;
@@ -844,7 +863,8 @@ QVector<Entry> Database::pendingEntries()
     QVector<Entry> out;
     QSqlQuery q(QStringLiteral(
         "SELECT e.id, e.playlist_id, CAST(REPLACE(p.air_date, '-', '') AS INTEGER) * 100 + p.hour, "
-        ETER_ITEM_COLS ", e.source, COALESCE(e.fixed_start_s, -1), COALESCE(e.group_id, 0), COALESCE(e.group_name, '') "
+        ETER_ITEM_COLS ", e.source, COALESCE(e.fixed_start_s, -1), COALESCE(e.group_id, 0), COALESCE(e.group_name, ''), "
+        "e.overlay_offset_ms, e.overlay_duck_db "
         "FROM playlist_entries e JOIN playlists p ON p.id = e.playlist_id "
         "JOIN items i ON i.id = e.item_id JOIN categories c ON c.id = i.category_id "
         "WHERE e.status = 'pending' ORDER BY p.air_date, p.hour, e.position"));
@@ -858,6 +878,9 @@ QVector<Entry> Database::pendingEntries()
         e.fixedStartS = q.value(4 + kItemColumns).toInt();
         e.groupId = q.value(5 + kItemColumns).toInt();
         e.groupName = q.value(6 + kItemColumns).toString();
+        e.overlay = !q.value(7 + kItemColumns).isNull();
+        e.overlayOffsetMs = q.value(7 + kItemColumns).toLongLong();
+        e.overlayDuckDb = q.value(8 + kItemColumns).toDouble();
         out.push_back(e);
     }
     return out;
@@ -1139,6 +1162,11 @@ Transition Database::transition(int toEntryId)
 
 void Database::saveTransition(const Transition &t)
 {
+    if (remoteHook)
+        remoteHook("saveTransition", QJsonObject{{"to", t.toEntryId}, {"from", t.fromEntryId}, {"mix", t.mixOutMs}, {"outEnd", t.outEndMs},
+                                                 {"fadeOut", t.fadeOutMs}, {"curve", t.fadeOutCurve}, {"cueIn", t.cueInMs},
+                                                 {"fadeIn", t.fadeInMs}, {"startLevel", t.startLevelDb}, {"vt", t.vtItemId},
+                                                 {"vtOffset", t.vtOffsetMs}, {"vtDuck", t.vtDuckDb}});
     QSqlQuery q;
     q.prepare("INSERT INTO transitions (to_entry_id, from_entry_id, mix_out_ms, fade_out_ms, fade_out_curve, "
               "cue_in_ms, fade_in_ms, start_level_db, vt_item_id, vt_offset_ms, vt_duck_db, out_end_ms) "
@@ -1167,6 +1195,7 @@ void Database::saveTransition(const Transition &t)
 
 void Database::deleteTransition(int toEntryId)
 {
+    if (remoteHook) remoteHook("deleteTransition", QJsonObject{{"to", toEntryId}});
     QSqlQuery q;
     q.prepare("DELETE FROM transitions WHERE to_entry_id = ?");
     q.addBindValue(toEntryId);
@@ -1183,6 +1212,9 @@ QHash<int, int> Database::transitionPairs()
 
 void Database::setItemMixDefaults(int itemId, qint64 mixOutMs, qint64 fadeOutMs, const QString &curve, qint64 cueOutMs)
 {
+    if (remoteHook)
+        remoteHook("setItemMixDefaults", QJsonObject{{"item", itemId}, {"mix", mixOutMs}, {"fadeOut", fadeOutMs}, {"curve", curve},
+                                                     {"cueOut", cueOutMs}});
     QSqlQuery q;
     q.prepare("UPDATE items SET mix_out_ms = ?, fade_out_ms = ?, fade_curve = ?, cue_out_ms = ? WHERE id = ?");
     q.addBindValue(mixOutMs);
@@ -1195,6 +1227,7 @@ void Database::setItemMixDefaults(int itemId, qint64 mixOutMs, qint64 fadeOutMs,
 
 void Database::clearItemMixDefaults(int itemId)
 {
+    if (remoteHook) remoteHook("clearItemMixDefaults", QJsonObject{{"item", itemId}});
     QSqlQuery q;
     q.prepare("UPDATE items SET mix_out_ms = NULL, fade_out_ms = NULL, fade_curve = NULL, cue_out_ms = NULL WHERE id = ?");
     q.addBindValue(itemId);
@@ -1203,6 +1236,7 @@ void Database::clearItemMixDefaults(int itemId)
 
 void Database::setItemCueIn(int itemId, qint64 cueInMs)
 {
+    if (remoteHook) remoteHook("setItemCueIn", QJsonObject{{"item", itemId}, {"ms", cueInMs}});
     QSqlQuery q;
     q.prepare("UPDATE items SET cue_in_ms = ? WHERE id = ?");
     q.addBindValue(std::max<qint64>(0, cueInMs));
@@ -1212,6 +1246,7 @@ void Database::setItemCueIn(int itemId, qint64 cueInMs)
 
 void Database::setItemIntro(int itemId, qint64 introMs)
 {
+    if (remoteHook) remoteHook("setItemIntro", QJsonObject{{"item", itemId}, {"ms", introMs}});
     QSqlQuery q;
     q.prepare("UPDATE items SET intro_ms = ? WHERE id = ?");
     q.addBindValue(introMs > 0 ? QVariant(introMs) : QVariant());
@@ -1224,4 +1259,121 @@ int Database::voiceTrackCategory()
     for (const Category &c : categories())
         if (c.kind == "voicetrack") return c.id;
     return addCategory(TR("Voice track"), "voicetrack", "#7fd6e8");
+}
+
+// ------------------------------------------------------- távoli szerkesztő
+
+QVector<Transition> Database::transitionsFor(const QVector<int> &toEntryIds)
+{
+    QVector<Transition> out;
+    const QHash<int, int> pairs = transitionPairs();
+    for (int id : toEntryIds)
+        if (pairs.contains(id)) out.push_back(transition(id));
+    return out;
+}
+
+// A hangtár tükre: a kategóriák és az elemek a playout azonosítóival. A playlist tükre ezzel törlődik,
+// utána újra kell tölteni (mirrorState).
+bool Database::mirrorLibrary(const QVector<Category> &categories, const QVector<Item> &items)
+{
+    QSqlQuery q;
+    bool ok = q.exec("BEGIN");
+    ok = ok && q.exec("DELETE FROM transitions") && q.exec("DELETE FROM playlist_entries") && q.exec("DELETE FROM playlists");
+    ok = ok && q.exec("DELETE FROM cartwalls") && q.exec("DELETE FROM timed_events") && q.exec("DELETE FROM saved_playlist_items")
+         && q.exec("DELETE FROM saved_playlists") && q.exec("DELETE FROM clock_slots") && q.exec("DELETE FROM items")
+         && q.exec("DELETE FROM categories");
+    QSqlQuery ins;
+    ok = ok && ins.prepare("INSERT INTO categories (id, kind, name, color) VALUES (?, ?, ?, ?)");
+    for (const Category &c : categories) {
+        if (!ok) break;
+        ins.addBindValue(c.id);
+        ins.addBindValue(c.kind);
+        ins.addBindValue(c.name);
+        ins.addBindValue(c.color);
+        ok = ins.exec();
+    }
+    ok = ok && ins.prepare("INSERT INTO items (id, category_id, title, artist, file_path, duration_ms, last_played_at, cue_in_ms, "
+                           "intro_ms, mix_out_ms, cue_out_ms, fade_out_ms, fade_curve, auto_mix_out_ms) "
+                           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    QSet<QString> paths;
+    for (const Item &it : items) {
+        if (!ok) break;
+        QString path = it.path;
+        if (paths.contains(path)) path += QStringLiteral("#%1").arg(it.id);   // két playout-útvonal ugyanoda képződött le
+        paths.insert(path);
+        ins.addBindValue(it.id);
+        ins.addBindValue(it.categoryId);
+        ins.addBindValue(it.title);
+        ins.addBindValue(it.artist);
+        ins.addBindValue(path);
+        ins.addBindValue(std::max<qint64>(0, it.durationMs));
+        ins.addBindValue(it.lastPlayedAt > 0 ? QVariant(it.lastPlayedAt) : QVariant());
+        ins.addBindValue(it.cueInMs);
+        ins.addBindValue(it.introMs > 0 ? QVariant(it.introMs) : QVariant());
+        ins.addBindValue(it.userMixOutMs > 0 ? QVariant(it.userMixOutMs) : QVariant());
+        ins.addBindValue(it.cueOutMs > 0 ? QVariant(it.cueOutMs) : QVariant());
+        ins.addBindValue(it.fadeOutMs >= 0 ? QVariant(it.fadeOutMs) : QVariant());
+        ins.addBindValue(it.fadeCurve.isEmpty() ? QVariant() : QVariant(it.fadeCurve));
+        ins.addBindValue(it.userMixOutMs <= 0 && it.mixOutMs > 0 ? QVariant(it.mixOutMs) : QVariant());
+        ok = ins.exec();
+    }
+    if (!ok) {
+        qWarning("A hangtár tükrözése nem sikerült: %s %s", qPrintable(q.lastError().text()), qPrintable(ins.lastError().text()));
+        q.exec("ROLLBACK");
+        return false;
+    }
+    q.exec("COMMIT");
+    emit categoriesChanged();
+    emit itemsChanged();
+    return true;
+}
+
+bool Database::mirrorState(const QVector<MirrorRow> &rows, const QVector<Transition> &transitions)
+{
+    QSqlQuery q;
+    bool ok = q.exec("BEGIN");
+    ok = ok && q.exec("DELETE FROM transitions") && q.exec("DELETE FROM playlist_entries") && q.exec("DELETE FROM playlists");
+    QSqlQuery pl, en;
+    ok = ok && pl.prepare("INSERT OR IGNORE INTO playlists (id, air_date, hour) VALUES (?, ?, ?)");
+    ok = ok && en.prepare("INSERT INTO playlist_entries (id, playlist_id, position, item_id, fixed_start_s, source, status, "
+                          "group_id, group_name, overlay_offset_ms, overlay_duck_db) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    QHash<int, int> position;
+    QSet<int> playlists;
+    for (const MirrorRow &r : rows) {
+        if (!ok) break;
+        const Entry &e = r.entry;
+        if (!playlists.contains(e.playlistId)) {
+            playlists.insert(e.playlistId);
+            const QDate d = QDate::fromString(QString::number(e.playlistKey / 100), "yyyyMMdd");
+            pl.addBindValue(e.playlistId);
+            pl.addBindValue(d.isValid() ? d.toString(Qt::ISODate) : QStringLiteral("2000-01-01"));
+            pl.addBindValue(std::clamp(e.playlistKey % 100, 0, 23));
+            ok = pl.exec();
+            if (!ok) break;
+        }
+        en.addBindValue(e.id);
+        en.addBindValue(e.playlistId);
+        en.addBindValue(++position[e.playlistId]);
+        en.addBindValue(e.item.id);
+        en.addBindValue(e.fixedStartS >= 0 ? QVariant(e.fixedStartS) : QVariant());
+        en.addBindValue(e.source == QLatin1String("scheduler") ? QStringLiteral("scheduler") : QStringLiteral("manual"));
+        en.addBindValue(r.status);
+        en.addBindValue(e.groupId > 0 ? QVariant(e.groupId) : QVariant());
+        en.addBindValue(e.groupId > 0 ? QVariant(e.groupName) : QVariant());
+        en.addBindValue(e.overlay ? QVariant(e.overlayOffsetMs) : QVariant());
+        en.addBindValue(e.overlay ? e.overlayDuckDb : 0.0);
+        ok = en.exec();
+    }
+    if (!ok) {
+        qWarning("A playlist tükrözése nem sikerült: %s %s %s", qPrintable(q.lastError().text()), qPrintable(pl.lastError().text()), qPrintable(en.lastError().text()));
+        q.exec("ROLLBACK");
+        return false;
+    }
+    q.exec("COMMIT");
+    // Az átmenetek a mentéssel azonos úton, de a továbbítás nélkül.
+    auto hook = std::move(remoteHook);
+    remoteHook = nullptr;
+    for (const Transition &t : transitions) saveTransition(t);
+    remoteHook = std::move(hook);
+    return true;
 }

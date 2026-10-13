@@ -1,5 +1,6 @@
 #include "i18n.h"
 #include "MainWindow.h"
+#include "net/Remote.h"
 #include "Library.h"
 #include "PlayerWidget.h"
 #include "MixEditorPage.h"
@@ -7,6 +8,7 @@
 #include "CartwallPanel.h"
 #include "ItemEditor.h"
 #include "TimedEventsPage.h"
+#include "MiniMix.h"
 #include <QScrollBar>
 #include "PlaylistTable.h"
 #include "SchedulerPage.h"
@@ -23,6 +25,11 @@
 #include <QLocale>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QProcess>
+#include <QSysInfo>
+#include <QNetworkInterface>
+#include <QJsonObject>
+#include <QJsonArray>
 #include <QPainter>
 #include <QProgressBar>
 #include <QPushButton>
@@ -40,42 +47,22 @@ using eter::Engine;
 
 static const int kChipRole = Qt::UserRole + 1;
 static const int kGroupRole = Qt::UserRole + 2;     // 1: blokk tagja, 2: blokk fejléce
+// A sor azonosítója a táblázat első oszlopában: elemnél a sor, fejlécnél a blokk első sora (−1: más).
+// A kijelölés ebből olvasható akkor is, ha a sorok listája már változott, de a táblázat még nem frissült.
+static const int kRowIdRole = Qt::UserRole + 3;
+static const int kHeadIdRole = Qt::UserRole + 4;
 
-// A playlist sorai: az állapotszín kijelölt sornál is látszik.
+// A playlist sorai: a főablak rajzolja őket, a sor fajtája (elem, blokkfejléc, óra, mini mix) szerint.
 class RowDelegate : public QStyledItemDelegate {
 public:
-    using QStyledItemDelegate::QStyledItemDelegate;
+    RowDelegate(MainWindow *w, QObject *parent) : QStyledItemDelegate(parent), w_(w) {}
     void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
-        const QRect r = opt.rect;
-        const QBrush bg = idx.data(Qt::BackgroundRole).value<QBrush>();
-        if (bg.style() != Qt::NoBrush) p->fillRect(r, bg);
-        if (opt.state & QStyle::State_Selected) p->fillRect(r, QColor(255, 255, 255, 22));
-        p->fillRect(QRect(r.left(), r.bottom(), r.width(), 1), QColor("#262a31"));
-        QRect textRect = r.adjusted(8, 0, -8, 0);
-        // Blokk: a tagok bal szélén sáv fut végig, a címük beljebb kezdődik.
-        const int group = idx.data(kGroupRole).toInt();
-        if (group && idx.column() == 0) p->fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor("#8a93a0"));
-        if (group == 1 && idx.column() == 1) textRect.setLeft(textRect.left() + 14);
-        const QVariant chip = idx.data(kChipRole);
-        if (chip.isValid()) {
-            p->save();
-            p->setRenderHint(QPainter::Antialiasing);
-            p->setPen(QColor("#6b7380"));
-            p->setBrush(chip.value<QColor>());
-            p->drawRoundedRect(QRectF(textRect.left() + 0.5, r.center().y() - 5.5, 11, 11), 3, 3);
-            p->restore();
-            textRect.setLeft(textRect.left() + 18);
-        }
-        const QVariant fg = idx.data(Qt::ForegroundRole);
-        p->setPen(fg.isValid() ? fg.value<QBrush>().color() : theme::text);
-        const QVariant font = idx.data(Qt::FontRole);
-        p->setFont(font.isValid() ? font.value<QFont>() : opt.font);
-        const QVariant align = idx.data(Qt::TextAlignmentRole);
-        const int flags = align.isValid() ? align.toInt() : int(Qt::AlignLeft | Qt::AlignVCenter);
-        p->drawText(textRect, flags,
-                    opt.fontMetrics.elidedText(idx.data().toString(), Qt::ElideRight, textRect.width()));
+        w_->paintPlaylistRow(p, opt, idx.row());
     }
+
+private:
+    MainWindow *w_;
 };
 
 static QFrame *makePanel()
@@ -129,11 +116,42 @@ MainWindow::MainWindow(Database *db, const QString &backendOverride, QWidget *pa
 
     const QByteArray geo = s.value("window/geometry").toByteArray();
     if (!geo.isEmpty()) restoreGeometry(geo);
+
+    // Távoli szerkesztés: az állapot és a hangtár változásait késleltetve, összevonva küldjük.
+    remoteStateTimer_ = new QTimer(this);
+    remoteStateTimer_->setSingleShot(true);
+    remoteStateTimer_->setInterval(250);
+    connect(remoteStateTimer_, &QTimer::timeout, this, [this] { if (remote_) remote_->broadcast(remoteState()); });
+    remoteLibTimer_ = new QTimer(this);
+    remoteLibTimer_->setSingleShot(true);
+    remoteLibTimer_->setInterval(800);
+    connect(remoteLibTimer_, &QTimer::timeout, this, [this] {
+        if (!remote_ || !remote_->clientCount()) return;
+        remote_->broadcast(remoteLibrary());
+        remote_->broadcast(remoteState());                // a hangtár után a playlist is újra kell (a tükör így épül)
+    });
+    connect(db_, &Database::itemsChanged, this, [this] { if (remote_ && remote_->clientCount()) remoteLibTimer_->start(); });
+    connect(db_, &Database::categoriesChanged, this, [this] { if (remote_ && remote_->clientCount()) remoteLibTimer_->start(); });
+    configureRemote();
 }
 
 MainWindow::~MainWindow()
 {
     timer_->stop();
+    if (remote_) {
+        // Elsőként és csendben: a leállítás már nem értesítheti a bomló ablakot.
+        remote_->disconnect(this);
+        delete remote_;
+        remote_ = nullptr;
+    }
+    // A nyitva maradt párbeszédablakok (pl. az elemszerkesztő előhallgatása) a hangmotor forrásait használják:
+    // még a motor leállítása előtt zárjuk be őket, különben a bontásuk már felszabadított memóriához nyúlna.
+    for (const QPointer<QDialog> &d : [this] {
+             QList<QPointer<QDialog>> l;
+             for (QDialog *x : findChildren<QDialog *>()) l << x;
+             return l;
+         }())
+        delete d.data();
     engine_.shutdown();
 }
 
@@ -275,6 +293,10 @@ void MainWindow::buildUi()
     mixPage_ = new MixEditorPage(db_, &engine_);
     connect(mixPage_, &MixEditorPage::message, this, [this](const QString &m) { say(m, 8000); });
     connect(mixPage_, &MixEditorPage::mixSaved, this, &MainWindow::onMixSaved);
+    connect(mixPage_, &MixEditorPage::overlayEdited, this, [this](int entryId, bool on, qint64 offsetMs, double duckDb) {
+        setRowOverlay(entryId, on, offsetMs, duckDb);
+    });
+    connect(mixPage_, &MixEditorPage::waveLoaded, this, [this] { if (mini_) updateMini(); });
     connect(mixPage_, &MixEditorPage::previewStarting, this, [this] {
         if (itemEditor_) itemEditor_->releasePreview();
         if (pflActive_) stopPfl();        // egyszerre csak egy előhallgatás szólhat
@@ -505,6 +527,7 @@ QWidget *MainWindow::buildPlaylistPanel()
     v->addWidget(head);
 
     table_ = new PlaylistTable;
+    table_->setObjectName("playlistTable");
     table_->setColumnCount(6);
     table_->setHorizontalHeaderLabels({TR("Kezdés"), TR("Cím"), TR("Előadó"),
                                        TR("Kategória"), TR("Hossz"), TR("Állapot")});
@@ -515,19 +538,19 @@ QWidget *MainWindow::buildPlaylistPanel()
     table_->setSelectionMode(QAbstractItemView::SingleSelection);
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table_->setFrameShape(QFrame::NoFrame);
-    table_->setItemDelegate(new RowDelegate(table_));
+    table_->setItemDelegate(new RowDelegate(this, table_));
     table_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     table_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     auto *hh = table_->horizontalHeader();
     hh->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     hh->setHighlightSections(false);
-    for (int c : {0, 3, 4, 5}) hh->setSectionResizeMode(c, QHeaderView::Fixed);
-    hh->setSectionResizeMode(1, QHeaderView::Stretch);
-    hh->setSectionResizeMode(2, QHeaderView::Stretch);
-    table_->setColumnWidth(0, 92);
-    table_->setColumnWidth(3, 140);
-    table_->setColumnWidth(4, 64);
-    table_->setColumnWidth(5, 126);
+    // Egy látható oszlop: a sort a RowDelegate rajzolja egészben. A többi oszlop rejtett, a szövegeit
+    // a hozzáférhetőség és a fejlesztői ellenőrzés használja.
+    hh->setSectionResizeMode(0, QHeaderView::Stretch);
+    for (int c = 1; c < 6; ++c) table_->setColumnHidden(c, true);
+    hh->hide();
+    table_->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    table_->setMouseTracking(true);
     v->addWidget(table_, 1);
 
     auto *foot = new QFrame;
@@ -550,6 +573,8 @@ QWidget *MainWindow::buildPlaylistPanel()
     connect(table_, &PlaylistTable::deletePressed, this, &MainWindow::removeSelected);
     connect(table_, &PlaylistTable::spacePressed, this, &MainWindow::next);
     connect(table_, &PlaylistTable::rowMoved, this, &MainWindow::onViewRowMoved);
+    connect(table_, &PlaylistTable::viewGeometryChanged, this, &MainWindow::placeMini);
+    connect(table_->verticalHeader(), &QHeaderView::sectionResized, this, &MainWindow::placeMini);
     table_->setContextMenuPolicy(Qt::CustomContextMenu);
     // Kézi görgetés: ha az adásban lévő elem kikerül a látható részből, a lista nem ugrik vissza rá,
     // amíg vissza nem görgetnek hozzá.
@@ -577,14 +602,27 @@ QWidget *MainWindow::buildPlaylistPanel()
     connect(table_, &QTableWidget::cellPressed, this, [this] { lastSelectionInLibrary_ = false; });
     // Blokkfejléc: kattintásra kinyílik vagy becsukódik (a dupla kattintás egynek számít).
     connect(table_, &QTableWidget::cellClicked, this, [this](int v, int) {
-        if (v < 0 || v >= view_.size() || view_[v].row >= 0) return;
+        if (v < 0 || v >= view_.size()) return;
+        if (view_[v].kind == ViewRow::Item) {
+            // A sor jobb szélén lévő nyíl: a mini mix editor lenyitása.
+            const QPoint pos = table_->viewport()->mapFromGlobal(QCursor::pos());
+            if (pos.x() >= table_->viewport()->width() - 34 && nextPlayableAfter(view_[v].row) >= 0) {
+                // A lista újraépítése ne a táblázat saját egérkezelője alatt történjen.
+                const int id = rows_[view_[v].row].id;
+                QTimer::singleShot(0, this, [this, id] { if (rowById(id)) toggleMini(id); });
+            }
+            return;
+        }
+        if (view_[v].kind != ViewRow::Header) return;
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (now - lastToggleMs_ < QApplication::doubleClickInterval()) return;
         lastToggleMs_ = now;
         toggleGroup(rows_[view_[v].first].groupId);
     });
     connect(table_, &QTableWidget::cellDoubleClicked, this, [this](int v, int) {
-        if (v < 0 || v >= view_.size() || view_[v].row < 0) return;
+        if (v < 0 || v >= view_.size() || view_[v].kind != ViewRow::Item) return;
+        const QPoint pos = table_->viewport()->mapFromGlobal(QCursor::pos());
+        if (pos.x() >= table_->viewport()->width() - 34) return;           // a nyílra kattintás nem betöltés
         const int r = view_[v].row;
         int target = -1;
         for (int i = 0; i < 2; ++i)
@@ -650,6 +688,15 @@ void MainWindow::buildMenus()
     file->addAction(TR("Fájlok importálása…"), QKeySequence::Open, library_, &LibraryPanel::chooseFiles);
     file->addAction(TR("Mappa importálása…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O), library_,
                     &LibraryPanel::chooseFolder);
+    file->addSeparator();
+    file->addAction(TR("Távoli szerkesztő…"), this, [this] {
+        // Külön folyamat szerkesztő módban: egy másik gépen futó playout playlistjéhez csatlakozik.
+        // AppImage-ből a csomag maga indítandó (a belső útvonal a kilépés után eltűnne).
+        const QString appImage = qEnvironmentVariable("APPIMAGE");
+        const QString exe = appImage.isEmpty() ? QCoreApplication::applicationFilePath() : appImage;
+        if (!QProcess::startDetached(exe, {QStringLiteral("--editor")}))
+            say(TR("A szerkesztő nem indítható: %1").arg(exe));
+    });
     file->addSeparator();
     file->addAction(TR("Kilépés"), QKeySequence(Qt::CTRL | Qt::Key_Q), this, &QWidget::close);
 
@@ -754,6 +801,12 @@ bool MainWindow::channelBusy(int ch)
     if (ch == kCartRoute) {
         for (int c = Engine::Cart1; c <= Engine::CartLast; ++c)
             if (engine_.source(static_cast<Engine::Channel>(c)).playing()) return true;
+        return false;
+    }
+    if (ch == 0) {
+        // Az 1-es lejátszó kimenetén szól a voice track és a ráfektetett elem is.
+        for (Engine::Channel c : {Engine::Player1, Engine::Vt, Engine::Ovl1, Engine::Ovl2})
+            if (engine_.source(c).playing()) return true;
         return false;
     }
     return engine_.source(static_cast<Engine::Channel>(ch)).playing();
@@ -892,6 +945,7 @@ void MainWindow::tick()
 
     runOutFades();
     runVoiceTrack();
+    runOverlays();
 
     // Előhallgatás
     auto &pfl = engine_.source(Engine::Pfl);
@@ -914,7 +968,601 @@ void MainWindow::tick()
         autoGenerate();
         runTimedEvents();
         followPlaying();
+        table_->viewport()->update();                       // haladási sávok, hátralévő idők
+        // A szerkesztők 3 másodpercenként friss időpontokat kapnak (a becsült kezdések telnek).
+        if (remote_ && remote_->clientCount() && ++remoteTick_ >= 17) {
+            remoteTick_ = 0;
+            remoteStateTimer_->start();
+        }
+        if (mini_) {
+            const Row *a = rowById(expandedRowId_);
+            mini_->setPlayhead(a && a->state == Row::Playing && a->player >= 0 ? players_[a->player]->position() * 1000 / eter::kRate : -1);
+            mini_->setPreviewing(mixPage_->quickPreviewing(mini_->fromEntry(), mini_->toEntry()));
+        }
     }
+}
+
+// ------------------------------------------------------- mini mix editor
+
+// A sor után következő, még adásba kerülő elem (a Mix editor párjai is így képződnek).
+int MainWindow::nextPlayableAfter(int index) const
+{
+    if (index < 0 || index >= rows_.size()) return -1;
+    const Row &a = rows_[index];
+    if (a.state != Row::Playing && a.state != Row::Cued && a.state != Row::Pending) return -1;
+    if (a.overlay && (a.overlayVoice >= 0 || overlayActive(index))) return -1;     // ráfektetett elem: nincs saját átmenete
+    for (int j = index + 1; j < rows_.size(); ++j) {
+        const Row &b = rows_[j];
+        if (b.state != Row::Playing && b.state != Row::Cued && b.state != Row::Pending) continue;
+        if (b.overlay && (b.overlayVoice >= 0 || overlayActive(j))) continue;
+        return j;
+    }
+    return -1;
+}
+
+// ------------------------------------------------------- ráfektetett elemek
+
+bool MainWindow::overlayTargets(int index, int *a, int *c) const
+{
+    if (index < 0 || index >= rows_.size()) return false;
+    const Row &r = rows_[index];
+    if (!r.overlay) return false;
+    const bool sounding = r.state == Row::Playing && r.overlayVoice >= 0;
+    if (!sounding && r.state != Row::Pending && r.state != Row::Cued) return false;
+    int ai = -1, ci = -1;
+    for (int j = index - 1; j >= 0; --j)
+        if (!rows_[j].overlay) { ai = j; break; }
+    for (int j = index + 1; j < rows_.size(); ++j) {
+        if (rows_[j].overlay) continue;
+        const Row::State st = rows_[j].state;
+        if (st == Row::Pending || st == Row::Cued || st == Row::Playing) ci = j;
+        break;
+    }
+    if (a) *a = ai;
+    if (c) *c = ci;
+    return sounding || (ai >= 0 && ci >= 0);
+}
+
+void MainWindow::applyDuck()
+{
+    double gain = vtPlaying_ ? vtDuckGain_ : 1.0;
+    for (const OverlayVoice &v : ovl_)
+        if (v.rowId >= 0) gain = std::min(gain, v.duckGain);
+    engine_.source(Engine::Player1).setDuck(static_cast<float>(gain));
+    engine_.source(Engine::Player2).setDuck(static_cast<float>(gain));
+}
+
+bool MainWindow::startOverlay(Row &row)
+{
+    int voice = -1;
+    for (int v = 0; v < Engine::kOverlayVoices; ++v)
+        if (ovl_[v].rowId < 0) { voice = v; break; }
+    if (voice < 0) return false;                       // mindkét csatorna foglalt: a következő körben újra
+    auto &src = engine_.source(static_cast<Engine::Channel>(Engine::Ovl1 + voice));
+    std::string err;
+    if (!src.load(row.item.path.toStdString(), &err)) {
+        row.state = Row::Failed;
+        db_->setEntryStatus(row.id, "skipped");
+        say(TR("A ráfektetett elem nem tölthető be: %1").arg(QString::fromStdString(err)), 9000);
+        refreshTable();
+        return false;
+    }
+    if (row.item.cueInMs > 0) src.seek(row.item.cueInMs * eter::kRate / 1000);
+    src.play();
+    OverlayVoice &v = ovl_[voice];
+    v.rowId = row.id;
+    v.duckGain = std::pow(10.0, std::min(0.0, row.overlayDuckDb) / 20.0);
+    v.logId = db_->logStart(row.item, row.id, 1, mode_ == Auto ? "auto" : "assist");
+    row.state = Row::Playing;
+    row.overlayVoice = voice;
+    row.startedAt = eter::now();
+    db_->setEntryStatus(row.id, "playing");
+    applyDuck();
+    refreshTable();
+    return true;
+}
+
+void MainWindow::endOverlay(int voice, const QString &reason)
+{
+    OverlayVoice &v = ovl_[voice];
+    if (v.rowId < 0) return;
+    engine_.source(static_cast<Engine::Channel>(Engine::Ovl1 + voice)).unload();
+    db_->logEnd(v.logId, reason);
+    if (Row *row = rowById(v.rowId)) {
+        row->state = Row::Played;
+        row->overlayVoice = -1;
+        db_->setEntryStatus(row->id, "played");
+    }
+    v = OverlayVoice();
+    applyDuck();
+    trimHistory();
+    refreshTable();
+}
+
+// A ráfektetett elemek indítása és lezárása; a 30 ms-os időzítő hívja.
+void MainWindow::runOverlays()
+{
+    for (int v = 0; v < Engine::kOverlayVoices; ++v) {
+        if (ovl_[v].rowId < 0) continue;
+        auto &src = engine_.source(static_cast<Engine::Channel>(Engine::Ovl1 + v));
+        float l, r;
+        src.takePeaks(l, r);
+        if (src.takeFinished() || !src.playing()) endOverlay(v, "finished");
+    }
+    // A várakozó ráfektetett elemek közül az, amelyiknek eljött az ideje (a lista elejét elég nézni).
+    int seen = 0;
+    for (int i = 0; i < rows_.size(); ++i) {
+        Row &b = rows_[i];
+        if (b.state == Row::Played || b.state == Row::Skipped || b.state == Row::Failed) continue;
+        if (++seen > 40) break;
+        if (!b.overlay || b.state != Row::Pending) continue;
+        int ai = -1, ci = -1;
+        if (!overlayTargets(i, &ai, &ci) || ci < 0) continue;
+        const Row &c = rows_[ci];
+        const qint64 offsetFrames = b.overlayOffsetMs * eter::kRate / 1000;
+        bool go = false;
+        if (c.state == Row::Playing && c.player >= 0) {
+            // A bejövő elem már szól: a mix ponthoz (az ő kezdetéhez) képest indul.
+            const PlayerWidget *pc = players_[c.player];
+            const qint64 elapsed = pc->position() - pc->cueFrame();
+            if (elapsed > std::max<qint64>(offsetFrames, 0) + 3 * eter::kRate) {
+                // Jóval elmúlt az ideje (például menet közben fektették rá): kimarad, nem szól bele utólag.
+                b.state = Row::Skipped;
+                db_->setEntryStatus(b.id, "skipped");
+                say(TR("A ráfektetett „%1” kimaradt: az ideje már elmúlt.").arg(b.item.title), 9000);
+                refreshTable();
+                return;
+            }
+            go = b.overlayOffsetMs <= 0 || elapsed >= offsetFrames;
+        } else if (b.overlayOffsetMs < 0 && ai >= 0 && rows_[ai].state == Row::Playing && rows_[ai].player >= 0
+                   && c.state == Row::Cued && c.player >= 0) {
+            // A mix pont előtt induló elem: a kimenő elem tervezett mix pontjához képest.
+            const qint64 mix = planFor(rows_[ai].player, c.player).mixOutFrames;
+            go = mix >= 0 && players_[rows_[ai].player]->position() >= mix + offsetFrames;
+        }
+        if (go) {
+            startOverlay(b);
+            return;                                    // egy körben egy indítás; a sorok közben frissültek
+        }
+    }
+}
+
+bool MainWindow::setRowOverlay(int rowId, bool on, qint64 offsetMs, double duckDb)
+{
+    Row *row = rowById(rowId);
+    if (!row) return false;
+    if (row->state != Row::Pending && row->state != Row::Cued) {
+        say(TR("Csak várakozó elem fektethető rá az átmenetre."));
+        return false;
+    }
+    const int index = indexOfRow(rowId);
+    offsetMs = std::clamp<qint64>(offsetMs, -120000, 120000);
+    duckDb = std::clamp(duckDb, -30.0, 0.0);
+    if (on) {
+        const bool was = row->overlay;
+        row->overlay = true;
+        int ai = -1, ci = -1;
+        if (!overlayTargets(index, &ai, &ci)) {
+            row->overlay = was;
+            say(TR("Ráfektetni csak két elem közé lehet: kell előtte és utána is egy elem."));
+            return false;
+        }
+        row->overlayOffsetMs = offsetMs;
+        row->overlayDuckDb = duckDb;
+        if (row->state == Row::Cued && row->player >= 0) {
+            const int p = row->player;
+            row->state = Row::Pending;
+            row->player = -1;
+            players_[p]->eject();
+        }
+    } else {
+        if (!row->overlay) return true;
+        // A két szomszéd közti egyedi átmenet a ráfektetéshez tartozott: a feloldással az is megszűnik.
+        int ai = -1, ci = -1;
+        overlayTargets(index, &ai, &ci);
+        if (ai >= 0 && ci >= 0) {
+            const Transition t = db_->transition(rows_[ci].id);
+            if (t.toEntryId && t.fromEntryId == rows_[ai].id) db_->deleteTransition(rows_[ci].id);
+        }
+        row = rowById(rowId);
+        row->overlay = false;
+        row->overlayOffsetMs = 0;
+        row->overlayDuckDb = 0;
+    }
+    db_->setEntryOverlay(rowId, on, offsetMs, duckDb);
+    ++mixVersion_;
+    reconcile();
+    refreshTable();
+    return true;
+}
+
+void MainWindow::toggleMini(int rowId)
+{
+    expandedRowId_ = expandedRowId_ == rowId ? -1 : rowId;
+    refreshTable();
+    if (miniView_ >= 0) {
+        programmaticScroll_ = true;
+        table_->scrollTo(table_->model()->index(miniView_, 0), QAbstractItemView::EnsureVisible);
+        programmaticScroll_ = false;
+    }
+}
+
+void MainWindow::updateMini()
+{
+    // A mini szerkesztő egyetlen, a táblázat nézetére helyezett widget (nem a táblázat cellawidgete):
+    // a sorok újraépítése így nem törli és nem hozza létre újra, csak a helyére kerül.
+    int wv = -1;
+    for (int v = 0; v < view_.size(); ++v)
+        if (view_[v].kind == ViewRow::Wave) wv = v;
+    const int ai = wv >= 0 ? view_[wv].row : -1;
+    const int bi = ai >= 0 ? nextPlayableAfter(ai) : -1;
+    if (wv < 0 || bi < 0) {
+        if (wv < 0 && expandedRowId_ >= 0 && !rowById(expandedRowId_)) expandedRowId_ = -1;
+        miniView_ = -1;
+        if (mini_) {
+            if (mixPage_->quickPreviewing(mini_->fromEntry(), mini_->toEntry())) mixPage_->stopPreview();
+            mini_->hide();
+        }
+        return;
+    }
+    const Row &a = rows_[ai], &b = rows_[bi];
+    if (!mini_) {
+        auto *m = new MiniMix(table_->viewport());
+        mini_ = m;
+        connect(m, &MiniMix::mixChanged, this, [this, m](qint64 ms) {
+            const int from = m->fromEntry(), to = m->toEntry();
+            // A mentés újraépíti a listát: ne a widget saját eseménykezelője alatt történjen.
+            QTimer::singleShot(0, this, [this, from, to, ms] { mixPage_->quickSetMix(from, to, ms); });
+        });
+        connect(m, &MiniMix::previewRequested, this, [this, m] {
+            if (pflActive_) stopPfl();
+            mixPage_->quickPreviewToggle(m->fromEntry(), m->toEntry());
+            m->setPreviewing(mixPage_->quickPreviewing(m->fromEntry(), m->toEntry()));
+        });
+        connect(m, &MiniMix::resetRequested, this, [this, m] {
+            const int from = m->fromEntry(), to = m->toEntry();
+            QTimer::singleShot(0, this, [this, from, to] { mixPage_->quickReset(from, to); });
+        });
+        connect(m, &MiniMix::editorRequested, this, [this, m] {
+            const int from = m->fromEntry(), to = m->toEntry();
+            QTimer::singleShot(0, this, [this, from, to] {
+                mixPage_->selectEntries(from, to);
+                showPage(2);
+            });
+        });
+    }
+    miniView_ = wv;
+    MixParams p;
+    int kind = 0;
+    if (mixPage_->quickParams(a.id, b.id, &p, &kind))
+        mini_->setPair(a.id, b.id, a.item.title, b.item.title, p, kind);
+    qint64 da = 0, dbur = 0;
+    const QVector<float> pa = mixPage_->quickWave(a.item, &da), pb = mixPage_->quickWave(b.item, &dbur);
+    mini_->setWaves(pa, da, pb, dbur);
+    mini_->setPreviewing(mixPage_->quickPreviewing(a.id, b.id));
+    placeMini();
+}
+
+void MainWindow::placeMini()
+{
+    if (!mini_) return;
+    if (miniView_ < 0 || miniView_ >= table_->rowCount()) {
+        mini_->hide();
+        return;
+    }
+    const QRect r = table_->visualRect(table_->model()->index(miniView_, 0));
+    if (!r.isValid()) {
+        mini_->hide();
+        return;
+    }
+    const QRect g(0, r.top(), table_->viewport()->width(), r.height());
+    if (mini_->geometry() != g) mini_->setGeometry(g);
+    if (!mini_->isVisible()) mini_->show();
+}
+
+void MainWindow::expandStandbyTransition()
+{
+    // A készenlétben álló sor; ha nincs (mindkét lejátszó szól), az első várakozó.
+    for (const Row::State want : {Row::Cued, Row::Pending})
+        for (const Row &r : rows_)
+            if (r.state == want) {
+                if (expandedRowId_ != r.id) toggleMini(r.id);
+                return;
+            }
+}
+
+bool MainWindow::miniOpen() const { return mini_ && miniView_ >= 0; }
+
+MiniMixCanvas *MainWindow::miniCanvas() { return mini_ ? mini_->canvas() : nullptr; }
+
+// ------------------------------------------------------- a sorok rajza
+
+static QColor mixColor(const QColor &a, const QColor &b, double t)
+{
+    return QColor(int(a.red() + (b.red() - a.red()) * t), int(a.green() + (b.green() - a.green()) * t),
+                  int(a.blue() + (b.blue() - a.blue()) * t));
+}
+
+static QString mmss(qint64 ms)
+{
+    ms = std::max<qint64>(0, ms);
+    return QStringLiteral("%1:%2").arg(ms / 60000).arg(ms / 1000 % 60, 2, 10, QLatin1Char('0'));
+}
+
+void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, int v) const
+{
+    if (v < 0 || v >= view_.size()) return;
+    const ViewRow &vr = view_[v];
+    // A sorok listája és a nézet egy pillanatra eltérhet (a frissítés előtt): ilyenkor nincs mit rajzolni.
+    if ((vr.kind == ViewRow::Item || vr.kind == ViewRow::Wave) && (vr.row < 0 || vr.row >= rows_.size())) return;
+    if (vr.kind == ViewRow::Header && (vr.first < 0 || vr.first + vr.count > rows_.size() || vr.count <= 0)) return;
+    const QRect r = opt.rect;
+    const bool selected = opt.state & QStyle::State_Selected;
+    static const QColor panel("#1b1e24"), line("#0f1114");
+    QFont sans = opt.font, sansBold = opt.font, small = opt.font, mono("IBM Plex Mono"), monoBig("IBM Plex Mono"), monoSmall("IBM Plex Mono");
+    sans.setPixelSize(12);
+    sansBold.setPixelSize(14);
+    sansBold.setWeight(QFont::DemiBold);
+    small.setPixelSize(12);
+    mono.setPixelSize(13);
+    mono.setWeight(QFont::DemiBold);
+    monoBig.setPixelSize(17);
+    monoBig.setWeight(QFont::DemiBold);
+    monoSmall.setPixelSize(10);
+    p->save();
+    p->setClipRect(r);
+
+    if (vr.kind == ViewRow::Hour) {
+        p->fillRect(r, QColor("#121418"));
+        p->fillRect(QRect(r.left(), r.bottom(), r.width(), 1), QColor("#30353e"));
+        const int key = vr.hourKey;
+        const QDate d = QDate::fromString(QString::number(key / 100), "yyyyMMdd");
+        const int hr = key % 100;
+        QString text = QStringLiteral("%1:00 – %2:00").arg(hr, 2, 10, QLatin1Char('0')).arg((hr + 1) % 24, 2, 10, QLatin1Char('0'));
+        if (d.isValid() && d != eter::now().date()) text += QStringLiteral("  ·  ") + i18n::locale().toString(d, TR("MMM d., dddd"));
+        p->setFont(monoSmall);
+        p->setPen(QColor("#c9ced6"));
+        p->drawText(r.adjusted(12, 0, -12, 0), Qt::AlignLeft | Qt::AlignVCenter, text);
+        p->restore();
+        return;
+    }
+    if (vr.kind == ViewRow::Wave) {
+        p->fillRect(r, QColor("#101215"));
+        p->restore();
+        return;
+    }
+
+    if (vr.kind == ViewRow::Header) {
+        const Row &head = rows_[vr.first];
+        const bool open = expanded_.contains(head.groupId);
+        qint64 frames = 0;
+        int done = 0, playing = -1, cued = -1, firstLive = vr.first;
+        QString nowTitle;
+        bool foundLive = false;
+        for (int i = vr.first; i < vr.first + vr.count; ++i) {
+            const Row &m = rows_[i];
+            frames += m.frames;
+            if (m.state == Row::Playing) { playing = m.player; nowTitle = m.item.title; }
+            else if (m.state == Row::Cued) { if (cued < 0) cued = m.player; }
+            else if (m.state != Row::Pending) ++done;
+            if (!foundLive && (m.state == Row::Playing || m.state == Row::Cued || m.state == Row::Pending)) { firstLive = i; foundLive = true; }
+        }
+        QColor bg("#262b34"), stripe("#8a93a0"), statusColor("#c9ced6");
+        QString status;
+        if (playing >= 0) { status = TR("ADÁSBAN · %1/%2").arg(done + 1).arg(vr.count); bg = mixColor(panel, theme::amber, 0.42); stripe = theme::amber; statusColor = Qt::white; }
+        else if (done == vr.count) { status = TR("lejátszva"); p->setOpacity(0.55); }
+        else if (cued >= 0) { status = TR("KÉSZENLÉT · %1").arg(cued + 1); bg = mixColor(panel, theme::blue, 0.30); stripe = theme::blue; statusColor = Qt::white; }
+        else if (done > 0) status = TR("%1/%2 lejátszva").arg(done).arg(vr.count);
+        p->fillRect(r, bg);
+        p->fillRect(QRect(r.left(), r.top(), 5, r.height()), stripe);
+        p->fillRect(QRect(r.left(), r.bottom(), r.width(), 1), line);
+        int x = r.left() + 13;
+        p->setFont(mono);
+        p->setPen(QColor("#e8eaed"));
+        p->drawText(QRect(x, r.top(), 74, r.height()), Qt::AlignVCenter, firstLive < startText_.size() ? startText_[firstLive] : QString());
+        x += 82;
+        const int right = r.right() - 10;
+        p->setFont(sans);
+        p->setPen(statusColor);
+        p->drawText(QRect(right - 118, r.top(), 118, r.height()), Qt::AlignVCenter, status);
+        p->setFont(monoBig);
+        p->setPen(QColor("#e8eaed"));
+        p->drawText(QRect(right - 118 - 70, r.top(), 64, r.height()), Qt::AlignVCenter | Qt::AlignRight, theme::formatTime(frames));
+        p->setFont(sans);
+        p->setPen(QColor("#9aa3af"));
+        p->drawText(QRect(right - 118 - 70 - 80, r.top(), 74, r.height()), Qt::AlignVCenter | Qt::AlignRight, TR("%1 elem").arg(vr.count));
+        QString title = QStringLiteral("%1  %2").arg(open ? QStringLiteral("▾") : QStringLiteral("▸"), head.groupName);
+        if (!open && !nowTitle.isEmpty()) title += TR("  –  most: %1").arg(nowTitle);
+        p->setFont(sansBold);
+        p->setPen(QColor("#f3f4f6"));
+        const int tw = right - 118 - 70 - 80 - x - 8;
+        p->drawText(QRect(x, r.top(), tw, r.height()), Qt::AlignVCenter, QFontMetrics(sansBold).elidedText(title, Qt::ElideRight, tw));
+        if (selected) {
+            p->setOpacity(1.0);
+            p->fillRect(r, QColor(255, 255, 255, 26));
+            p->setPen(QColor(255, 255, 255, 170));
+            p->setBrush(Qt::NoBrush);                      // a típusikon ecsetje ne töltse ki a sort
+        p->drawRect(r.adjusted(0, 0, -1, -1));
+        }
+        p->restore();
+        return;
+    }
+
+    // Elem
+    const int i = vr.row;
+    const Row &row = rows_[i];
+    const bool member = row.groupId && vr.count > 0;
+    QColor cat(row.item.color);
+    if (!cat.isValid()) cat = QColor("#8a93a0");
+    const bool strong = row.item.kind != QLatin1String("music");
+    QColor bg = mixColor(panel, cat, strong ? 0.34 : 0.16), stripe = cat, statusColor("#c9ced6");
+    QString status;
+    bool dim = false;
+    switch (row.state) {
+    case Row::Playing:
+        bg = mixColor(panel, theme::amber, 0.42);
+        stripe = theme::amber;
+        status = TR("ADÁSBAN · %1").arg(row.player + 1);
+        statusColor = Qt::white;
+        break;
+    case Row::Cued:
+        bg = mixColor(panel, theme::blue, 0.30);
+        stripe = theme::blue;
+        status = TR("KÉSZENLÉT · %1").arg(row.player + 1);
+        statusColor = Qt::white;
+        break;
+    case Row::Pending:
+        if (row.fixedAt.isValid()) { status = TR("FIX %1").arg(row.fixedAt.toString("HH:mm:ss")); statusColor = theme::amberSoft; }
+        break;
+    case Row::Played: status = TR("lejátszva"); dim = true; break;
+    case Row::Skipped: status = TR("kihagyva"); dim = true; break;
+    case Row::Failed:
+        bg = mixColor(panel, QColor("#e5484d"), 0.22);
+        stripe = QColor("#e5484d");
+        status = TR("hibás fájl");
+        statusColor = QColor("#ffb4ae");
+        break;
+    }
+    static const QColor purple("#b99cff");
+    const bool ovlActive = row.overlay && (row.overlayVoice >= 0 || overlayActive(i));
+    if (ovlActive && row.state == Row::Playing) {
+        bg = mixColor(panel, purple, 0.45);
+        stripe = purple;
+        status = TR("RÁFEKTETVE · SZÓL");
+        statusColor = Qt::white;
+    } else if (ovlActive) {
+        bg = mixColor(panel, purple, 0.20);
+        stripe = purple;
+        status = TR("RÁFEKTETVE");
+        statusColor = QColor("#ddd2ff");
+    }
+    if (dim) p->setOpacity(0.55);
+    p->fillRect(r, bg);
+    int x = r.left();
+    if (member) {                                       // blokk tagja: szürke sáv és behúzás
+        p->fillRect(QRect(x, r.top(), 3, r.height()), QColor("#8a93a0"));
+        x += 8;
+    }
+    if (row.overlay && (ovlActive || dim)) {                // ráfektetett elem: behúzva, a két szomszédja közé kötve
+        p->fillRect(QRect(x + 3, r.top(), 2, r.height()), mixColor(panel, purple, 0.7));
+        x += 12;
+    }
+    p->fillRect(QRect(x, r.top(), 5, r.height()), stripe);
+    p->fillRect(QRect(r.left(), r.bottom(), r.width(), 1), line);
+    x += 13;
+    const QColor sub("#c3c8d0");
+    // 1. kezdés és jelölő
+    p->setFont(mono);
+    p->setPen(QColor("#e8eaed"));
+    p->drawText(QRect(x, r.top() + 7, 80, 18), Qt::AlignLeft | Qt::AlignVCenter, i < startText_.size() ? startText_[i] : QString());
+    p->setFont(monoSmall);
+    p->setPen(sub);
+    QString note = row.item.introMs > 0 ? TR("intro %1").arg(mmss(row.item.introMs)) : row.item.categoryName;
+    if (row.overlay)
+        note = TR("mix %1 mp").arg((row.overlayOffsetMs > 0 ? QStringLiteral("+") : row.overlayOffsetMs < 0 ? QStringLiteral("−") : QString())
+                                   + i18n::locale().toString(std::llabs(row.overlayOffsetMs) / 1000.0, 'f', 1));
+    p->drawText(QRect(x, r.top() + 26, 80, 14), Qt::AlignLeft | Qt::AlignVCenter, QFontMetrics(monoSmall).elidedText(note, Qt::ElideRight, 76));
+    x += 82;
+    // 2. típusikon
+    {
+        p->setRenderHint(QPainter::Antialiasing, true);
+        const QRectF box(x + 2, r.center().y() - 13, 26, 26);
+        p->setPen(Qt::NoPen);
+        p->setBrush(cat);
+        p->drawRoundedRect(box, 6, 6);
+        const QString k = row.item.kind;
+        const QString glyph = k == QLatin1String("music") ? QStringLiteral("♪") : k == QLatin1String("jingle") ? QStringLiteral("✦")
+                            : k == QLatin1String("news") ? QStringLiteral("≡") : k == QLatin1String("ad") ? QStringLiteral("◆")
+                            : k == QLatin1String("voicetrack") ? QStringLiteral("●") : QStringLiteral("•");
+        QFont g = sansBold;
+        g.setPixelSize(15);
+        p->setFont(g);
+        p->setPen(QColor("#101215"));
+        p->drawText(box, Qt::AlignCenter, glyph);
+        p->setBrush(Qt::NoBrush);
+        p->setRenderHint(QPainter::Antialiasing, false);
+    }
+    x += 36;
+    // 3. hossz és hátralévő idő
+    p->setFont(monoBig);
+    p->setPen(Qt::white);
+    p->drawText(QRect(x, r.top() + 5, 64, 22), Qt::AlignLeft | Qt::AlignVCenter, row.frames > 0 ? theme::formatTime(row.frames) : QStringLiteral("?"));
+    double progress = -1;
+    if (row.state == Row::Playing && row.overlayVoice >= 0) {
+        auto &src = const_cast<eter::Engine &>(engine_).source(static_cast<eter::Engine::Channel>(eter::Engine::Ovl1 + row.overlayVoice));
+        const qint64 dur = src.duration(), pos = src.position();
+        if (dur > 0) {
+            progress = std::clamp(double(pos) / double(dur), 0.0, 1.0);
+            p->setFont(monoSmall);
+            p->setPen(QColor("#ece6ff"));
+            p->drawText(QRect(x, r.top() + 27, 64, 14), Qt::AlignLeft | Qt::AlignVCenter,
+                        QStringLiteral("−") + mmss((dur - pos) * 1000 / eter::kRate));
+        }
+    } else if (row.state == Row::Playing && row.player >= 0) {
+        const PlayerWidget *pw = players_[row.player];
+        const qint64 dur = pw->duration(), pos = pw->position();
+        if (dur > 0) {
+            progress = std::clamp(double(pos) / double(dur), 0.0, 1.0);
+            p->setFont(monoSmall);
+            p->setPen(QColor("#ffe7b8"));
+            p->drawText(QRect(x, r.top() + 27, 64, 14), Qt::AlignLeft | Qt::AlignVCenter,
+                        QStringLiteral("−") + mmss((dur - pos) * 1000 / eter::kRate));
+        }
+    }
+    x += 66;
+    // a jobb oldal: nyíl, állapot, jelzések
+    int right = r.right() - 4;
+    const bool canExpand = nextPlayableAfter(i) >= 0;
+    if (canExpand) {
+        const bool open = row.id == expandedRowId_;
+        p->setFont(sansBold);
+        p->setPen(open ? Qt::white : QColor("#9aa3af"));
+        p->drawText(QRect(right - 26, r.top(), 26, r.height()), Qt::AlignCenter, open ? QStringLiteral("▾") : QStringLiteral("▸"));
+    }
+    right -= 30;
+    p->setFont(small);
+    p->setPen(statusColor);
+    QFont st = small;
+    st.setWeight(QFont::DemiBold);
+    p->setFont(st);
+    p->drawText(QRect(right - 112, r.top(), 112, r.height()), Qt::AlignVCenter | Qt::AlignLeft, status);
+    right -= 118;
+    QStringList chips;
+    QVector<QColor> chipColors;
+    if (row.fixedAt.isValid()) { chips << QStringLiteral("FIX"); chipColors << theme::amber; }
+    if (vtFrom_.contains(row.id)) { chips << QStringLiteral("VT"); chipColors << QColor("#7fd6e8"); }
+    if (customFrom_.contains(row.id)) { chips << QStringLiteral("MIX"); chipColors << QColor("#9aa3af"); }
+    if (row.overlay && !ovlActive && !dim) { chips << TR("RÁF"); chipColors << purple; }   // jelölve, de nincs mire ráfeküdnie
+    p->setFont(monoSmall);
+    for (int c = 0; c < chips.size(); ++c) {
+        const int w = QFontMetrics(monoSmall).horizontalAdvance(chips[c]) + 12;
+        const QRect box(right - w, r.center().y() - 8, w, 16);
+        p->fillRect(box, mixColor(panel, chipColors[c], 0.55));
+        p->setPen(Qt::white);
+        p->drawText(box, Qt::AlignCenter, chips[c]);
+        right -= w + 4;
+    }
+    // 4. cím és előadó
+    const int tw = std::max(40, right - 8 - x);
+    p->setFont(sansBold);
+    p->setPen(QColor("#f3f4f6"));
+    p->drawText(QRect(x, r.top() + 6, tw, 20), Qt::AlignLeft | Qt::AlignVCenter, QFontMetrics(sansBold).elidedText(row.item.title, Qt::ElideRight, tw));
+    p->setFont(sans);
+    p->setPen(sub);
+    p->drawText(QRect(x, r.top() + 26, tw, 16), Qt::AlignLeft | Qt::AlignVCenter, QFontMetrics(sans).elidedText(row.item.artist, Qt::ElideRight, tw));
+    // haladás
+    if (progress >= 0) {
+        p->fillRect(QRect(r.left(), r.bottom() - 3, r.width(), 3), QColor(0, 0, 0, 90));
+        p->fillRect(QRect(r.left(), r.bottom() - 3, int(r.width() * progress), 3), Qt::white);
+    }
+    if (selected) {
+        p->setOpacity(1.0);
+        p->fillRect(r, QColor(255, 255, 255, 26));
+        p->setPen(QColor(255, 255, 255, 170));
+        p->setBrush(Qt::NoBrush);                      // a típusikon ecsetje ne töltse ki a sort
+        p->drawRect(r.adjusted(0, 0, -1, -1));
+    }
+    p->restore();
 }
 
 // ------------------------------------------------------------ időzítések
@@ -995,8 +1643,8 @@ int MainWindow::followTargetView() const
             if (rows_[i].state == Row::Cued) index = i;
     if (index < 0) return -1;
     for (int v = 0; v < view_.size(); ++v) {
-        if (view_[v].row == index) return v;
-        if (view_[v].row < 0 && index >= view_[v].first && index < view_[v].first + view_[v].count
+        if (view_[v].kind == ViewRow::Item && view_[v].row == index) return v;
+        if (view_[v].kind == ViewRow::Header && index >= view_[v].first && index < view_[v].first + view_[v].count
             && !expanded_.contains(rows_[index].groupId))
             return v;                                       // becsukott blokkban: a fejléce
     }
@@ -1007,7 +1655,7 @@ bool MainWindow::followTargetVisible() const
 {
     const int v = followTargetView();
     if (v < 0) return true;
-    const QRect r = table_->visualRect(table_->model()->index(v, 1));
+    const QRect r = table_->visualRect(table_->model()->index(v, 0));
     return r.isValid() && r.bottom() > 0 && r.top() < table_->viewport()->height();
 }
 
@@ -1018,7 +1666,7 @@ void MainWindow::followPlaying()
     if (!follow_ || !table_) return;
     const int v = followTargetView();
     if (v < 0) return;
-    const int rowIndex = view_[v].row >= 0 ? view_[v].row : view_[v].first;
+    const int rowIndex = view_[v].kind == ViewRow::Item ? view_[v].row : view_[v].first;
     const int id = rowIndex < rows_.size() ? rows_[rowIndex].id : -1;
     if (id == followedRowId_ && followTargetVisible()) return;
     followedRowId_ = id;
@@ -1176,22 +1824,20 @@ void MainWindow::startVoiceTrack(int itemId, double duckDb)
         return;
     }
     vt.play();
-    const float duck = static_cast<float>(std::pow(10.0, duckDb / 20.0));
-    engine_.source(Engine::Player1).setDuck(duck);
-    engine_.source(Engine::Player2).setDuck(duck);
+    vtDuckGain_ = std::pow(10.0, duckDb / 20.0);
     vtPlaying_ = true;
+    applyDuck();
     vtLogId_ = db_->logStart(item, 0, 1, mode_ == Auto ? "auto" : "assist");
     say(TR("Voice track szól: %1").arg(item.title), 0);
 }
 
 void MainWindow::endVoiceTrack(const QString &reason)
 {
-    engine_.source(Engine::Player1).setDuck(1.f);
-    engine_.source(Engine::Player2).setDuck(1.f);
     engine_.source(Engine::Vt).unload();
     db_->logEnd(vtLogId_, reason);
     vtLogId_ = 0;
     vtPlaying_ = false;
+    applyDuck();
     statusBar()->clearMessage();
 }
 
@@ -1237,12 +1883,23 @@ void MainWindow::updateMixPairs()
 {
     if (!mixPage_) return;
     QVector<MixPair> pairs;
-    int prev = -1;
+    int prev = -1, ovl = -1;
     for (int i = 0; i < rows_.size() && pairs.size() < 60; ++i) {
         const Row &r = rows_[i];
         if (r.state != Row::Playing && r.state != Row::Cued && r.state != Row::Pending) continue;
+        // A ráfektetett elem nem alkot párt: a két szomszédja közti átmenethez tartozik.
+        if (r.overlay && (r.overlayVoice >= 0 || overlayActive(i))) {
+            if (r.state == Row::Pending && ovl < 0) ovl = i;
+            continue;
+        }
         if (prev >= 0) {
             MixPair p;
+            if (ovl >= 0) {
+                p.ovlEntry = rows_[ovl].id;
+                p.ovlItem = rows_[ovl].item;
+                p.ovlOffsetMs = rows_[ovl].overlayOffsetMs;
+                p.ovlDuckDb = rows_[ovl].overlayDuckDb;
+            }
             p.fromEntry = rows_[prev].id;
             p.toEntry = r.id;
             p.from = rows_[prev].item;
@@ -1253,6 +1910,7 @@ void MainWindow::updateMixPairs()
             pairs.push_back(p);
         }
         prev = i;
+        ovl = -1;
     }
     mixPage_->setPairs(pairs);
 }
@@ -1299,6 +1957,7 @@ void MainWindow::stopAll()
     waitingForFixed_ = false;
     vtPending_.toRowId = -1;
     if (vtPlaying_) endVoiceTrack("stopped");
+    for (int v = 0; v < Engine::kOverlayVoices; ++v) endOverlay(v, "stopped");
     for (auto *p : players_) p->stop();
     if (cartPanel_) cartPanel_->stopAll();
 }
@@ -1385,14 +2044,14 @@ int MainWindow::indexOfRow(int id) const
 
 int MainWindow::selectedRowId() const
 {
-    const int v = table_->currentRow();
-    return v >= 0 && v < view_.size() && view_[v].row >= 0 ? rows_[view_[v].row].id : -1;
+    const QTableWidgetItem *item = table_->item(table_->currentRow(), 0);
+    return item && item->data(kRowIdRole).isValid() ? item->data(kRowIdRole).toInt() : -1;
 }
 
 int MainWindow::selectedHeaderRowId() const
 {
-    const int v = table_->currentRow();
-    return v >= 0 && v < view_.size() && view_[v].row < 0 ? rows_[view_[v].first].id : -1;
+    const QTableWidgetItem *item = table_->item(table_->currentRow(), 0);
+    return item && item->data(kHeadIdRole).isValid() ? item->data(kHeadIdRole).toInt() : -1;
 }
 
 // A táblázat sorai: az egymást követő, azonos blokkba tartozó sorok fölé fejléc kerül;
@@ -1400,18 +2059,55 @@ int MainWindow::selectedHeaderRowId() const
 void MainWindow::rebuildView()
 {
     view_.clear();
+    int lastKey = -1;
+    auto item = [](int i, int first = 0, int count = 0) {
+        ViewRow v;
+        v.kind = ViewRow::Item;
+        v.row = i;
+        v.first = first;
+        v.count = count;
+        return v;
+    };
+    auto hour = [&](int i) {
+        if (rows_[i].playlistKey == lastKey) return;
+        lastKey = rows_[i].playlistKey;
+        ViewRow h;
+        h.kind = ViewRow::Hour;
+        h.first = i;
+        h.hourKey = lastKey;
+        view_.push_back(h);
+    };
+    auto wave = [&](int i) {
+        if (rows_[i].id != expandedRowId_ || nextPlayableAfter(i) < 0) return;
+        ViewRow w;
+        w.kind = ViewRow::Wave;
+        w.row = i;
+        view_.push_back(w);
+    };
     for (int i = 0; i < rows_.size();) {
         const int g = rows_[i].groupId;
         if (!g) {
-            view_.push_back({i, 0, 0});
+            hour(i);
+            view_.push_back(item(i));
+            wave(i);
             ++i;
             continue;
         }
         int n = 1;
         while (i + n < rows_.size() && rows_[i + n].groupId == g) ++n;
-        view_.push_back({-1, i, n});
-        if (expanded_.contains(g))
-            for (int k = 0; k < n; ++k) view_.push_back({i + k, i, n});
+        hour(i);
+        ViewRow h;
+        h.kind = ViewRow::Header;
+        h.first = i;
+        h.count = n;
+        view_.push_back(h);
+        if (expanded_.contains(g)) {
+            for (int k = 0; k < n; ++k) {
+                view_.push_back(item(i + k, i, n));
+                wave(i + k);
+            }
+        }
+        lastKey = rows_[i + n - 1].playlistKey;              // a blokk belsejében nincs óraelválasztó
         i += n;
     }
 }
@@ -1420,7 +2116,10 @@ void MainWindow::rebuildView()
 int MainWindow::insertIndexForView(int viewRow) const
 {
     if (viewRow < 0 || viewRow >= view_.size()) return rows_.size();
-    return view_[viewRow].row >= 0 ? view_[viewRow].row : view_[viewRow].first;
+    const ViewRow &vr = view_[viewRow];
+    if (vr.kind == ViewRow::Item) return vr.row;
+    if (vr.kind == ViewRow::Wave) return vr.row + 1;
+    return vr.first;
 }
 
 void MainWindow::selectRowId(int rowId)
@@ -1428,8 +2127,8 @@ void MainWindow::selectRowId(int rowId)
     const int index = indexOfRow(rowId);
     int header = -1;
     for (int v = 0; v < view_.size(); ++v) {
-        if (view_[v].row == index) { table_->setCurrentCell(v, 0); return; }
-        if (view_[v].row < 0 && index >= view_[v].first && index < view_[v].first + view_[v].count) header = v;
+        if (view_[v].kind == ViewRow::Item && view_[v].row == index) { table_->setCurrentCell(v, 0); return; }
+        if (view_[v].kind == ViewRow::Header && index >= view_[v].first && index < view_[v].first + view_[v].count) header = v;
     }
     if (header >= 0) table_->setCurrentCell(header, 0);
 }
@@ -1463,9 +2162,9 @@ void MainWindow::onViewRowMoved(int from, int to)
     if (from < 0 || from >= view_.size()) return;
     const ViewRow vr = view_[from];
     const int index = insertIndexForView(to);
-    const bool ontoHeader = to >= 0 && to < view_.size() && view_[to].row < 0;
-    if (vr.row >= 0) moveRow(vr.row, index, ontoHeader);
-    else moveBlock(vr.first, vr.count, index);
+    const bool ontoHeader = to >= 0 && to < view_.size() && (view_[to].kind == ViewRow::Header || view_[to].kind == ViewRow::Hour);
+    if (vr.kind == ViewRow::Item) moveRow(vr.row, index, ontoHeader);
+    else if (vr.kind == ViewRow::Header) moveBlock(vr.first, vr.count, index);
 }
 
 void MainWindow::ungroup(int first, int count)
@@ -1484,8 +2183,9 @@ void MainWindow::playlistContextMenu(const QPoint &pos)
     if (v < 0 || v >= view_.size()) return;
     table_->setCurrentCell(v, 0);
     const ViewRow vr = view_[v];
+    if (vr.kind == ViewRow::Hour || vr.kind == ViewRow::Wave) return;
     QMenu menu(this);
-    if (vr.row < 0) {
+    if (vr.kind == ViewRow::Header) {
         const int g = rows_[vr.first].groupId;
         menu.addAction(expanded_.contains(g) ? TR("Blokk becsukása") : TR("Blokk kinyitása"), this, [this, g] { toggleGroup(g); });
         menu.addAction(TR("Blokk felbontása (az elemek maradnak)"), this, [this, vr] { ungroup(vr.first, vr.count); });
@@ -1494,6 +2194,35 @@ void MainWindow::playlistContextMenu(const QPoint &pos)
         menu.addAction(TR("Betöltés az 1-es lejátszóba"), this, [this] { loadRowInto(selectedRowId(), 0); });
         menu.addAction(TR("Betöltés a 2-es lejátszóba"), this, [this] { loadRowInto(selectedRowId(), 1); });
         menu.addAction(TR("Elem szerkesztése…"), this, [this, id = rows_[vr.row].item.id] { openItemEditor(id); });
+        if (nextPlayableAfter(vr.row) >= 0)
+            menu.addAction(rows_[vr.row].id == expandedRowId_ ? TR("Átmenet bezárása") : TR("Átmenet a következővel (lenyitás)"), this,
+                           [this, id = rows_[vr.row].id] { toggleMini(id); });
+        {
+            // Ráfektetés: az elem az előtte és utána álló elem átmenete fölött szól, a saját csatornáján.
+            const Row &row = rows_[vr.row];
+            const int id = row.id;
+            if (row.overlay && (row.state == Row::Pending || row.state == Row::Cued)) {
+                menu.addAction(TR("Ráfektetés megszüntetése (önálló elem)"), this, [this, id] {
+                    if (setRowOverlay(id, false)) say(TR("A ráfektetés megszűnt; az elem újra önállóan szól."));
+                });
+            } else if (row.state == Row::Pending || row.state == Row::Cued) {
+                int ai = -1, ci = -1;
+                for (int j = vr.row - 1; j >= 0; --j)
+                    if (!rows_[j].overlay) { ai = j; break; }
+                for (int j = vr.row + 1; j < rows_.size(); ++j) {
+                    if (rows_[j].overlay) continue;
+                    if (rows_[j].state == Row::Pending || rows_[j].state == Row::Cued || rows_[j].state == Row::Playing) ci = j;
+                    break;
+                }
+                if (ai >= 0 && ci >= 0) {
+                    QAction *act = menu.addAction(TR("Ráfektetés az átmenetre (%1 → %2)").arg(rows_[ai].item.title, rows_[ci].item.title), this, [this, id] {
+                        if (setRowOverlay(id, true, 0, 0))
+                            say(TR("Ráfektetve: a mix pontnál indul. Az időpontját a Mix editorban vagy a lenyitott átmenetnél állíthatod."));
+                    });
+                    act->setEnabled(rows_[ci].state != Row::Playing);
+                }
+            }
+        }
         if (rows_[vr.row].groupId)
             menu.addAction(TR("Kivétel a blokkból"), this, [this, vr] {
                 // A sor a blokkja mögé kerül, hogy a blokk ne szakadjon ketté.
@@ -1596,9 +2325,11 @@ void MainWindow::reconcile()
 
     auto desired = [&] {
         QVector<int> ids;
-        for (const Row &r : rows_) {
+        for (int i = 0; i < rows_.size(); ++i) {
             if (ids.size() >= idle.size()) break;
-            if (r.state == Row::Pending || r.state == Row::Cued) ids << r.id;
+            const Row &r = rows_[i];
+            // A ráfektetett elem nem kerül lejátszóba: a saját csatornáján szól az átmenet fölött.
+            if ((r.state == Row::Pending || r.state == Row::Cued) && !overlayActive(i)) ids << r.id;
         }
         return ids;
     };
@@ -1715,6 +2446,15 @@ void MainWindow::loadRowInto(int rowId, int player)
         return;
     }
     if (found->state == Row::Playing) return;
+    if (found->overlay) {
+        // Kézi betöltés: az elem a lejátszón szól, a ráfektetés megszűnik.
+        found->overlay = false;
+        found->overlayOffsetMs = 0;
+        found->overlayDuckDb = 0;
+        db_->setEntryOverlay(rowId, false);
+        ++mixVersion_;
+        say(TR("A ráfektetés megszűnt: „%1” a lejátszóba került.").arg(found->item.title));
+    }
     if (found->state == Row::Cued && found->player == player) return;
     if (found->state == Row::Cued && found->player >= 0) players_[found->player]->eject();
 
@@ -1750,7 +2490,8 @@ void MainWindow::removeSelected()
 {
     const int v = table_->currentRow();
     if (v < 0 || v >= view_.size()) return;
-    if (view_[v].row < 0) {
+    if (view_[v].kind == ViewRow::Hour || view_[v].kind == ViewRow::Wave) return;
+    if (view_[v].kind == ViewRow::Header) {
         // Blokkfejléc: a blokk minden sora törlődik, kivéve azt, ami éppen szól.
         QVector<Row> keep;
         int removed = 0;
@@ -1786,6 +2527,14 @@ void MainWindow::removeSelected()
 
 void MainWindow::clearList()
 {
+    int n = 0;
+    for (const Row &row : rows_)
+        if (row.state != Row::Playing) ++n;
+    if (!n) return;
+    if (QMessageBox::question(this, TR("Lista ürítése"),
+                              TR("Törlöd a playlist %1 elemét? Az adásban lévő elem marad.").arg(n),
+                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
     QVector<Row> keep;
     for (const Row &row : rows_) {
         if (row.state == Row::Playing) {
@@ -1808,6 +2557,21 @@ void MainWindow::refreshTable()
     const int selectedHead = selectedHeaderRowId();
     rebuildView();
     table_->setRowCount(view_.size());
+    for (int v = 0; v < view_.size(); ++v) {
+        const int h = view_[v].kind == ViewRow::Item ? 48 : view_[v].kind == ViewRow::Header ? 36
+                      : view_[v].kind == ViewRow::Hour ? 24 : 150;
+        if (table_->rowHeight(v) != h) table_->setRowHeight(v, h);
+    }
+    // Melyik sorból visz egyedi mix (és voice track) a következőbe.
+    customFrom_.clear();
+    vtFrom_.clear();
+    {
+        const QHash<int, int> pairs = db_->transitionPairs();
+        for (auto it = pairs.begin(); it != pairs.end(); ++it) {
+            customFrom_.insert(it.value());
+            if (db_->transition(it.key()).vtItemId) vtFrom_.insert(it.value());
+        }
+    }
     qint64 pendingFrames = 0;
     int waiting = 0;
     int selectRow = -1;
@@ -1815,14 +2579,29 @@ void MainWindow::refreshTable()
     mono.setPixelSize(12);
     QFont bold = table_->font();
     bold.setWeight(QFont::DemiBold);
-    for (const Row &row : rows_) {
+    for (int i = 0; i < rows_.size(); ++i) {
+        const Row &row = rows_[i];
         if (row.state != Row::Pending && row.state != Row::Cued) continue;
-        pendingFrames += row.frames;
         ++waiting;
+        if (!(row.overlay && overlayActive(i))) pendingFrames += row.frames;     // a ráfektetett elem nem hosszabbít
     }
     for (int v = 0; v < view_.size(); ++v) {
         const ViewRow &vr = view_[v];
-        if (vr.row < 0) {
+        if (vr.kind == ViewRow::Hour || vr.kind == ViewRow::Wave) {
+            for (int c = 0; c < 6; ++c) {
+                auto *item = table_->item(v, c);
+                if (!item) {
+                    item = new QTableWidgetItem;
+                    table_->setItem(v, c, item);
+                }
+                item->setText(QString());
+                item->setFlags(Qt::ItemIsEnabled);           // nem jelölhető ki
+                item->setData(kRowIdRole, QVariant());
+                item->setData(kHeadIdRole, QVariant());
+            }
+            continue;
+        }
+        if (vr.kind == ViewRow::Header) {
             // Blokk fejléce: név, elemszám, teljes hossz, és hogy hol tart.
             const Row &head = rows_[vr.first];
             const bool open = expanded_.contains(head.groupId);
@@ -1872,6 +2651,8 @@ void MainWindow::refreshTable()
                 item->setTextAlignment((c == 4 ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter);
                 item->setData(kGroupRole, 2);
                 item->setData(kChipRole, QVariant());
+                item->setData(kRowIdRole, QVariant());
+                item->setData(kHeadIdRole, c == 0 ? QVariant(head.id) : QVariant());
                 item->setToolTip(open ? TR("Kattints a becsukáshoz · a fejlécnél fogva az egész blokk áthúzható")
                                       : TR("Kattints a kinyitáshoz · a fejlécnél fogva az egész blokk áthúzható"));
             }
@@ -1933,14 +2714,23 @@ void MainWindow::refreshTable()
             item->setFont(c == 0 || c == 4 ? mono : table_->font());
             item->setTextAlignment((c == 4 ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter);
             item->setData(kGroupRole, row.groupId ? 1 : 0);
+            item->setData(kRowIdRole, c == 0 ? QVariant(row.id) : QVariant());
+            item->setData(kHeadIdRole, QVariant());
             item->setToolTip(c == 1 ? row.item.path : QString());
             if (c == 3) item->setData(kChipRole, row.item.color.isEmpty() ? QVariant() : QVariant(QColor(row.item.color)));
         }
         if (row.id == selected) selectRow = v;
     }
+    for (int v = 0; v < view_.size(); ++v)
+        if (view_[v].kind == ViewRow::Item || view_[v].kind == ViewRow::Header)
+            for (int c = 0; c < 6; ++c)
+                if (auto *item = table_->item(v, c)) item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
     if (selectRow >= 0) table_->setCurrentCell(selectRow, 0);
     updateStartTimes();
     updateMixPairs();
+    updateMini();
+    if (remote_ && remoteStateTimer_ && remote_->clientCount()) remoteStateTimer_->start();
+    table_->viewport()->update();
     listInfo_->setText(rows_.isEmpty()
                            ? TR("Üres lista")
                            : TR("%1 várakozó elem · hátralévő: %2").arg(waiting).arg(formatMs(pendingFrames * 1000 / eter::kRate)));
@@ -1970,9 +2760,16 @@ void MainWindow::updateStartTimes()
     const bool fixedFade = db_->setting("fixed_time_policy", "fade") == "fade";
     QDateTime t = chainBase_;
     startText_.resize(rows_.size());
+    QVector<QDateTime> at(rows_.size());
+    QVector<int> overlays;
     for (int r = 0; r < rows_.size(); ++r) {
         const Row &row = rows_[r];
         QString text;
+        if (row.state == Row::Pending && row.overlay && overlayActive(r)) {
+            // A ráfektetett elem nem tolja el a többit: a kezdése a szomszédja kezdetéből jön, lent.
+            overlays << r;
+            continue;
+        }
         switch (row.state) {
         case Row::Playing:
         case Row::Played:
@@ -1984,6 +2781,7 @@ void MainWindow::updateStartTimes()
             if (mode_ == Auto && row.fixedAt.isValid() && row.fixedAt > now)
                 t = fixedFade ? row.fixedAt : std::max(t, row.fixedAt);
             text = t.toString("HH:mm:ss");
+            at[r] = t;
             // A sor a mix pontjáig tölti ki az időt, ha az már ismert.
             t = t.addMSecs(row.item.mixOutMs > 0 ? row.item.mixOutMs : row.frames * 1000 / eter::kRate);
             break;
@@ -1993,10 +2791,18 @@ void MainWindow::updateStartTimes()
         }
         startText_[r] = text;
     }
+    for (int r : overlays) {
+        int ai = -1, ci = -1;
+        overlayTargets(r, &ai, &ci);
+        QDateTime base;
+        if (ci >= 0) base = rows_[ci].state == Row::Playing ? rows_[ci].startedAt : at[ci];
+        startText_[r] = base.isValid() ? base.addMSecs(rows_[r].overlayOffsetMs).toString("HH:mm:ss") : QStringLiteral("–");
+    }
     // A fejléc a blokk első, még le nem játszott elemének kezdését mutatja.
     for (int v = 0; v < view_.size() && v < table_->rowCount(); ++v) {
+        if (view_[v].kind == ViewRow::Hour || view_[v].kind == ViewRow::Wave) continue;
         int r = view_[v].row;
-        if (r < 0) {
+        if (view_[v].kind == ViewRow::Header) {
             r = view_[v].first;
             for (int i = view_[v].first; i < view_[v].first + view_[v].count; ++i)
                 if (rows_[i].state == Row::Playing || rows_[i].state == Row::Cued || rows_[i].state == Row::Pending) { r = i; break; }
@@ -2175,6 +2981,9 @@ MainWindow::Row MainWindow::makeRow(const Entry &e) const
     row.scheduled = e.source == "scheduler";
     row.groupId = e.groupId;
     row.groupName = e.groupName;
+    row.overlay = e.overlay;
+    row.overlayOffsetMs = e.overlayOffsetMs;
+    row.overlayDuckDb = e.overlayDuckDb;
     if (e.fixedStartS >= 0) {
         const QDate d = QDate::fromString(QString::number(e.playlistKey / 100), "yyyyMMdd");
         row.fixedAt = QDateTime(d, QTime(e.playlistKey % 100, 0)).addSecs(e.fixedStartS);
@@ -2335,4 +3144,170 @@ void MainWindow::trimHistory()
             ++i;
         }
     }
+}
+
+// ------------------------------------------------------- távoli szerkesztés
+
+void MainWindow::configureRemote()
+{
+    QSettings s;
+    const bool enabled = s.value("remote/enabled", false).toBool();
+    const quint16 port = quint16(s.value("remote/port", remote::kDefaultPort).toUInt());
+    const QByteArray salt = QByteArray::fromBase64(s.value("remote/salt").toByteArray());
+    const QByteArray key = QByteArray::fromBase64(s.value("remote/key").toByteArray());
+    remoteError_.clear();
+    if (!enabled || key.isEmpty()) {
+        if (remote_) remote_->stop();
+        return;
+    }
+    if (!remote_) {
+        remote_ = new remote::Server(this);
+        connect(remote_, &remote::Server::authenticated, this, [this](remote::Connection *c) {
+            say(TR("Távoli szerkesztő csatlakozott: %1").arg(c->peer()), 8000);
+            c->send(remoteLibrary());
+            c->send(remoteState());
+        });
+        connect(remote_, &remote::Server::request, this, [this](remote::Connection *c, const QJsonObject &m) {
+            if (m.value("t").toString() != QLatin1String("op")) return;
+            const QString err = applyRemoteOp(m);
+            c->send(QJsonObject{{"t", "ack"}, {"id", m.value("id").toInt()}, {"ok", err.isEmpty()}, {"error", err}});
+            remoteStateTimer_->start();
+        });
+        connect(remote_, &remote::Server::clientsChanged, this, [this](int n) {
+            if (schedStatus_) schedStatus_->setToolTip(n ? TR("Távoli szerkesztők: %1").arg(n) : QString());
+        });
+    }
+    if (remote_->running() && remote_->port() == port) {
+        remote_->start(port, salt, key, &remoteError_);     // új jelszóval
+        return;
+    }
+    if (!remote_->start(port, salt, key, &remoteError_))
+        say(TR("A távoli szerkesztés nem indult el a(z) %1-es porton: %2").arg(port).arg(remoteError_), 12000);
+}
+
+QString MainWindow::remoteStatus() const
+{
+    if (!remote_ || !remote_->running())
+        return remoteError_.isEmpty() ? TR("kikapcsolva") : TR("hiba: %1").arg(remoteError_);
+    QStringList ips;
+    for (const QHostAddress &a : QNetworkInterface::allAddresses())
+        if (a.protocol() == QAbstractSocket::IPv4Protocol && !a.isLoopback()) ips << a.toString();
+    return TR("fut · cím: %1 · port: %2 · kapcsolatok: %3")
+        .arg(ips.isEmpty() ? QStringLiteral("127.0.0.1") : ips.join(QStringLiteral(", ")))
+        .arg(remote_->port())
+        .arg(remote_->clientCount());
+}
+
+QJsonObject MainWindow::remoteLibrary()
+{
+    QJsonArray cats, items;
+    for (const Category &c : db_->categories()) cats.push_back(remote::categoryToJson(c));
+    for (const Item &it : db_->items()) items.push_back(remote::itemToJson(it));
+    return QJsonObject{{"t", "library"}, {"station", QSysInfo::machineHostName()}, {"categories", cats}, {"items", items},
+                       {"settings", QJsonObject{{"auto_mix_threshold_db", db_->setting("auto_mix_threshold_db", "-24")},
+                                                {"default_fade_out_ms", db_->setting("default_fade_out_ms", "2500")}}}};
+}
+
+QJsonObject MainWindow::remoteState() const
+{
+    static const char *names[] = {"pending", "cued", "playing", "played", "skipped", "failed"};
+    QJsonArray rows;
+    QVector<int> ids;
+    // A lejátszottakból csak az utolsó néhány (a szerkesztőnek elég a közelmúlt).
+    int firstLive = 0;
+    while (firstLive < rows_.size()
+           && (rows_[firstLive].state == Row::Played || rows_[firstLive].state == Row::Skipped || rows_[firstLive].state == Row::Failed))
+        ++firstLive;
+    for (int i = std::max(0, firstLive - 8); i < rows_.size() && rows.size() < 600; ++i) {
+        const Row &r = rows_[i];
+        QJsonObject o{{"id", r.id}, {"pl", r.playlistId}, {"key", r.playlistKey}, {"item", r.item.id}, {"state", names[r.state]},
+                      {"player", r.player}, {"start", i < startText_.size() ? startText_[i] : QString()},
+                      {"src", r.scheduled ? "scheduler" : "manual"}};
+        if (r.fixedAt.isValid()) o.insert("fixed", r.fixedAt.toString(Qt::ISODate));
+        if (r.groupId) {
+            o.insert("group", r.groupId);
+            o.insert("groupName", r.groupName);
+        }
+        if (r.overlay) o.insert("ovl", QJsonObject{{"offset", r.overlayOffsetMs}, {"duck", r.overlayDuckDb}, {"voice", r.overlayVoice}});
+        rows.push_back(o);
+        ids << r.id;
+    }
+    QJsonArray trs;
+    for (const Transition &t : const_cast<Database *>(db_)->transitionsFor(ids)) trs.push_back(remote::transitionToJson(t));
+    return QJsonObject{{"t", "state"}, {"now", eter::now().toString(Qt::ISODate)}, {"mode", mode_ == Auto ? "auto" : "assist"},
+                       {"rows", rows}, {"transitions", trs}};
+}
+
+QString MainWindow::applyRemoteOp(const QJsonObject &m)
+{
+    const QString op = m.value("op").toString();
+    auto waitingRow = [this](int id) -> Row * {
+        Row *r = rowById(id);
+        return r && (r->state == Row::Pending || r->state == Row::Cued) ? r : nullptr;
+    };
+    auto knownRow = [this](int id) {
+        const Row *r = rowById(id);
+        return r && r->state != Row::Played && r->state != Row::Skipped && r->state != Row::Failed;
+    };
+    QString what;
+    if (op == QLatin1String("saveTransition")) {
+        const Transition t = remote::transitionFromJson(m);
+        if (!knownRow(t.toEntryId) || !knownRow(t.fromEntryId)) return TR("Az átmenet sorai már nincsenek a playlistben.");
+        if (rowById(t.toEntryId)->state == Row::Playing) return TR("Az adásban lévő elem átmenete már nem módosítható.");
+        db_->saveTransition(t);
+        onMixSaved({rowById(t.fromEntryId)->item.id, rowById(t.toEntryId)->item.id});
+        what = TR("egyedi mix: %1 → %2").arg(rowById(t.fromEntryId)->item.title, rowById(t.toEntryId)->item.title);
+    } else if (op == QLatin1String("deleteTransition")) {
+        const int to = m.value("to").toInt();
+        if (!knownRow(to)) return TR("A sor már nincs a playlistben.");
+        db_->deleteTransition(to);
+        onMixSaved({rowById(to)->item.id});
+        what = TR("átmenet automatikusra");
+    } else if (op == QLatin1String("setItemIntro") || op == QLatin1String("setItemCueIn") || op == QLatin1String("setItemMixDefaults")
+               || op == QLatin1String("clearItemMixDefaults")) {
+        const int itemId = m.value("item").toInt();
+        const Item it = db_->item(itemId);
+        if (!it.id) return TR("Az elem már nincs a hangtárban.");
+        if (op == QLatin1String("setItemIntro")) db_->setItemIntro(itemId, m.value("ms").toInteger());
+        else if (op == QLatin1String("setItemCueIn")) db_->setItemCueIn(itemId, m.value("ms").toInteger());
+        else if (op == QLatin1String("clearItemMixDefaults")) db_->clearItemMixDefaults(itemId);
+        else db_->setItemMixDefaults(itemId, m.value("mix").toInteger(), m.value("fadeOut").toInteger(), m.value("curve").toString(),
+                                     m.value("cueOut").toInteger());
+        onMixSaved({itemId});
+        db_->notifyItemsChanged();
+        what = TR("a szám beállításai: %1").arg(it.title);
+    } else if (op == QLatin1String("overlay")) {
+        const int id = m.value("entry").toInt();
+        if (!rowById(id)) return TR("A sor már nincs a playlistben.");
+        if (!setRowOverlay(id, m.value("on").toBool(), m.value("offset").toInteger(), m.value("duck").toDouble()))
+            return TR("Ez az elem most nem fektethető rá (csak várakozó elem, két elem között).");
+        what = m.value("on").toBool() ? TR("ráfektetés: %1").arg(rowById(id)->item.title) : TR("ráfektetés megszüntetve");
+    } else if (op == QLatin1String("move")) {
+        const int id = m.value("entry").toInt(), before = m.value("before").toInt();
+        if (!waitingRow(id)) return TR("Csak a még várakozó sorok rendezhetők át.");
+        const int from = indexOfRow(id);
+        const int to = before > 0 && rowById(before) ? indexOfRow(before) : rows_.size();
+        if (to < firstMovable()) return TR("Az adásban lévő elem elé nem tehető sor.");
+        moveRow(from, to, true);
+        what = TR("sorrend: %1").arg(rowById(id) ? rowById(id)->item.title : QString());
+    } else if (op == QLatin1String("remove")) {
+        Row *r = waitingRow(m.value("entry").toInt());
+        if (!r) return TR("Csak a még várakozó sor törölhető.");
+        what = TR("törölve: %1").arg(r->item.title);
+        const int id = r->id;
+        if (r->state == Row::Cued && r->player >= 0) {
+            const int p = r->player;
+            r->state = Row::Pending;
+            r->player = -1;
+            players_[p]->eject();
+        }
+        db_->deleteEntry(id);
+        rows_.remove(indexOfRow(id));
+        reconcile();
+        refreshTable();
+    } else {
+        return TR("Ismeretlen művelet: %1").arg(op);
+    }
+    say(TR("Távoli szerkesztés – %1").arg(what), 6000);
+    return {};
 }

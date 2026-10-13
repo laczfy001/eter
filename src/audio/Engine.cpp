@@ -236,12 +236,18 @@ bool Engine::setRoute(Channel ch, const std::string &deviceName, std::string *er
             setRouteOne(Pfl3, deviceName, nullptr);
             setRouteOne(Pfl4, deviceName, nullptr);
             setRouteOne(Pfl5, deviceName, nullptr);
+            setRouteOne(Pfl6, deviceName, nullptr);
+            setRouteOne(Pfl7, deviceName, nullptr);
         }
         return ok;
     }
     if (ch == Player1) {
         const bool ok = setRouteOne(Player1, deviceName, err);
-        if (ok) setRouteOne(Vt, deviceName, nullptr);
+        if (ok) {
+            setRouteOne(Vt, deviceName, nullptr);
+            setRouteOne(Ovl1, deviceName, nullptr);
+            setRouteOne(Ovl2, deviceName, nullptr);
+        }
         return ok;
     }
     if (ch == Cart1) {

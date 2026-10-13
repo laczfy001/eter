@@ -36,7 +36,29 @@ export LINUXDEPLOY_OUTPUT_VERSION="$VERSION"
 export NO_STRIP=1                          # the bundled strip is too old for current ELF sections
 cd "$ROOT/build"
 rm -f ./*.AppImage
-"$TOOLS/linuxdeploy-x86_64.AppImage" --appdir "$APPDIR" --plugin qt --output appimage
+"$TOOLS/linuxdeploy-x86_64.AppImage" --appdir "$APPDIR" --plugin qt
+
+# Not used by Éter: TLS and network-information plugins (the remote editing protocol is plain TCP with its own
+# challenge-response login), and Qt's own translations (Éter carries its own). Without them the libraries they
+# pulled in (OpenSSL, GnuTLS, …) are dropped as well.
+rm -rf "$APPDIR/usr/plugins/tls" "$APPDIR/usr/plugins/networkinformation" "$APPDIR/usr/translations"
+# libproxy (and libpxbackend, which Qt also lists) would bring curl and its TLS stack; see packaging/libproxy-stub.c.
+if [ -f "$APPDIR/usr/lib/libproxy.so.1" ]; then
+    printf 'LIBPROXY_0.4.16 { global: px_proxy_factory_new; px_proxy_factory_get_proxies; px_proxy_factory_free_proxies; px_proxy_factory_free; local: *; };\n' > "$ROOT/build/libproxy.map"
+    cc -shared -fPIC -O2 -Wl,-soname,libproxy.so.1 -Wl,--version-script="$ROOT/build/libproxy.map" \
+        -o "$APPDIR/usr/lib/libproxy.so.1" "$ROOT/packaging/libproxy-stub.c"
+    printf '' | cc -shared -fPIC -x c -o "$APPDIR/usr/lib/libpxbackend-1.0.so" -Wl,-soname,libpxbackend-1.0.so -
+fi
+needed="$(mktemp)"
+find "$APPDIR/usr/bin" "$APPDIR/usr/plugins" -type f | while read -r f; do
+    LD_LIBRARY_PATH="$APPDIR/usr/lib" ldd "$f" 2>/dev/null | awk '{print $3}' | grep "^$APPDIR/usr/lib/" || true
+done | sort -u > "$needed"
+for lib in "$APPDIR"/usr/lib/*.so*; do
+    grep -qxF "$lib" "$needed" || rm -f "$lib"
+done
+rm -f "$needed"
+
+"$TOOLS/linuxdeploy-x86_64.AppImage" --appdir "$APPDIR" --output appimage
 # linuxdeploy names the file after the desktop entry; give it a fixed ASCII name.
 for f in ./*.AppImage; do
     [ "$f" = "./$OUT" ] || mv "$f" "./$OUT"

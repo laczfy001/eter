@@ -28,6 +28,11 @@ struct MixPair {
     QString startText;               // a bejövő elem becsült kezdése
     bool fromOnAir = false;          // a kimenő elem éppen adásban van
     bool toOnAir = false;
+    // Az átmenetre ráfektetett playlist-elem (a két sor között áll a playlistben); ovlEntry == 0: nincs
+    int ovlEntry = 0;
+    Item ovlItem;
+    qint64 ovlOffsetMs = 0;
+    double ovlDuckDb = 0;
 };
 
 struct MixParams {
@@ -42,6 +47,12 @@ struct MixParams {
     int vtItemId = 0;                // voice track; 0 = nincs
     qint64 vtOffsetMs = 0;           // kezdése a mix ponthoz képest
     double vtDuckDb = -9;
+    int ovlEntry = 0;                // ráfektetett playlist-elem; 0 = nincs
+    int ovlItemId = 0;
+    QString ovlTitle;
+    qint64 ovlDurMs = 0;
+    qint64 ovlOffsetMs = 0;          // kezdése a mix ponthoz képest
+    double ovlDuckDb = 0;
 };
 
 inline eter::FadeCurve curveFromName(const QString &name)
@@ -57,7 +68,7 @@ inline eter::FadeCurve curveFromName(const QString &name)
 class MixTimeline : public QWidget {
     Q_OBJECT
 public:
-    enum Handle { None, MixPoint, FadeOutEnd, FadeInEnd, StartLevel, Block, Intro, VtBlock, TrimLeft, TrimRight };
+    enum Handle { None, MixPoint, FadeOutEnd, FadeInEnd, StartLevel, Block, Intro, VtBlock, TrimLeft, TrimRight, OvlBlock };
     struct Clip {
         QString title;
         QVector<float> peaks;
@@ -68,6 +79,9 @@ public:
     void setClips(const QVector<Clip> &clips);              // 2 vagy 3 elem
     void setClipWave(int k, const QVector<float> &peaks, qint64 durationMs);
     void setVtWave(int j, const QVector<float> &peaks, qint64 durationMs, const QString &title);
+    void setOvlWave(int j, const QVector<float> &peaks, qint64 durationMs);
+    bool hasOverlay() const;                                // van-e ráfektetett elem a látható átmeneteken
+    bool overlayPending() const;                            // hármas nézetben a harmadik elem a második elé került
     void setParams(int j, const MixParams &p, bool recenter);
     const MixParams &params(int j) const { return tr_[j]; }
     int transitions() const { return tr_.size(); }
@@ -92,6 +106,7 @@ public:
 
 signals:
     void paramsEdited(int j);
+    void overlayDropped();                                  // a harmadik elemet a második eleje elé húzták: ráfektetés
     void activeChanged(int j);
     void viewChanged();
 
@@ -114,6 +129,7 @@ private:
     QRectF laneRect(int lane) const;                        // 0..n−1: elemek, n: voice track
     qint64 naturalEnd(int k) const;
     qint64 vtLen(int j) const { return std::max<qint64>(vt_[j].durMs, 500); }
+    qint64 ovlLen(int j) const { return std::max<qint64>(ovl_[j].durMs > 0 ? ovl_[j].durMs : tr_[j].ovlDurMs, 500); }
     Hit hitTest(const QPointF &pos) const;
     void drawWave(QPainter &p, const QRectF &lane, const QVector<float> &peaks, qint64 durMs,
                   qint64 trackAtLeftMs, const QColor &color) const;
@@ -121,6 +137,7 @@ private:
     QVector<Clip> clips_;
     QVector<MixParams> tr_;
     QVector<Clip> vt_;
+    QVector<Clip> ovl_;
     int active_ = 0;
     qint64 viewStart_ = 0, window_ = 24000;
     qint64 playhead_ = -1;
@@ -136,10 +153,25 @@ public:
 
     void setPairs(const QVector<MixPair> &pairs);
     void stopPreview();
+    // Távoli szerkesztő: a voice track felvétele és fájlból betöltése itt nem érhető el (a playout gépén nem lenne meg).
+    void setRemoteMode(bool on);
     bool previewing() const { return phase_ != 0; }
     MixTimeline *timeline() { return timeline_; }
 
+    // Egyszerűsített kezelés a playlistbe nyíló mini szerkesztőnek: egy pár (kimenő → bejövő sor) érvényes
+    // beállításai, a mix pont mentése egyedi mixként, visszaállítás, előhallgatás, hullámforma.
+    bool quickParams(int fromEntry, int toEntry, MixParams *out, int *kind = nullptr);
+    void quickSetMix(int fromEntry, int toEntry, qint64 mixOutMs);
+    void quickReset(int fromEntry, int toEntry);
+    void quickPreviewToggle(int fromEntry, int toEntry);
+    bool quickPreviewing(int fromEntry, int toEntry) const;
+    QVector<float> quickWave(const Item &item, qint64 *durMs);
+    void selectEntries(int fromEntry, int toEntry);
+
 signals:
+    void waveLoaded(int itemId);
+    // A ráfektetett elem beállítása (on = false: feloldás) – a főablak menti és frissíti a playlistet.
+    void overlayEdited(int entryId, bool on, qint64 offsetMs, double duckDb);
     void mixSaved(const QVector<int> &itemIds);
     void previewStarting();
     void message(const QString &text);
@@ -155,6 +187,7 @@ public:
 private:
     void loadCurrent();
     MixParams resolve(const MixPair &pair, int *kind) const;
+    MixParams resolveMix(const MixPair &pair, int *kind) const;   // a ráfektetett elem nélkül
     void requestWave(const Item &item);
     void waveReady(int itemId);
     void showParams();
@@ -169,6 +202,11 @@ private:
     void setVtItem(int itemId);
     void chooseVtFile();
     void chooseVtFromLibrary();
+    void applyOvl(int j);
+    void makeOverlayFromTriple();
+    void dissolveOverlay();
+    void setTriple(bool on);                               // a hármas nézet kapcsolója, újratöltés nélkül
+    void showEntries(int fromEntry, int toEntry);
     void toggleRecord();
     void finishRecording();
     void refreshTable();
@@ -197,13 +235,24 @@ private:
     QDoubleSpinBox *mixOut_, *fadeOut_, *cueIn_, *fadeIn_, *startLevel_, *intro_, *vtOffset_, *vtDuck_;
     QLabel *vtName_, *outCaption_, *inCaption_;
     QPushButton *recordBtn_, *vtFile_, *vtLibrary_, *vtRemove_;
+    QLabel *ovlName_ = nullptr;
+    QDoubleSpinBox *ovlOffset_ = nullptr, *ovlDuck_ = nullptr;
+    QPushButton *ovlRemove_ = nullptr;
+    QWidget *ovlBox_ = nullptr;
     QCheckBox *loop_;
     QComboBox *curve_;
     QRadioButton *scopePair_, *scopeItems_;
     QPushButton *save_, *reset_;
 
     QHash<int, Wave> waves_;
-    std::vector<std::thread> threads_;
+    // Hullámforma-beolvasó szálak; a befejezetteket a következő indítás előtt összegyűjtjük, így a
+    // folyamatos adás alatt nem halmozódnak fel.
+    struct Worker {
+        std::thread thread;
+        std::shared_ptr<std::atomic<bool>> done;
+    };
+    std::vector<Worker> threads_;
+    void reapThreads();
     std::shared_ptr<std::atomic<bool>> cancel_;
     double autoMixDb_ = -24.0;
     qint64 defaultFadeMs_ = 2500;
@@ -220,6 +269,8 @@ private:
         bool faded[3] = {false, false, false};  // az elem kiúsztatása már elindult
         qint64 dur[3] = {0, 0, 0};
         qint64 vtDur[2] = {0, 0};
+        qint64 ovlDur[2] = {0, 0};
+        bool ovlStarted[2] = {false, false};
         int vtPlaying = 0;
     } pv_;
     bool recordMode_ = false;

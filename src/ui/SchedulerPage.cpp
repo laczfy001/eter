@@ -1,5 +1,7 @@
 #include "i18n.h"
 #include "SchedulerPage.h"
+
+#include <QMessageBox>
 #include "Library.h"
 #include "Theme.h"
 
@@ -425,6 +427,10 @@ QWidget *SchedulerPage::buildClockPanel()
     connect(del, &QPushButton::clicked, this, [this] {
         const int id = currentClockId();
         if (!id) return;
+        if (QMessageBox::question(this, TR("Óraséma törlése"),
+                                  TR("Törlöd a(z) „%1” órasémát? A heti rácsból is kikerül.").arg(clockName_->text()),
+                                  QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+            return;
         db_->deleteClock(id);        // a rácsból is kikerül
         emit message(TR("A séma törölve, a heti rácsból is kikerült."));
     });

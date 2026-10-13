@@ -81,10 +81,34 @@ static bool writeWav(const QString &path, const std::vector<float> &samples, int
 // ============================================================ idővonal
 
 static const int kRuler = 24;
+static int pairIndex(const QVector<MixPair> &pairs, int fromEntry, int toEntry);
 static const QColor kBright[3] = {QColor("#b07a1e"), QColor("#2f6ea8"), QColor("#3f9a6b")};
 static const QColor kDim[3] = {QColor("#3d3220"), QColor("#1d3046"), QColor("#1f3d2e")};
 static const QColor kLine[3] = {QColor("#ffd58a"), QColor("#bfe0ff"), QColor("#b4f0cf")};
 static const QColor kTag[3] = {QColor("#f5a524"), QColor("#5cb0ff"), QColor("#45d483")};
+
+// Egysoros felirat, amely a végén három ponttal rövidül, ha nem fér ki (a teljes szöveg a súgóban).
+class ElidedLabel : public QLabel {
+public:
+    explicit ElidedLabel(const QString &text, QWidget *parent = nullptr) : QLabel(text, parent)
+    {
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    }
+    QSize minimumSizeHint() const override { return {20, QLabel::minimumSizeHint().height()}; }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setPen(palette().color(foregroundRole()));
+        p.setFont(font());
+        const QRect r = contentsRect();
+        const QString t = fontMetrics().elidedText(text(), Qt::ElideRight, r.width());
+        p.drawText(r, int(alignment()), t);
+        if (t != text() && toolTip().isEmpty()) setToolTip(text());
+    }
+};
 
 MixTimeline::MixTimeline(QWidget *parent) : QWidget(parent)
 {
@@ -103,6 +127,8 @@ void MixTimeline::setClips(const QVector<Clip> &clips)
     tr_.resize(clips_.size() - 1);
     vt_.resize(clips_.size() - 1);
     for (Clip &v : vt_) v = Clip();
+    ovl_.resize(clips_.size() - 1);
+    for (Clip &v : ovl_) v = Clip();
     active_ = std::min<int>(active_, tr_.size() - 1);
     update();
 }
@@ -122,6 +148,27 @@ void MixTimeline::setVtWave(int j, const QVector<float> &peaks, qint64 durationM
     vt_[j].durMs = durationMs;
     vt_[j].title = title;
     update();
+}
+
+void MixTimeline::setOvlWave(int j, const QVector<float> &peaks, qint64 durationMs)
+{
+    if (j < 0 || j >= ovl_.size()) return;
+    ovl_[j].peaks = peaks;
+    ovl_[j].durMs = durationMs;
+    update();
+}
+
+bool MixTimeline::hasOverlay() const
+{
+    for (const MixParams &p : tr_)
+        if (p.ovlItemId) return true;
+    return false;
+}
+
+// Hármas nézetben a harmadik elem a második eleje elé került: elengedve a második ráfekszik az átmenetre.
+bool MixTimeline::overlayPending() const
+{
+    return clips_.size() == 3 && clipStart(2) < clipStart(1);
 }
 
 void MixTimeline::setParams(int j, const MixParams &p, bool center)
@@ -196,6 +243,8 @@ qint64 MixTimeline::contentStart() const
     qint64 t = 0;
     for (int j = 0; j < tr_.size(); ++j)
         if (tr_[j].vtItemId) t = std::min(t, clipStart(j + 1) + tr_[j].vtOffsetMs);
+    for (int j = 0; j < tr_.size(); ++j)
+        if (tr_[j].ovlItemId) t = std::min(t, clipStart(j + 1) + tr_[j].ovlOffsetMs);
     return t - 2000;
 }
 
@@ -207,6 +256,8 @@ qint64 MixTimeline::contentEnd() const
         if (naturalEnd(k) >= 0) t = std::max(t, naturalEnd(k));
     for (int j = 0; j < tr_.size(); ++j)
         if (tr_[j].vtItemId) t = std::max(t, clipStart(j + 1) + tr_[j].vtOffsetMs + vtLen(j));
+    for (int j = 0; j < tr_.size(); ++j)
+        if (tr_[j].ovlItemId) t = std::max(t, clipStart(j + 1) + tr_[j].ovlOffsetMs + ovlLen(j));
     return t + 2000;
 }
 
@@ -241,11 +292,16 @@ qint64 MixTimeline::msAt(double x) const { return viewStart_ + qint64(x / std::m
 
 QRectF MixTimeline::laneRect(int lane) const
 {
+    // Az elemek sávjai alatt a voice track sáv; ha van ráfektetett elem, alatta még egy sáv.
     const int n = clips_.size();
     const double h = height() - kRuler;
-    const double clipH = h * (n == 2 ? 0.38 : 0.275);
+    const bool ovl = hasOverlay();
+    const double clipH = h * (n == 2 ? (ovl ? 0.31 : 0.38) : (ovl ? 0.23 : 0.275));
     if (lane < n) return QRectF(0, kRuler + lane * clipH, width(), clipH);
-    return QRectF(0, kRuler + n * clipH, width(), h - n * clipH);
+    const double top = kRuler + n * clipH, rest = h - n * clipH;
+    if (!ovl) return QRectF(0, top, width(), rest);
+    const double half = std::floor(rest / 2);
+    return lane == n ? QRectF(0, top, width(), half) : QRectF(0, top + half, width(), rest - half);
 }
 
 // A szintgörbe függőleges helye a sávon belül: 1,0 felül, 0 alul.
@@ -271,6 +327,7 @@ QPointF MixTimeline::handlePos(Handle h, int j) const
     case TrimRight: return {xOf(clipEnd(j)), out.center().y() + 10};
     case Block: return {xOf(mix) + 60, in.center().y() + 10};
     case VtBlock: return {xOf(mix + p.vtOffsetMs) + 10, laneRect(clips_.size()).center().y() + 10};
+    case OvlBlock: return {xOf(mix + p.ovlOffsetMs) + 10, laneRect(clips_.size() + 1).center().y() + 10};
     default: return {};
     }
 }
@@ -363,6 +420,22 @@ void MixTimeline::paintEvent(QPaintEvent *)
         p.fillRect(QRectF(x0, vtLane.top() + 1, x1 - x0, vtLane.height() - 1), QColor("#16303a"));
         drawWave(p, vtLane, vt_[j].peaks, vt_[j].durMs, viewStart_ - at, QColor("#4fb6c9"));
     }
+    // Ráfektetett elemek: a saját csatornájukon szólnak az átmenet fölött
+    static const QColor kOvl("#b99cff");
+    const bool ovlShown = hasOverlay();
+    const QRectF ovlLane = laneRect(n + 1);
+    if (ovlShown) {
+        p.setPen(QColor("#30353e"));
+        p.drawLine(QPointF(0, ovlLane.top()), QPointF(w, ovlLane.top()));
+        for (int j = 0; j < tr_.size(); ++j) {
+            if (!tr_[j].ovlItemId) continue;
+            const qint64 at = clipStart(j + 1) + tr_[j].ovlOffsetMs;
+            const double x0 = xOf(at), x1 = xOf(at + ovlLen(j));
+            p.fillRect(QRectF(x0, ovlLane.top() + 1, x1 - x0, ovlLane.height() - 1), QColor("#2a2340"));
+            drawWave(p, ovlLane, ovl_[j].peaks, ovl_[j].durMs, viewStart_ - at, kOvl);
+            p.fillRect(QRectF(x0 - 1, ovlLane.top() + 1, 2, ovlLane.height() - 1), kOvl);
+        }
+    }
 
     p.setRenderHint(QPainter::Antialiasing);
     // Mix pontok: függőleges vonal a két érintett sávon és a voice track sávon át
@@ -370,7 +443,7 @@ void MixTimeline::paintEvent(QPaintEvent *)
         const double x = xOf(clipStart(j + 1));
         p.setPen(QPen(j == active_ ? theme::amber : QColor("#8a6a2a"), 1.5, Qt::DashLine));
         p.drawLine(QPointF(x, laneRect(j).top()), QPointF(x, laneRect(j + 1).bottom()));
-        p.drawLine(QPointF(x, vtLane.top()), QPointF(x, vtLane.bottom()));
+        p.drawLine(QPointF(x, vtLane.top()), QPointF(x, ovlShown ? ovlLane.bottom() : vtLane.bottom()));
     }
 
     // Intro vége
@@ -480,6 +553,30 @@ void MixTimeline::paintEvent(QPaintEvent *)
         if (tr_[j].vtItemId) vtNames << vt_[j].title;
     tag(vtLane, TR("VT"), QColor("#7fd6e8"),
         TR("VOICE TRACK   ") + (vtNames.isEmpty() ? TR("nincs") : vtNames.join(QStringLiteral(" · "))));
+    if (ovlShown) {
+        QStringList names;
+        for (int j = 0; j < tr_.size(); ++j)
+            if (tr_[j].ovlItemId) names << tr_[j].ovlTitle;
+        tag(ovlLane, TR("RÁF"), kOvl, TR("RÁFEKTETVE   ") + names.join(QStringLiteral(" · ")));
+    }
+    // Húzás közben: a harmadik elem a második eleje elé került – elengedve a második ráfekszik.
+    if (drag_.h != None && overlayPending()) {
+        const QRectF mid = laneRect(1);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.fillRect(mid.adjusted(0, 26, 0, 0), QColor(185, 156, 255, 40));
+        QFont f = font();
+        f.setPixelSize(13);
+        f.setBold(true);
+        p.setFont(f);
+        const QString hint = TR("Engedd el: a(z) „%1” ráfekszik az 1 → 3 átmenetre, és mindhárom szólhat egyszerre").arg(clips_[1].title);
+        QRectF box = QFontMetricsF(f).boundingRect(mid.adjusted(24, 30, -24, -4), Qt::AlignCenter | Qt::TextWordWrap, hint);
+        box.adjust(-10, -6, 10, 6);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(16, 13, 26, 230));
+        p.drawRoundedRect(box, 5, 5);
+        p.setPen(kOvl);
+        p.drawText(box, Qt::AlignCenter | Qt::TextWordWrap, hint);
+    }
 }
 
 MixTimeline::Hit MixTimeline::hitTest(const QPointF &pos) const
@@ -506,7 +603,19 @@ MixTimeline::Hit MixTimeline::hitTest(const QPointF &pos) const
         if (pos.y() > in.top() + 28 && pos.y() < in.bottom() && std::abs(pos.x() - xOf(clipStart(j + 1))) < 7) return {TrimLeft, j};
         if (pos.y() > out.top() + 28 && pos.y() < out.bottom() && std::abs(pos.x() - xOf(clipEnd(j))) < 7) return {TrimRight, j};
     }
-    // 3. Voice track
+    // 3. Ráfektetett elem
+    if (hasOverlay()) {
+        const QRectF ovlLane = laneRect(clips_.size() + 1);
+        if (ovlLane.contains(pos)) {
+            for (int j = 0; j < tr_.size(); ++j) {
+                if (!tr_[j].ovlItemId) continue;
+                const qint64 at = clipStart(j + 1) + tr_[j].ovlOffsetMs;
+                if (pos.x() >= xOf(at) - 4 && pos.x() <= xOf(at + ovlLen(j))) return {OvlBlock, j};
+            }
+            return hit;
+        }
+    }
+    // 4. Voice track
     const QRectF vtLane = laneRect(clips_.size());
     if (vtLane.contains(pos)) {
         for (int j = 0; j < tr_.size(); ++j) {
@@ -543,6 +652,7 @@ void MixTimeline::mousePressEvent(QMouseEvent *e)
     case TrimLeft: dragOffsetMs_ = double(t - clipStart(j + 1)); break;
     case TrimRight: dragOffsetMs_ = double(t - clipEnd(j)); break;
     case VtBlock: dragOffsetMs_ = double(t - (clipStart(j + 1) + tr_[j].vtOffsetMs)); break;
+    case OvlBlock: dragOffsetMs_ = double(t - (clipStart(j + 1) + tr_[j].ovlOffsetMs)); break;
     default: dragOffsetMs_ = 0; break;
     }
 }
@@ -554,7 +664,7 @@ void MixTimeline::mouseMoveEvent(QMouseEvent *e)
         // Kurzor: jelzi, mi fogható meg.
         const Hit h = hitTest(pos);
         setCursor(h.h == None ? Qt::ArrowCursor
-                  : (h.h == Block || h.h == VtBlock) ? Qt::SizeHorCursor
+                  : (h.h == Block || h.h == VtBlock || h.h == OvlBlock) ? Qt::SizeHorCursor
                   : (h.h == TrimLeft || h.h == TrimRight) ? Qt::SplitHCursor : Qt::PointingHandCursor);
         return;
     }
@@ -562,7 +672,10 @@ void MixTimeline::mouseMoveEvent(QMouseEvent *e)
     MixParams &p = tr_[j];
     const qint64 t = msAt(pos.x()) - qint64(dragOffsetMs_);
     const qint64 outDur = clips_[j].durMs;
-    const qint64 minMix = cue(j) + 200;
+    qint64 minMix = cue(j) + 200;
+    // Hármas nézetben a harmadik elem a második eleje elé is húzható (ráfektetés), de az első elem elé nem.
+    if ((drag_.h == Block || drag_.h == MixPoint) && j == 1 && clips_.size() == 3 && !tr_[0].ovlItemId && !tr_[1].ovlItemId)
+        minMix = std::min(minMix, cue(1) - clipStart(1) + 200);
     const qint64 maxMix = outDur > 0 ? outDur : std::max<qint64>(p.mixOutMs, minMix) + 600000;
     auto setNextStart = [&](qint64 timelineMs) {
         // A következő elem kezdete az idővonalon → a kimenő elem mix pontja a saját idejében.
@@ -611,6 +724,9 @@ void MixTimeline::mouseMoveEvent(QMouseEvent *e)
     case VtBlock:
         p.vtOffsetMs = round100(std::clamp<qint64>(t - clipStart(j + 1), -120000, 120000));
         break;
+    case OvlBlock:
+        p.ovlOffsetMs = round100(std::clamp<qint64>(t - clipStart(j + 1), -120000, 120000));
+        break;
     default: break;
     }
     // A vég nem lehet a mix pont előtt (nem maradhat csend), a kiúsztatás nem lehet hosszabb az elemnél.
@@ -620,7 +736,13 @@ void MixTimeline::mouseMoveEvent(QMouseEvent *e)
     emit paramsEdited(j);
 }
 
-void MixTimeline::mouseReleaseEvent(QMouseEvent *) { drag_ = Hit(); }
+void MixTimeline::mouseReleaseEvent(QMouseEvent *)
+{
+    const bool drop = (drag_.h == Block || drag_.h == MixPoint) && drag_.j == 1 && overlayPending();
+    drag_ = Hit();
+    update();
+    if (drop) emit overlayDropped();
+}
 
 void MixTimeline::wheelEvent(QWheelEvent *e)
 {
@@ -645,6 +767,7 @@ static QFrame *panel()
 
 static const eter::Engine::Channel kClipCh[3] = {eter::Engine::Pfl, eter::Engine::Pfl2, eter::Engine::Pfl4};
 static const eter::Engine::Channel kVtCh[2] = {eter::Engine::Pfl3, eter::Engine::Pfl5};
+static const eter::Engine::Channel kOvlCh[2] = {eter::Engine::Pfl6, eter::Engine::Pfl7};
 
 MixEditorPage::MixEditorPage(Database *db, eter::Engine *engine, QWidget *parent)
     : QWidget(parent), db_(db), engine_(engine), cancel_(std::make_shared<std::atomic<bool>>(false))
@@ -717,19 +840,22 @@ MixEditorPage::MixEditorPage(Database *db, eter::Engine *engine, QWidget *parent
     fh->setContentsMargins(10, 7, 10, 7);
     state_ = new QLabel;
     state_->setObjectName("small");
-    auto *hint = new QLabel(TR("Húzható: az elemek teste és két széle, a négyzetek, a voice track · görgő: nagyítás, Shift + görgő: lapozás"));
+    // A hosszú súgósor rövidül, ha nem fér ki: ne szabja meg az idővonal legkisebb szélességét
+    // (különben az átmenetlista összenyomódik).
+    auto *hint = new ElidedLabel(TR("Húzható: az elemek teste és két széle, a négyzetek, a voice track · görgő: nagyítás, Shift + görgő: lapozás"));
     hint->setObjectName("small");
     hint->setToolTip(TR("Az elem teste: az elem (és a mix pont) elmozdul; az előtte lévő elem hossza nem változik.\n"
         "Az elem jobb széle: itt hallgat el az elem.\n"
         "Az elem bal széle: az eleje levágódik, a tartalom a helyén marad.\n"
         "Négyzetek: a kiúsztatás kezdete, a beúsztatás hossza, a kezdő szint, az intro vége."));
     fh->addWidget(state_);
-    fh->addStretch(1);
-    fh->addWidget(hint);
+    fh->addSpacing(12);
+    fh->addWidget(hint, 1);
     tv->addWidget(foot);
 
     // Az átmenetek listája az idővonal mellett
     auto *lp = panel();
+    lp->setMinimumWidth(240);
     auto *lv = new QVBoxLayout(lp);
     lv->setContentsMargins(1, 1, 1, 1);
     lv->setSpacing(0);
@@ -758,8 +884,8 @@ MixEditorPage::MixEditorPage(Database *db, eter::Engine *engine, QWidget *parent
     hh->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     hh->setHighlightSections(false);
     hh->setSectionResizeMode(1, QHeaderView::Stretch);
-    table_->setColumnWidth(0, 76);
-    table_->setColumnWidth(2, 84);
+    table_->setColumnWidth(0, 72);
+    table_->setColumnWidth(2, 60);
     lv->addWidget(table_, 1);
 
     auto *split = new QSplitter(Qt::Horizontal);
@@ -769,7 +895,7 @@ MixEditorPage::MixEditorPage(Database *db, eter::Engine *engine, QWidget *parent
     split->addWidget(lp);
     split->setStretchFactor(0, 1);
     split->setStretchFactor(1, 0);
-    split->setSizes({770, 290});
+    split->setSizes({700, 360});
 
     // Jobb oldal: számszerű beállítások (görgethető, ha nem fér ki)
     auto *right = panel();
@@ -862,7 +988,7 @@ MixEditorPage::MixEditorPage(Database *db, eter::Engine *engine, QWidget *parent
     rv->addLayout(f2);
 
     rv->addSpacing(2);
-    cap(TR("VOICE TRACK"));
+    QLabel *vtCap = cap(TR("VOICE TRACK"));
     vtName_ = new QLabel;
     vtName_->setObjectName("small");
     vtName_->setTextFormat(Qt::PlainText);
@@ -890,6 +1016,34 @@ MixEditorPage::MixEditorPage(Database *db, eter::Engine *engine, QWidget *parent
     f3->addRow(TR("Kezdés"), vtOffset_);
     f3->addRow(TR("Zene alatta"), vtDuck_);
     rv->addLayout(f3);
+
+    // Ráfektetett elem (csak ha van ezen az átmeneten)
+    ovlBox_ = new QWidget;
+    auto *ov = new QVBoxLayout(ovlBox_);
+    ov->setContentsMargins(0, 4, 0, 0);
+    ov->setSpacing(6);
+    auto *ovlCap = new QLabel(TR("RÁFEKTETETT ELEM"));
+    ovlCap->setObjectName("caption");
+    ov->addWidget(ovlCap);
+    ovlName_ = new QLabel;
+    ovlName_->setObjectName("small");
+    ovlName_->setTextFormat(Qt::PlainText);
+    ovlName_->setWordWrap(true);
+    ov->addWidget(ovlName_);
+    auto *f4 = new QFormLayout;
+    f4->setVerticalSpacing(6);
+    ovlOffset_ = spin(-120, 120, 0.1, TR(" mp"));
+    ovlOffset_->setToolTip(TR("A ráfektetett elem kezdése a mix ponthoz (a bejövő elem indulásához) képest; negatív érték: előtte"));
+    ovlDuck_ = spin(-30, 0, 0.5, TR(" dB"));
+    ovlDuck_->setToolTip(TR("Ennyivel halkul a zene, amíg a ráfektetett elem szól (0: nem halkul)"));
+    f4->addRow(TR("Kezdés"), ovlOffset_);
+    f4->addRow(TR("Zene alatta"), ovlDuck_);
+    ov->addLayout(f4);
+    ovlRemove_ = new QPushButton(TR("Önálló elemként"));
+    ovlRemove_->setToolTip(TR("A ráfektetés megszüntetése: az elem újra a saját helyén, a lejátszókon szól"));
+    ov->addWidget(ovlRemove_);
+    rv->insertWidget(rv->indexOf(vtCap), ovlBox_);         // a voice track fölött, hogy görgetés nélkül látsszon
+    ovlBox_->setVisible(false);
 
     rv->addSpacing(2);
     cap(TR("MENTÉS HELYE"));
@@ -953,7 +1107,7 @@ MixEditorPage::MixEditorPage(Database *db, eter::Engine *engine, QWidget *parent
     connect(hscroll_, &QScrollBar::valueChanged, this, [this](int v) {
         if (!loading_) timeline_->setViewStart(qint64(v) * 10);
     });
-    for (QDoubleSpinBox *s : {mixOut_, outEnd_, fadeOut_, cueIn_, fadeIn_, startLevel_, intro_, vtOffset_, vtDuck_})
+    for (QDoubleSpinBox *s : {mixOut_, outEnd_, fadeOut_, cueIn_, fadeIn_, startLevel_, intro_, vtOffset_, vtDuck_, ovlOffset_, ovlDuck_})
         connect(s, &QDoubleSpinBox::valueChanged, this, &MixEditorPage::fieldsEdited);
     connect(curve_, &QComboBox::activated, this, &MixEditorPage::fieldsEdited);
     connect(save_, &QPushButton::clicked, this, &MixEditorPage::save);
@@ -962,6 +1116,9 @@ MixEditorPage::MixEditorPage(Database *db, eter::Engine *engine, QWidget *parent
     connect(vtFile_, &QPushButton::clicked, this, &MixEditorPage::chooseVtFile);
     connect(vtLibrary_, &QPushButton::clicked, this, &MixEditorPage::chooseVtFromLibrary);
     connect(vtRemove_, &QPushButton::clicked, this, [this] { setVtItem(0); });
+    connect(ovlRemove_, &QPushButton::clicked, this, &MixEditorPage::dissolveOverlay);
+    // A húzás eseménykezelője alatt ne épüljön át a lista: a ráfektetés a következő eseménykörben történik.
+    connect(timeline_, &MixTimeline::overlayDropped, this, [this] { QTimer::singleShot(0, this, &MixEditorPage::makeOverlayFromTriple); });
 
     loadCurrent();
 }
@@ -985,8 +1142,20 @@ void MixEditorPage::syncScrollBar()
 MixEditorPage::~MixEditorPage()
 {
     cancel_->store(true);
-    for (auto &t : threads_)
-        if (t.joinable()) t.join();
+    for (auto &w : threads_)
+        if (w.thread.joinable()) w.thread.join();
+}
+
+void MixEditorPage::reapThreads()
+{
+    for (auto it = threads_.begin(); it != threads_.end();) {
+        if (it->done->load()) {
+            if (it->thread.joinable()) it->thread.join();
+            it = threads_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 int MixEditorPage::currentIndex() const
@@ -1034,6 +1203,21 @@ void MixEditorPage::selectPair(int index)
 
 // Az átmenet érvényes beállításai: egyedi mix, a számok alapértelmezése, vagy automatikus.
 MixParams MixEditorPage::resolve(const MixPair &pair, int *kind) const
+{
+    MixParams p = resolveMix(pair, kind);
+    if (pair.ovlEntry) {
+        p.ovlEntry = pair.ovlEntry;
+        p.ovlItemId = pair.ovlItem.id;
+        p.ovlTitle = pair.ovlItem.title;
+        const Wave w = waves_.value(pair.ovlItem.id);
+        p.ovlDurMs = w.ready ? w.durMs : pair.ovlItem.durationMs;
+        p.ovlOffsetMs = pair.ovlOffsetMs;
+        p.ovlDuckDb = pair.ovlDuckDb;
+    }
+    return p;
+}
+
+MixParams MixEditorPage::resolveMix(const MixPair &pair, int *kind) const
 {
     MixParams p;
     p.introMs = pair.to.introMs;
@@ -1101,7 +1285,10 @@ void MixEditorPage::loadCurrent()
         clips.push_back({name(it), w.peaks, w.ready ? w.durMs : it.durationMs});
         titles << it.title;
     }
-    title_->setText(titles.join(QStringLiteral("  →  ")));
+    QString heading = titles.join(QStringLiteral("  →  "));
+    for (int j = 0; j < (three ? 2 : 1); ++j)
+        if (pairs_[i + j].ovlEntry) heading += TR("   ·   ráfektetve: %1").arg(pairs_[i + j].ovlItem.title);
+    title_->setText(heading);
     timeline_->setClips(clips);
     for (int j = 0; j < shown(); ++j) timeline_->setParams(j, resolve(pairs_[i + j], &kind_[j]), false);
     // Hármas nézetben akkora ablak kell, hogy mindkét átmenet látsszon.
@@ -1113,7 +1300,10 @@ void MixEditorPage::loadCurrent()
     } else {
         timeline_->recenter();
     }
-    for (int j = 0; j < shown(); ++j) applyVt(j);
+    for (int j = 0; j < shown(); ++j) {
+        applyVt(j);
+        applyOvl(j);
+    }
     actRow_->setVisible(three);
     showParams();
     syncScrollBar();
@@ -1128,7 +1318,12 @@ void MixEditorPage::requestWave(const Item &item)
     const int bins = int(std::clamp<qint64>(item.durationMs / 25, 2000, 40000));     // kb. 40 érték másodpercenként
     const double db = autoMixDb_;
     auto cancel = cancel_;
-    threads_.emplace_back([this, id, path, bins, db, cancel] {
+    reapThreads();
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    Worker worker;
+    worker.done = done;
+    worker.thread = std::thread([this, id, path, bins, db, cancel, done] {
+        struct Finish { std::shared_ptr<std::atomic<bool>> f; ~Finish() { f->store(true); } } finish{done};
         std::vector<float> peaks;
         int64_t total = 0;
         if (!eter::scanPeaks(path, bins, peaks, total, *cancel) || cancel->load()) return;
@@ -1142,10 +1337,12 @@ void MixEditorPage::requestWave(const Item &item)
             waveReady(id);
         }, Qt::QueuedConnection);
     });
+    threads_.push_back(std::move(worker));
 }
 
 void MixEditorPage::waveReady(int itemId)
 {
+    emit waveLoaded(itemId);
     const int i = currentIndex();
     if (i < 0) return;
     const Wave &w = waves_[itemId];
@@ -1161,6 +1358,7 @@ void MixEditorPage::waveReady(int itemId)
             changed = true;
         }
         if (timeline_->params(j).vtItemId == itemId) applyVt(j);
+        if (timeline_->params(j).ovlItemId == itemId) applyOvl(j);
     }
     if (changed) {
         if (!previewing()) timeline_->recenter();
@@ -1187,6 +1385,21 @@ void MixEditorPage::applyVt(int j)
     timeline_->setVtWave(j, w.peaks, w.ready ? w.durMs : it.durationMs, it.title);
 }
 
+// A ráfektetett elem hullámformája az idővonalon.
+void MixEditorPage::applyOvl(int j)
+{
+    const MixParams &p = timeline_->params(j);
+    if (!p.ovlItemId) {
+        timeline_->setOvlWave(j, {}, 0);
+        return;
+    }
+    const Item it = db_->item(p.ovlItemId);
+    if (!it.id) return;
+    requestWave(it);
+    const Wave w = waves_.value(it.id);
+    timeline_->setOvlWave(j, w.peaks, w.ready ? w.durMs : it.durationMs);
+}
+
 void MixEditorPage::showParams()
 {
     const int i = currentIndex();
@@ -1209,6 +1422,10 @@ void MixEditorPage::showParams()
     vtOffset_->setEnabled(p.vtItemId && has);
     vtDuck_->setEnabled(p.vtItemId && has);
     vtRemove_->setEnabled(p.vtItemId && has && !recordMode_);
+    ovlBox_->setVisible(has && p.ovlEntry);
+    ovlOffset_->setValue(p.ovlOffsetMs / 1000.0);
+    ovlDuck_->setValue(p.ovlDuckDb);
+    ovlName_->setText(p.ovlEntry ? QStringLiteral("%1 · %2").arg(p.ovlTitle, formatMs(p.ovlDurMs)) : QString());
     for (int j = 0; j < 2; ++j) {
         act_[j]->setChecked(j == a);
         act_[j]->setProperty("active", j == a);
@@ -1255,6 +1472,10 @@ void MixEditorPage::fieldsEdited()
     p.introMs = ms(intro_);
     p.vtOffsetMs = ms(vtOffset_);
     p.vtDuckDb = vtDuck_->value();
+    if (p.ovlEntry) {
+        p.ovlOffsetMs = ms(ovlOffset_);
+        p.ovlDuckDb = ovlDuck_->value();
+    }
     dirty_[a] = true;
     timeline_->setParams(a, p, false);
     showParams();
@@ -1308,8 +1529,15 @@ void MixEditorPage::save()
         }
     }
     QVector<int> changed;
-    for (int j : which) saveOne(j, changed);
+    struct Ovl { int entry; qint64 offset; double duck; };
+    QVector<Ovl> overlays;
+    for (int j : which) {
+        saveOne(j, changed);
+        const MixParams &p = timeline_->params(j);
+        if (p.ovlEntry) overlays.push_back({p.ovlEntry, p.ovlOffsetMs, p.ovlDuckDb});
+    }
     for (int j : which) dirty_[j] = false;
+    for (const Ovl &o : overlays) emit overlayEdited(o.entry, true, o.offset, o.duck);
     emit message(scopeItems_->isChecked() ? TR("Mentve a számokhoz (mix pont, kiúsztatás, kezdőpont).")
                  : which.size() > 1 ? TR("Mindkét átmenet egyedi mixe mentve.")
                                     : TR("Egyedi mix mentve ehhez az átmenethez."));
@@ -1364,10 +1592,12 @@ void MixEditorPage::refreshTable()
         const bool defaults = pair.from.userMixOutMs > 0 || pair.to.cueInMs > 0;
         QString mix = isCustom ? TR("egyedi") : defaults ? TR("számok") : TR("auto");
         if (isCustom && db_->transition(pair.toEntry).vtItemId) mix += TR("\n+ VT");
+        if (pair.ovlEntry) mix += TR("\n+ RÁF");
         // Ami éppen adásban van, azt jelöljük.
         const QString when = pair.fromOnAir && pair.toOnAir ? TR("ADÁSBAN")
                              : pair.fromOnAir ? TR("%1\nADÁSBAN").arg(pair.startText) : pair.startText;
-        const QString names = QStringLiteral("%1\n→ %2").arg(pair.from.title, pair.to.title);
+        const QString names = pair.ovlEntry ? QStringLiteral("%1 (+ %2)\n→ %3").arg(pair.from.title, pair.ovlItem.title, pair.to.title)
+                                            : QStringLiteral("%1\n→ %2").arg(pair.from.title, pair.to.title);
         const QString cells[3] = {when, names, mix};
         const bool shownRow = cur >= 0 && r >= cur && r < cur + shown();
         for (int c = 0; c < 3; ++c) {
@@ -1394,6 +1624,104 @@ void MixEditorPage::refreshTable()
         }
     }
     if (cur >= 0) table_->setCurrentCell(cur, 0);
+}
+
+// ------------------------------------------------------------ ráfektetés
+
+// Hármas nézetben a harmadik elemet a második eleje elé húzták: a második ráfekszik az 1 → 3 átmenetre.
+// Az új átmenet a kimenő elem végét és kiúsztatását, a bejövő elem kezdőpontját és beúsztatását viszi tovább.
+void MixEditorPage::makeOverlayFromTriple()
+{
+    const int i = currentIndex();
+    if (i < 0 || shown() != 2 || i + 1 >= pairs_.size() || !timeline_->overlayPending()) return;
+    stopPreview();
+    const MixPair a = pairs_[i], b = pairs_[i + 1];          // A → B, B → C
+    if (a.toOnAir || b.toOnAir || b.toEntry == 0) {
+        // A középső vagy a harmadik elem már szól: ezen már nem lehet változtatni.
+        emit message(TR("Adásban lévő elem nem fektethető rá, és nem fektethető rá adásban lévő elemre."));
+        dirty_[0] = dirty_[1] = false;
+        loadCurrent();
+        return;
+    }
+    const MixParams p0 = timeline_->params(0), p1 = timeline_->params(1);
+    const qint64 cStart = timeline_->clipStart(2);            // az első elem saját idejében
+    const qint64 bStart = timeline_->clipStart(1);
+    Transition t;
+    t.fromEntryId = a.fromEntry;
+    t.toEntryId = b.toEntry;
+    t.mixOutMs = std::max<qint64>(0, cStart);
+    t.outEndMs = std::max(timeline_->outEndTrack(0), t.mixOutMs);
+    t.fadeOutMs = p0.fadeOutMs;
+    t.fadeOutCurve = p0.curve;
+    t.cueInMs = p1.cueInMs;
+    t.fadeInMs = p1.fadeInMs;
+    t.startLevelDb = p1.fadeInMs > 0 ? p1.startLevelDb : 0;
+    // A meglévő voice track a helyén marad (az idővonalon ugyanott szól).
+    if (p0.vtItemId) {
+        t.vtItemId = p0.vtItemId;
+        t.vtOffsetMs = bStart + p0.vtOffsetMs - cStart;
+        t.vtDuckDb = p0.vtDuckDb;
+    } else if (p1.vtItemId) {
+        t.vtItemId = p1.vtItemId;
+        t.vtOffsetMs = p1.vtOffsetMs;
+        t.vtDuckDb = p1.vtDuckDb;
+    }
+    db_->saveTransition(t);
+    dirty_[0] = dirty_[1] = false;
+    // A kettes nézet mutatja az új átmenetet, alatta a ráfektetett elem sávjával.
+    setTriple(false);
+    fromEntry_ = a.fromEntry;
+    toEntry_ = b.toEntry;
+    emit overlayEdited(a.toEntry, true, round100(bStart - cStart), 0);
+    emit mixSaved({a.from.id, b.to.id});
+    showEntries(a.fromEntry, b.toEntry);
+    emit message(TR("„%1” ráfektetve a(z) „%2” → „%3” átmenetre: mindhárom szólhat egyszerre. Feloldás: „Önálló elemként”.")
+                     .arg(a.to.title, a.from.title, b.to.title));
+}
+
+void MixEditorPage::setRemoteMode(bool on)
+{
+    recordBtn_->setVisible(!on);
+    vtFile_->setVisible(!on);
+}
+
+void MixEditorPage::setTriple(bool on)
+{
+    const QSignalBlocker block(triple_);
+    triple_->setChecked(on);
+    triple_->setProperty("active", on);
+    repolish(triple_);
+    QSettings().setValue("mix/triple", on);
+}
+
+// A megadott pár megjelenítése akkor is, ha a szerkesztő közben (a lista frissülésekor) már magától rá állt.
+void MixEditorPage::showEntries(int fromEntry, int toEntry)
+{
+    if (pairIndex(pairs_, fromEntry, toEntry) < 0) return;
+    fromEntry_ = fromEntry;
+    toEntry_ = toEntry;
+    dirty_[0] = dirty_[1] = false;
+    loadCurrent();
+    refreshTable();
+}
+
+void MixEditorPage::dissolveOverlay()
+{
+    const int i = currentIndex();
+    if (i < 0) return;
+    const int j = timeline_->active();
+    const MixParams p = timeline_->params(j);
+    if (!p.ovlEntry) return;
+    stopPreview();
+    const MixPair pair = pairOf(j);
+    dirty_[0] = dirty_[1] = false;
+    // Hármas nézetben az új sorrend: kimenő → (a volt ráfektetett) → bejövő.
+    setTriple(true);
+    fromEntry_ = pair.fromEntry;
+    toEntry_ = p.ovlEntry;
+    emit overlayEdited(p.ovlEntry, false, 0, 0);
+    showEntries(pair.fromEntry, p.ovlEntry);
+    emit message(TR("A ráfektetés megszűnt: „%1” újra önálló elem.").arg(p.ovlTitle));
 }
 
 // ----------------------------------------------------------- voice track
@@ -1590,6 +1918,14 @@ void MixEditorPage::startPreview(bool forRecording)
                 pv_.vtDur[j] = w.ready ? w.durMs : it.durationMs;
             }
         }
+        if (pv_.tr[j].ovlItemId) {
+            const Item it = db_->item(pv_.tr[j].ovlItemId);
+            if (it.id && engine_->source(kOvlCh[j]).load(it.path.toStdString(), &err)) {
+                if (it.cueInMs > 0) engine_->source(kOvlCh[j]).seek(it.cueInMs * eter::kRate / 1000);
+                const Wave w = waves_.value(it.id);
+                pv_.ovlDur[j] = std::max<qint64>(1, w.ready ? w.durMs : it.durationMs);
+            }
+        }
     }
     for (int k = 0; k < pv_.n; ++k) {
         pv_.cue[k] = timeline_->cue(k);
@@ -1609,6 +1945,7 @@ void MixEditorPage::startPreview(bool forRecording)
     const int j0 = firstClip;
     qint64 pos = pv_.tr[j0].mixOutMs - 5000;
     if (pv_.vtDur[j0] > 0) pos = std::min(pos, pv_.tr[j0].mixOutMs + pv_.tr[j0].vtOffsetMs - 2000);
+    if (pv_.ovlDur[j0] > 0) pos = std::min(pos, pv_.tr[j0].mixOutMs + pv_.tr[j0].ovlOffsetMs - 2000);
     pos = std::max(pos, pv_.cue[firstClip]);
     previewStartMs_ = pv_.start[firstClip] + (pos - pv_.cue[firstClip]);
     for (int k = 0; k < pv_.n; ++k)
@@ -1628,6 +1965,7 @@ void MixEditorPage::previewTick()
     float l, r;
     for (int k = 0; k < 3; ++k) engine_->source(kClipCh[k]).takePeaks(l, r);
     for (int j = 0; j < 2; ++j) engine_->source(kVtCh[j]).takePeaks(l, r);
+    for (int j = 0; j < 2; ++j) engine_->source(kOvlCh[j]).takePeaks(l, r);
 
     const int k = pv_.started;
     auto &cur = engine_->source(kClipCh[k]);
@@ -1676,6 +2014,18 @@ void MixEditorPage::previewTick()
                 for (int c = 0; c < pv_.n; ++c) engine_->source(kClipCh[c]).setDuck(1.f);
         }
     }
+    // Ráfektetett elemek: a saját időpontjukban indulnak, a zenével együtt szólnak.
+    for (int j = 0; j < pv_.n - 1; ++j) {
+        auto &ov = engine_->source(kOvlCh[j]);
+        if (pv_.ovlDur[j] > 0 && !pv_.ovlStarted[j] && now >= pv_.start[j + 1] + pv_.tr[j].ovlOffsetMs) {
+            pv_.ovlStarted[j] = true;
+            ov.play();
+            if (pv_.tr[j].ovlDuckDb < 0)
+                for (int c = 0; c < pv_.n; ++c) engine_->source(kClipCh[c]).setDuck(float(dbToGain(pv_.tr[j].ovlDuckDb)));
+        }
+        if (pv_.ovlStarted[j] && ov.takeFinished() && pv_.tr[j].ovlDuckDb < 0 && pv_.vtPlaying <= 0)
+            for (int c = 0; c < pv_.n; ++c) engine_->source(kClipCh[c]).setDuck(1.f);
+    }
 
     bool anyPlaying = false;
     for (int c = 0; c < pv_.n; ++c) anyPlaying = anyPlaying || engine_->source(kClipCh[c]).playing();
@@ -1694,6 +2044,7 @@ void MixEditorPage::previewTick()
         const MixParams &p = pv_.tr[j];
         qint64 tail = std::max((p.outEndMs > 0 ? p.outEndMs : p.mixOutMs + p.fadeOutMs) - p.mixOutMs, p.fadeInMs);
         if (pv_.vtDur[j] > 0) tail = std::max(tail, p.vtOffsetMs + pv_.vtDur[j]);
+        if (pv_.ovlDur[j] > 0) tail = std::max(tail, p.ovlOffsetMs + pv_.ovlDur[j]);
         if (p.introMs > p.cueInMs) tail = std::max(tail, p.introMs - p.cueInMs);
         tail = std::min<qint64>(tail + 4000, 120000);
         const qint64 lastMs = engine_->source(kClipCh[pv_.n - 1]).position() * 1000 / eter::kRate - pv_.cue[pv_.n - 1];
@@ -1712,6 +2063,7 @@ void MixEditorPage::stopPreview()
     timer_->stop();
     for (int k = 0; k < 3; ++k) engine_->source(kClipCh[k]).unload();
     for (int j = 0; j < 2; ++j) engine_->source(kVtCh[j]).unload();
+    for (int j = 0; j < 2; ++j) engine_->source(kOvlCh[j]).unload();
     timeline_->setPlayhead(-1);
     previewBtn_->setText(TR("Előhallgatás"));
     previewBtn_->setIcon(theme::icon(theme::Icon::Play, theme::text));
@@ -1726,4 +2078,119 @@ void MixEditorPage::stopPreview()
         repolish(recordBtn_);
         showParams();
     }
+}
+
+// ------------------------------------------------------- mini szerkesztő
+
+static int pairIndex(const QVector<MixPair> &pairs, int fromEntry, int toEntry)
+{
+    for (int i = 0; i < pairs.size(); ++i)
+        if (pairs[i].fromEntry == fromEntry && pairs[i].toEntry == toEntry) return i;
+    return -1;
+}
+
+bool MixEditorPage::quickParams(int fromEntry, int toEntry, MixParams *out, int *kind)
+{
+    const int i = pairIndex(pairs_, fromEntry, toEntry);
+    if (i < 0) return false;
+    const MixPair &pair = pairs_[i];
+    requestWave(pair.from);
+    requestWave(pair.to);
+    int k = 0;
+    MixParams p = resolve(pair, &k);
+    // Az elem vége ugyanúgy, mint az idővonalon: legalább a mix pont, legfeljebb a fájl vége.
+    const Wave w = waves_.value(pair.from.id);
+    const qint64 dur = w.ready ? w.durMs : pair.from.durationMs;
+    qint64 end = p.outEndMs > 0 ? p.outEndMs : p.mixOutMs + p.fadeOutMs;
+    if (dur > 0) end = std::min(end, dur);
+    p.outEndMs = std::max(end, p.mixOutMs);
+    if (out) *out = p;
+    if (kind) *kind = k;
+    return true;
+}
+
+void MixEditorPage::quickSetMix(int fromEntry, int toEntry, qint64 mixOutMs)
+{
+    MixParams p;
+    if (!quickParams(fromEntry, toEntry, &p)) return;
+    const MixPair pair = pairs_[pairIndex(pairs_, fromEntry, toEntry)];
+    Transition t;
+    t.toEntryId = toEntry;
+    t.fromEntryId = fromEntry;
+    t.mixOutMs = std::max<qint64>(0, mixOutMs);
+    // A csúsztatás nem vágja le a kimenő elemet: a vége csak akkor mozdul, ha a mix pont túllépné.
+    t.outEndMs = std::max(p.outEndMs, t.mixOutMs);
+    t.fadeOutMs = p.fadeOutMs;
+    t.fadeOutCurve = p.curve;
+    t.cueInMs = p.cueInMs;
+    t.fadeInMs = p.fadeInMs;
+    t.startLevelDb = p.fadeInMs > 0 ? p.startLevelDb : 0;
+    t.vtItemId = p.vtItemId;
+    t.vtOffsetMs = p.vtOffsetMs;
+    t.vtDuckDb = p.vtDuckDb;
+    db_->saveTransition(t);
+    emit mixSaved({pair.from.id, pair.to.id});
+    // Ha a nagy szerkesztő éppen ezt a párt mutatja, és nincs benne mentetlen módosítás, frissül.
+    const int cur = currentIndex();
+    if (cur >= 0 && !anyDirty())
+        for (int j = 0; j < shown(); ++j)
+            if (pairs_[cur + j].fromEntry == fromEntry && pairs_[cur + j].toEntry == toEntry) {
+                timeline_->setParams(j, resolve(pairs_[cur + j], &kind_[j]), false);
+                showParams();
+            }
+    refreshTable();
+}
+
+void MixEditorPage::quickReset(int fromEntry, int toEntry)
+{
+    const int i = pairIndex(pairs_, fromEntry, toEntry);
+    if (i < 0) return;
+    const MixPair pair = pairs_[i];
+    db_->deleteTransition(toEntry);
+    emit mixSaved({pair.from.id, pair.to.id});
+    emit message(TR("Az átmenet egyedi mixe törölve."));
+    const int cur = currentIndex();
+    if (cur >= 0 && !anyDirty())
+        for (int j = 0; j < shown(); ++j)
+            if (pairs_[cur + j].fromEntry == fromEntry && pairs_[cur + j].toEntry == toEntry) {
+                timeline_->setParams(j, resolve(pairs_[cur + j], &kind_[j]), false);
+                showParams();
+            }
+    refreshTable();
+}
+
+void MixEditorPage::selectEntries(int fromEntry, int toEntry)
+{
+    const int i = pairIndex(pairs_, fromEntry, toEntry);
+    if (i >= 0 && currentIndex() != i) selectPair(i);
+}
+
+bool MixEditorPage::quickPreviewing(int fromEntry, int toEntry) const
+{
+    return phase_ != 0 && fromEntry_ == fromEntry && toEntry_ == toEntry;
+}
+
+void MixEditorPage::quickPreviewToggle(int fromEntry, int toEntry)
+{
+    if (phase_ != 0) {
+        const bool same = quickPreviewing(fromEntry, toEntry);
+        stopPreview();
+        if (same) return;
+    }
+    const int i = pairIndex(pairs_, fromEntry, toEntry);
+    if (i < 0) return;
+    if (anyDirty() && currentIndex() != i) {
+        emit message(TR("A Mix editorban mentetlen módosítás van; előbb mentsd vagy állítsd vissza."));
+        return;
+    }
+    if (currentIndex() != i) selectPair(i);
+    startPreview(false);
+}
+
+QVector<float> MixEditorPage::quickWave(const Item &item, qint64 *durMs)
+{
+    requestWave(item);
+    const Wave w = waves_.value(item.id);
+    if (durMs) *durMs = w.ready ? w.durMs : item.durationMs;
+    return w.ready ? w.peaks : QVector<float>();
 }

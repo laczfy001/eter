@@ -3,7 +3,9 @@
 #include <QDate>
 #include <QDateTime>
 #include <QHash>
+#include <QJsonObject>
 #include <QObject>
+#include <functional>
 #include <QString>
 #include <algorithm>
 #include <QVector>
@@ -40,6 +42,9 @@ struct Entry {
     int fixedStartS = -1;           // fix kezdés az órán belül (mp), −1 = nincs
     int groupId = 0;                // kézzel készített playlist blokkja; 0 = nem tartozik blokkhoz
     QString groupName;
+    bool overlay = false;           // az előtte és utána szóló elem átmenetére van ráfektetve
+    qint64 overlayOffsetMs = 0;     // a kezdése a két elem közti mix ponthoz képest (negatív: előtte)
+    double overlayDuckDb = 0;       // ennyivel halkul alatta a zene
     Item item;
 };
 
@@ -174,6 +179,7 @@ public:
                    int groupId = 0, const QString &groupName = {});
     int nextGroupId();
     void setEntryGroup(int entryId, int groupId, const QString &groupName);
+    void setEntryOverlay(int entryId, bool on, qint64 offsetMs = 0, double duckDb = 0);
 
     // Cartwall
     QVector<Cartwall> cartwalls();
@@ -227,6 +233,18 @@ public:
     void saveTransition(const Transition &t);
     void deleteTransition(int toEntryId);
     QHash<int, int> transitionPairs();                   // bejövő sor → kimenő sor
+    QVector<Transition> transitionsFor(const QVector<int> &toEntryIds);
+
+    // Távoli szerkesztő: a playout adatainak helyi tükre (a playout azonosítóival).
+    struct MirrorRow {
+        Entry entry;
+        QString status;                                  // pending, playing, played, skipped
+    };
+    bool mirrorLibrary(const QVector<Category> &categories, const QVector<Item> &items);
+    bool mirrorState(const QVector<MirrorRow> &rows, const QVector<Transition> &transitions);
+    // Ha be van állítva, a Mix editor mentései (átmenet, a számok jelölői) ide is jelzik magukat:
+    // a távoli szerkesztő így küldi tovább őket a playoutnak.
+    std::function<void(const QString &op, const QJsonObject &args)> remoteHook;
     void setItemMixDefaults(int itemId, qint64 mixOutMs, qint64 fadeOutMs, const QString &curve, qint64 cueOutMs);
     void clearItemMixDefaults(int itemId);
     void setItemCueIn(int itemId, qint64 cueInMs);

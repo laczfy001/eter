@@ -1,5 +1,9 @@
 #include "i18n.h"
 #include "SettingsDialog.h"
+#include <QSpinBox>
+#include <QLineEdit>
+#include <QCheckBox>
+#include "net/Remote.h"
 #include "MainWindow.h"
 
 #include <QComboBox>
@@ -133,6 +137,64 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
     note->setObjectName("small");
     note->setWordWrap(true);
     root->addWidget(note);
+    root->addSpacing(8);
+
+    // Távoli szerkesztés: egy másik gépen futó Éter (szerkesztő módban) szerkesztheti ennek a playlistjét.
+    auto *remCaption = new QLabel(TR("TÁVOLI SZERKESZTÉS"));
+    remCaption->setObjectName("caption");
+    root->addWidget(remCaption);
+    auto *remRow = new QHBoxLayout;
+    remRow->setSpacing(8);
+    QSettings st;
+    auto *remOn = new QCheckBox(TR("Engedélyezve"));
+    remOn->setChecked(st.value("remote/enabled", false).toBool());
+    auto *remPort = new QSpinBox;
+    remPort->setRange(1024, 65535);
+    remPort->setValue(st.value("remote/port", remote::kDefaultPort).toInt());
+    auto *remPass = new QLineEdit;
+    remPass->setEchoMode(QLineEdit::Password);
+    remPass->setPlaceholderText(st.value("remote/key").toByteArray().isEmpty() ? TR("új jelszó (legalább 6 karakter)")
+                                                                               : TR("új jelszó (üresen: marad a régi)"));
+    auto *remApply = new QPushButton(TR("Alkalmazás"));
+    remRow->addWidget(remOn);
+    remRow->addWidget(new QLabel(TR("Port")));
+    remRow->addWidget(remPort);
+    remRow->addWidget(new QLabel(TR("Jelszó")));
+    remRow->addWidget(remPass, 1);
+    remRow->addWidget(remApply);
+    root->addLayout(remRow);
+    remoteState_ = new QLabel;
+    remoteState_->setObjectName("small");
+    remoteState_->setWordWrap(true);
+    remoteState_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    root->addWidget(remoteState_);
+    connect(remApply, &QPushButton::clicked, this, [this, remOn, remPort, remPass] {
+        QSettings s;
+        const QString pass = remPass->text();
+        if (remOn->isChecked() && pass.isEmpty() && s.value("remote/key").toByteArray().isEmpty()) {
+            remoteState_->setText(TR("Adj meg jelszót: a szerkesztő ezzel csatlakozhat."));
+            remPass->setFocus();
+            return;
+        }
+        if (!pass.isEmpty() && pass.size() < 6) {
+            remoteState_->setText(TR("A jelszó legalább 6 karakter legyen."));
+            remPass->setFocus();
+            return;
+        }
+        if (!pass.isEmpty()) {
+            const QByteArray salt = remote::newSalt();
+            s.setValue("remote/salt", salt.toBase64());
+            s.setValue("remote/key", remote::deriveKey(salt, pass).toBase64());
+            remPass->clear();
+            remPass->setPlaceholderText(TR("új jelszó (üresen: marad a régi)"));
+        }
+        s.setValue("remote/enabled", remOn->isChecked());
+        s.setValue("remote/port", remPort->value());
+        main_->configureRemote();
+        remoteState_->setText(TR("Állapot: %1").arg(main_->remoteStatus()));
+    });
+    remoteState_->setText(TR("Állapot: %1").arg(main_->remoteStatus())
+                          + TR("\nA szerkesztő gépen: Fájl → Távoli szerkesztő, vagy az Éter indítása --editor kapcsolóval."));
     root->addStretch(1);
 
     auto *bottom = new QHBoxLayout;

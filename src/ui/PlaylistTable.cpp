@@ -106,3 +106,21 @@ void PlaylistTable::keyPressEvent(QKeyEvent *e)
     else if (e->key() == Qt::Key_Space) emit spacePressed();   // a táblázat ne nyelje el az adásgombot
     else QTableWidget::keyPressEvent(e);
 }
+
+void PlaylistTable::resizeEvent(QResizeEvent *e)
+{
+    QTableWidget::resizeEvent(e);
+    emit viewGeometryChanged();
+}
+
+void PlaylistTable::scrollContentsBy(int dx, int dy)
+{
+    QTableWidget::scrollContentsBy(dx, dy);
+    emit viewGeometryChanged();
+}
+
+void PlaylistTable::updateGeometries()
+{
+    QTableWidget::updateGeometries();
+    emit viewGeometryChanged();
+}

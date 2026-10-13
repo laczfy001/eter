@@ -13,6 +13,7 @@ signals:
     void pathsDropped(const QStringList &paths, int at);
     void deletePressed();
     void spacePressed();
+    void viewGeometryChanged();                            // görgetés, átméretezés: a ráhelyezett elemek igazítása
 
 protected:
     void startDrag(Qt::DropActions) override;
@@ -22,6 +23,9 @@ protected:
     void dropEvent(QDropEvent *) override;
     void paintEvent(QPaintEvent *) override;
     void keyPressEvent(QKeyEvent *) override;
+    void resizeEvent(QResizeEvent *) override;
+    void scrollContentsBy(int dx, int dy) override;
+    void updateGeometries() override;
 
 private:
     bool accepts(const QMimeData *mime) const;

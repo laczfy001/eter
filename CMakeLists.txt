@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(eter VERSION 0.12.0 LANGUAGES C CXX)
+project(eter VERSION 0.15.1 LANGUAGES C CXX)
 if(WIN32)
     enable_language(RC)
 endif()
@@ -12,7 +12,7 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Sql)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Sql Network)
 find_package(Threads REQUIRED)
 
 # Statikus, csak hangot dekódoló FFmpeg (scripts/build_ffmpeg.sh állítja elő)
@@ -41,8 +41,11 @@ add_executable(eter
     src/ui/CartwallPanel.cpp
     src/ui/ItemEditor.cpp
     src/ui/TimedEventsPage.cpp
+    src/ui/MiniMix.cpp
     src/sched/Scheduler.cpp
     src/ui/SettingsDialog.cpp
+    src/net/Remote.cpp
+    src/ui/RemoteEditor.cpp
     resources/resources.qrc
 )
 
@@ -54,6 +57,7 @@ set_source_files_properties(src/audio/Engine.cpp PROPERTIES COMPILE_OPTIONS "-w"
 target_link_libraries(eter PRIVATE
     Qt6::Widgets
     Qt6::Sql
+    Qt6::Network
     "${FFMPEG_ROOT}/lib/libavformat.a"
     "${FFMPEG_ROOT}/lib/libavcodec.a"
     "${FFMPEG_ROOT}/lib/libswresample.a"

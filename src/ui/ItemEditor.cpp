@@ -243,7 +243,10 @@ ItemEditorDialog::ItemEditorDialog(Database *db, eter::Engine *engine, int itemI
     category_ = new QComboBox;
     category_->setIconSize(QSize(12, 12));
     for (const Category &c : db_->itemCategories())
-        category_->addItem(swatchIcon(QColor(c.color)), QStringLiteral("%1 · %2").arg(c.name, kindLabel(c.kind)), c.id);
+        category_->addItem(swatchIcon(QColor(c.color)),
+                           c.name.compare(kindLabel(c.kind), Qt::CaseInsensitive) == 0 ? c.name   // „Zene · Zene” helyett csak „Zene”
+                                                                                      : QStringLiteral("%1 · %2").arg(c.name, kindLabel(c.kind)),
+                           c.id);
     category_->setCurrentIndex(std::max(0, category_->findData(item_.categoryId)));
     auto *yearRow = new QHBoxLayout;
     yearRow->addWidget(year_);

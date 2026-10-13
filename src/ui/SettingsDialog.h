@@ -22,4 +22,5 @@ private:
     QLabel *state_[4];
     QPushButton *test_[4];
     QLabel *count_;
+    QLabel *remoteState_ = nullptr;
 };

@@ -194,7 +194,7 @@ void PlayerWidget::startScan(const QString &path)
         std::vector<float> peaks;
         int64_t total = 0;
         const bool ok = eter::scanPeaks(p, 1200, peaks, total, *cancel);
-        if (!ok || cancel->load()) return;
+        if (!ok || cancel->load() || peaks.empty() || total <= 0) return;
         QVector<float> v(peaks.begin(), peaks.end());
         QMetaObject::invokeMethod(this, [this, v, total, generation] {
             if (generation != scanGeneration_ || !src_->loaded()) return;
