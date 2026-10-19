@@ -31,10 +31,10 @@ jobs:
 
       - name: Build FFmpeg (audio decoders only, static)
         if: steps.ffmpeg.outputs.cache-hit != 'true'
-        run: scripts/build_ffmpeg.sh
+        run: sh scripts/build_ffmpeg.sh
 
       - name: Build AppImage
-        run: scripts/build_appimage.sh
+        run: sh scripts/build_appimage.sh
 
       - name: Audio engine self-test
         run: |
@@ -89,10 +89,10 @@ jobs:
 
       - name: Build FFmpeg (audio decoders only, static)
         if: steps.ffmpeg.outputs.cache-hit != 'true'
-        run: scripts/build_ffmpeg.sh
+        run: sh scripts/build_ffmpeg.sh
 
       - name: Build Windows package
-        run: scripts/build_windows.sh
+        run: sh scripts/build_windows.sh
 
       - name: Create a test tone
         shell: pwsh
