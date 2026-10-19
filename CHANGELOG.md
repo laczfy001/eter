@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.18.0
+- Scheduler: every item can have an energy (1 very calm … 5 very upbeat), a tempo (BPM) and dayparts (night, morning,
+  daytime, afternoon, evening; the start hours can be set). New rules: at most N slow songs in a row, at most this big
+  an energy jump, at most this big a tempo change between two songs (half and double tempo count as the same). A clock
+  slot can ask for an energy band (for example 4–5 after the news). Items are only scheduled in their dayparts. When no
+  item fits, the rules are relaxed one by one (flow, energy band, separation, daypart).
+- The tempo can be estimated from the audio (item editor → Estimate, or for many items at once from the library's
+  right-click menu), or tapped in by hand. Energy and dayparts can be set for many items at once in the library; the
+  library shows Energy and BPM columns.
+- Remote editor: the playout's library is shown under the playlist; items can be dragged or double-clicked into the
+  playlist. Audio files can be uploaded from the editing computer into the playout's library (button, or drop files
+  onto the library or the playlist), and voice tracks can be recorded or loaded from file in the editor's Mix editor:
+  they are uploaded to the playout and used there.
+- Remote editing users: besides the main password, users with their own password and rights (order, delete, insert,
+  mix and overlay, upload, backup playout) can be added in Settings → Network. The playout checks every request; the
+  editor greys out what the user may not do. The protocol changed: update Éter on every computer.
+- Backup playout: a second computer (File → Restart as backup playout, or `--backup`; on Windows
+  `Eter-tartalek.cmd`) mirrors the main playout: it receives a copy of the whole database (every 10 minutes, and half a
+  minute after changes) and the live state every few seconds. If the main computer disappears while something is on
+  air, the backup takes over automatically after the set time (or only by button, as set), continuing the item that was
+  playing from where it would be. When the main computer is back, *Hand back* returns the programme to it at exactly
+  the same point, and the backup goes back to standby. A normal shutdown of the main computer does not trigger a
+  takeover.
+
+## 0.17.0
+- Missing files: the files of the waiting playlist items (and their voice tracks) are checked in the background after
+  every change and once a minute. An item whose file cannot be reached turns red ("MISSING FILE"), a button under the
+  playlist counts them and opens a list (check again, remove selected or all), and a warning comes 30 minutes before
+  such an item would go on air. Library → Find missing files in the library checks every item; those are left out by
+  the scheduler until they turn up, and can be deleted from the library. Remote editors see the red rows too.
+- On time: before every fixed-time item (such as the news at the top of the hour) the playlist shows how much is
+  missing or over (a "−1:12" / "+0:42" mark on the row, and a bar above the playlist). *Adjust…* suggests items to fill
+  the gap (from a chosen category, best fit first) or items to take out. In automatic mode it can also do this by
+  itself 20 minutes before the fixed point (Scheduler → Fixed points: by hand / fill / fill and shorten).
+- Program logger: what goes on air (players, voice tracks, overlaid items, cartwall, without the preview) is recorded
+  into a new MP3 file every hour, split exactly on the hour; files older than the keep time (default 30 days) are
+  deleted. Settings → Logger: folder, quality, keep time. A red "● Recording" mark shows it in the status bar.
+- Settings are now on tabs: General and audio, Logger, Network.
+- Building from source needs LAME (`libmp3lame-dev` on Ubuntu, `mingw-w64-ucrt-x86_64-lame` in MSYS2); the Windows build
+  script installs it by itself if it is missing.
+
+## 0.16.1
+- Mix editor: clicking anywhere in a lane starts the preview from that point (if it is already playing, it jumps
+  there). Whatever is audible at that moment starts from the right place, including voice tracks and overlaid items.
+  The Preview button works as before. Dragging still edits; a click that moves only a few pixels counts as a click.
+- Items that are not music (jingles, news, adverts…) are no longer faded out at the mix point by default: they play to
+  their end while the next item starts under them. A fade set by hand in the Mix editor still applies, and pressing
+  Next early still fades them out.
+- Remote editor: connecting with an empty password field shows a warning and does not try to connect. A wrong password
+  now shows "Wrong password" instead of a generic "connection closed" message. Closing the editor window always quits
+  the program.
+
+## 0.16.0
+- On air: in the last 10 seconds of the item on air (player 1 or 2) a red countdown appears at the bottom of the
+  window, counting down from 10. In automatic mode it counts to the mix point, so it reaches zero when the next item
+  starts. The countdown cannot be clicked: it lets every click through to whatever is under it.
+
 ## 0.15.1
 - Remote editor: the folder on the editing computer can be given as a file-manager network address
   (`smb://computer/share/folder`) or as `\\computer\share\folder`. On Linux it is translated to the folder where

@@ -1,5 +1,7 @@
 // Hangtár panel és a hozzá tartozó ablakok: importálás, kategóriák, adásnapló.
 #pragma once
+#include <atomic>
+#include <memory>
 #include "db/Database.h"
 
 #include <QAbstractTableModel>
@@ -40,7 +42,7 @@ public:
     int totalCount() const { return all_.size(); }
 
     int rowCount(const QModelIndex & = {}) const override { return rows_.size(); }
-    int columnCount(const QModelIndex & = {}) const override { return 5; }
+    int columnCount(const QModelIndex & = {}) const override { return 7; }
     QVariant data(const QModelIndex &index, int role) const override;
     QVariant headerData(int section, Qt::Orientation o, int role) const override;
     void sort(int column, Qt::SortOrder order) override;
@@ -65,6 +67,7 @@ public:
     using Done = std::function<void(const QVector<int> &itemIds)>;
 
     explicit LibraryPanel(Database *db, QWidget *parent = nullptr);
+    ~LibraryPanel() override { if (tempoCancel_) tempoCancel_->store(true); }
     void setFooter(QWidget *footer);
     QVector<int> selectedItemIds() const;
     Item currentItem() const;
@@ -75,8 +78,11 @@ public:
     // Fájlok és mappák beolvasása; kategóriát az importáló ablakban kell választani.
     void importPaths(const QStringList &paths, Done done = {});
     void openCategories();
+    // Távoli szerkesztő: a hangtár csak olvasható (nincs import, törlés, szerkesztés); a ráejtett fájlok feltöltésre mennek.
+    void setRemoteMode(bool on);
 
 signals:
+    void filesDropped(const QStringList &paths);       // csak távoli módban
     void addToPlaylist(const QVector<int> &itemIds);
     void previewRequested();
     void editRequested(int itemId);
@@ -91,6 +97,10 @@ private:
     void reloadCategories();
     void contextMenu(const QPoint &pos);
     void deleteSelected();
+    void setEnergy(const QVector<int> &ids, int energy);
+    void editDayparts(const QVector<int> &ids);
+    void estimateTempo(const QVector<int> &ids);
+    std::shared_ptr<std::atomic<bool>> tempoCancel_;
 
     Database *db_;
     LibraryModel *model_;
@@ -100,6 +110,8 @@ private:
     QLabel *empty_;
     QVBoxLayout *layout_;
     QPointer<QDialog> importDialog_, categoriesDialog_;
+    QPushButton *importBtn_ = nullptr, *catBtn_ = nullptr;
+    bool remote_ = false;
 };
 
 class ImportDialog : public QDialog {

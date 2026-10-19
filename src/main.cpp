@@ -45,7 +45,13 @@
 #include <QElapsedTimer>
 #include <QLockFile>
 #include "ui/RemoteEditor.h"
+#include "ui/BackupWindow.h"
+#include <QRegularExpression>
 #include "net/Remote.h"
+#include <QTabWidget>
+#include <QRandomGenerator>
+#include <QElapsedTimer>
+#include "audio/Analysis.h"
 #include <QTemporaryDir>
 #include <QNetworkProxy>
 #include <QTimer>
@@ -225,6 +231,88 @@ static void runEditorTest(RemoteEditorWindow &editor)
     });
 }
 
+// Szerkesztő mód, második forgatókönyv: beszúrás a hangtárból, fájl és voice track feltöltése, jogok.
+static void runEditorTest2(RemoteEditorWindow &editor)
+{
+    auto step = std::make_shared<int>(0);
+    QObject::connect(editor.client(), &remote::Client::failed, &editor, [](const QString &why) {
+        std::printf("szerkesztő: nem sikerült: %s\n", qPrintable(why));
+        std::fflush(stdout);
+        QApplication::exit(2);
+    });
+    QObject::connect(editor.client(), &remote::Client::loggedIn, &editor, [&editor](const QString &) {
+        std::printf("szerkesztő: belépve, jogok: [%s]\n", qPrintable(editor.client()->perms().join(',')));
+        std::fflush(stdout);
+    });
+    QObject::connect(&editor, &RemoteEditorWindow::opAnswered, &editor, [](int id, bool ok, const QString &err) {
+        std::printf("szerkesztő: válasz #%d: %s %s\n", id, ok ? "rendben" : "elutasítva", qPrintable(err));
+        std::fflush(stdout);
+    });
+    auto entryOf = [](const QString &title) {
+        QSqlQuery q;
+        q.prepare("SELECT e.id FROM playlist_entries e JOIN items i ON i.id = e.item_id WHERE i.title = ? ORDER BY e.id LIMIT 1");
+        q.addBindValue(title);
+        q.exec();
+        return q.next() ? q.value(0).toInt() : 0;
+    };
+    auto itemOf = [](const QString &title) {
+        QSqlQuery q;
+        q.prepare("SELECT id FROM items WHERE title = ?");
+        q.addBindValue(title);
+        q.exec();
+        return q.next() ? q.value(0).toInt() : 0;
+    };
+    QObject::connect(&editor, &RemoteEditorWindow::stateApplied, &editor, [&editor, step, entryOf, itemOf] {
+        if (*step != 0) return;
+        *step = 1;
+        std::printf("szerkesztő: állapot: %s\n", qPrintable(editor.debugState()));
+        std::fflush(stdout);
+        QTimer::singleShot(400, &editor, [&editor, entryOf, itemOf] {
+            std::printf("szerkesztő: „c” beszúrása a hangtárból „hirek” elé\n");
+            editor.requestInsert({itemOf("c")}, entryOf("hirek"));
+        });
+        QTimer::singleShot(1200, &editor, [&editor, entryOf] {
+            std::printf("szerkesztő: „b” áthelyezése a végére (sorrend joga kell)\n");
+            editor.requestMove(entryOf("b"), 0);
+        });
+        QTimer::singleShot(2000, &editor, [&editor] {
+            const QString f = qEnvironmentVariable("ETER_EDITOR_UPLOAD");
+            if (f.isEmpty()) return;
+            int cat = 0;
+            QSqlQuery q("SELECT id FROM categories WHERE kind = 'music' LIMIT 1");
+            if (q.next()) cat = q.value(0).toInt();
+            std::printf("szerkesztő: feltöltés: %s\n", qPrintable(QFileInfo(f).fileName()));
+            std::fflush(stdout);
+            editor.uploadFile(f, cat, false, QString(), [&editor](int id) {
+                std::printf("szerkesztő: feltöltve, új elem: %d\n", id);
+                std::fflush(stdout);
+                if (id) editor.requestInsert({id}, 0);
+            });
+        });
+        QTimer::singleShot(2200, &editor, [&editor] {
+            const QString f = qEnvironmentVariable("ETER_EDITOR_VT");
+            if (f.isEmpty()) return;
+            std::printf("szerkesztő: voice track feltöltése: %s\n", qPrintable(QFileInfo(f).fileName()));
+            editor.uploadFile(f, 0, true, QStringLiteral("Teszt VT"), [](int id) {
+                std::printf("szerkesztő: voice track feltöltve, új elem: %d\n", id);
+                QSqlQuery q;
+                q.prepare("SELECT i.title, c.kind, i.file_path FROM items i JOIN categories c ON c.id = i.category_id WHERE i.id = ?");
+                q.addBindValue(id);
+                q.exec();
+                if (q.next()) std::printf("szerkesztő: a tükörben: %s (%s) %s\n", qPrintable(q.value(0).toString()), qPrintable(q.value(1).toString()),
+                                          qPrintable(q.value(2).toString()));
+                std::fflush(stdout);
+            });
+        });
+        QTimer::singleShot(qEnvironmentVariableIsSet("ETER_EDITOR_END") ? qEnvironmentVariableIntValue("ETER_EDITOR_END") : 9000, &editor, [&editor] {
+            std::printf("szerkesztő: végső állapot: %s\n", qPrintable(editor.debugState()));
+            editor.grab().save("editor2.png");
+            std::fflush(stdout);
+            QApplication::exit(0);
+        });
+    });
+}
+
 int main(int argc, char **argv)
 {
     // Alapból X11 (Wayland alatt XWayland) – ott a rendszer rajzolja az ablakkeretet;
@@ -272,7 +360,15 @@ int main(int argc, char **argv)
     QCommandLineOption editTestOpt("edittest", QStringLiteral("Elemszerkesztő forgatókönyv (fejlesztéshez)."));
     QCommandLineOption nextTestOpt("nexttest", QStringLiteral("Asszisztált váltás forgatókönyv (fejlesztéshez)."));
     QCommandLineOption eventTestOpt("eventtest", QStringLiteral("Időzítések forgatókönyve (fejlesztéshez)."));
+    QCommandLineOption backupOpt("backup", QStringLiteral("Tartalék playout: a fő playout tükrözése, és az adás átvétele, ha a fő gép eltűnik."));
     QCommandLineOption editorOpt("editor", QStringLiteral("Szerkesztő mód: egy másik gépen futó playout playlistjének szerkesztése a hálózaton át."));
+    QCommandLineOption flowTestOpt("flowtest", QStringLiteral("Ütemező: energia, tempó, napszak (fejlesztéshez)."));
+    QCommandLineOption bpmOpt("bpm", QStringLiteral("A megadott fájlok tempójának becslése (fejlesztéshez)."));
+    QCommandLineOption loggerTestOpt("loggertest", QStringLiteral("Adásrögzítés forgatókönyv (fejlesztéshez)."));
+    QCommandLineOption fixTestOpt("fixtest", QStringLiteral("Pontos időre igazítás forgatókönyv (fejlesztéshez)."));
+    QCommandLineOption fileTestOpt("filetest", QStringLiteral("Hiányzó fájlok forgatókönyv (fejlesztéshez)."));
+    QCommandLineOption clickTestOpt("clicktest", QStringLiteral("Mix editor kattintás és nem zenei elem forgatókönyv (fejlesztéshez)."));
+    QCommandLineOption countTestOpt("counttest", QStringLiteral("Visszaszámláló forgatókönyv (fejlesztéshez)."));
     QCommandLineOption serveTestOpt("servetest", QStringLiteral("Távoli szerkesztés: playout oldali forgatókönyv (fejlesztéshez)."));
     QCommandLineOption overlayTestOpt("overlaytest", QStringLiteral("Ráfektetés forgatókönyv (fejlesztéshez)."));
     QCommandLineOption lookTestOpt("looktest", QStringLiteral("A playlist megjelenése (fejlesztéshez)."));
@@ -280,12 +376,22 @@ int main(int argc, char **argv)
     QCommandLineOption recTestOpt("rectest", QStringLiteral("Felvétel forgatókönyv (fejlesztéshez)."));
     QCommandLineOption schedTestOpt("schedtest", QStringLiteral("Ütemező forgatókönyv (fejlesztéshez)."));
     QCommandLineOption fakeTimeOpt("fake-time", QStringLiteral("A program órája ettől az időponttól indul (fejlesztéshez)."), "ÓÓ:pp:mm");
-    parser.addOptions({backendOpt, dbOpt, selfTestOpt, shotOpt, iconOpt, uiTestOpt, importTestOpt, schedTestOpt, fakeTimeOpt, mixTestOpt, recTestOpt, plTestOpt, cartTestOpt, editTestOpt, nextTestOpt, eventTestOpt, lookTestOpt, overlayTestOpt, editorOpt, serveTestOpt});
+    parser.addOptions({backendOpt, dbOpt, selfTestOpt, shotOpt, iconOpt, uiTestOpt, importTestOpt, schedTestOpt, fakeTimeOpt, mixTestOpt, recTestOpt, plTestOpt, cartTestOpt, editTestOpt, nextTestOpt, eventTestOpt, lookTestOpt, overlayTestOpt, editorOpt, serveTestOpt, countTestOpt, clickTestOpt, fileTestOpt, fixTestOpt, loggerTestOpt, bpmOpt, flowTestOpt, backupOpt});
     parser.addPositionalArgument("fájlok", QStringLiteral("Induláskor importálandó hangfájlok vagy mappák."), "[fájlok…]");
     parser.process(app);
 
     if (parser.isSet(iconOpt))
         return theme::appIcon().pixmap(256, 256).save(parser.value(iconOpt)) ? 0 : 1;
+    if (parser.isSet(bpmOpt)) {
+        std::atomic<bool> never{false};
+        for (const QString &f : parser.positionalArguments()) {
+            QElapsedTimer t;
+            t.start();
+            const double bpm = eter::estimateBpm(f.toStdString(), never);
+            std::printf("%-28s %6.1f BPM  (%lld ms)\n", qPrintable(QFileInfo(f).fileName()), bpm, static_cast<long long>(t.elapsed()));
+        }
+        return 0;
+    }
     if (parser.isSet(selfTestOpt))
         return selfTest(parser.value(selfTestOpt), parser.isSet(backendOpt) ? parser.value(backendOpt) : "null");
 
@@ -310,6 +416,98 @@ int main(int argc, char **argv)
         }
         return 0;
     }
+    if (parser.isSet(backupOpt)) {
+        // Tartalék mód: készenlétben a fő gép tükre; átvételkor ugyanebben a folyamatban egy rendes főablak indul a másolattal.
+        const QString replica = parser.isSet(dbOpt) ? parser.value(dbOpt)
+            : QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/eter/backup-replica.sqlite";
+        QDir().mkpath(QFileInfo(replica).absolutePath());
+        static QLockFile lock(replica + QStringLiteral(".lock"));
+        lock.setStaleLockTime(0);
+        if (!lock.tryLock(10000)) {                         // a visszaadás utáni újraindulásnál az előző még kiléphet
+            QMessageBox::warning(nullptr, QStringLiteral("Éter"), TR("A tartalék playout már fut ezen a gépen."));
+            return 1;
+        }
+        auto *standby = new BackupWindow(replica);
+        standby->show();
+        standby->start(qEnvironmentVariable("ETER_BACKUP_PASS"));
+        static std::unique_ptr<Database> takenDb;
+        static std::unique_ptr<MainWindow> takenWindow;
+        const QString backend = parser.value(backendOpt);
+        QStringList relaunch{QStringLiteral("--backup")};
+        if (parser.isSet(dbOpt)) relaunch << QStringLiteral("--db") << parser.value(dbOpt);
+        if (parser.isSet(backendOpt)) relaunch << QStringLiteral("--backend") << backend;
+        QObject::connect(standby, &BackupWindow::takeoverRequested, standby, [standby, replica, backend, relaunch] {
+            const QJsonObject state = standby->lastState();
+            qint64 pos = 0;
+            const int entry = standby->playingEntry(&pos);
+            const BackupConfig cfg = standby->config();
+            standby->stop();
+            standby->hide();
+            standby->deleteLater();
+            takenDb = std::make_unique<Database>();
+            QString err;
+            if (!takenDb->open(replica, &err)) {
+                QMessageBox::critical(nullptr, QStringLiteral("Éter"), TR("A másolat nem nyitható meg:\n%1\n\n%2").arg(replica, err));
+                return;
+            }
+            if (!state.isEmpty()) BackupWindow::applyLiveState(*takenDb, state);
+            takenWindow = std::make_unique<MainWindow>(takenDb.get(), backend);
+            takenWindow->show();
+            takenWindow->takeOver(entry, pos);
+            takenWindow->watchOrigin(cfg.host, cfg.port, cfg.user, cfg.salt, cfg.key, relaunch);
+            std::printf("tartalék: adásban: %s\n", qPrintable(takenWindow->debugState()));
+            std::fflush(stdout);
+            if (qEnvironmentVariableIsSet("ETER_BACKUP_WATCH")) {
+                auto *t = new QTimer(takenWindow.get());
+                QObject::connect(t, &QTimer::timeout, [] {
+                    if (takenWindow) std::printf("tartalék: %s\n", qPrintable(takenWindow->debugState()));
+                    std::fflush(stdout);
+                });
+                t->start(1000);
+            }
+        });
+        if (qEnvironmentVariableIsSet("ETER_BACKUP_WATCH")) {
+            // Fejlesztéshez: a készenlét állapota másodpercenként, és kilépés a megadott idő után.
+            auto *t = new QTimer(standby);
+            auto last = std::make_shared<QString>();
+            QObject::connect(t, &QTimer::timeout, standby, [standby, last] {
+                QString s = standby->debugText();
+                s.replace(QRegularExpression(QStringLiteral("\\d+[,.]\\d mp")), QStringLiteral("…"));
+                s.replace(QRegularExpression(QStringLiteral("\\d+ mp")), QStringLiteral("…"));
+                if (s != *last) std::printf("tartalék: %s\n", qPrintable(standby->debugText()));
+                *last = s;
+                std::fflush(stdout);
+            });
+            t->start(500);
+            QTimer::singleShot(qEnvironmentVariableIntValue("ETER_BACKUP_WATCH") * 1000, [] {
+                if (takenWindow) {
+                    takenWindow->grab().save("backup-onair.png");
+                    std::printf("tartalék: végső állapot: %s\n", qPrintable(takenWindow->debugState()));
+                }
+                std::fflush(stdout);
+                QApplication::exit(0);
+            });
+            if (qEnvironmentVariableIsSet("ETER_BACKUP_SHOT"))
+                QTimer::singleShot(qEnvironmentVariableIntValue("ETER_BACKUP_SHOT") * 1000, standby, [standby] { standby->grab().save("backup-standby.png"); });
+            if (qEnvironmentVariableIsSet("ETER_BACKUP_HANDBACK"))
+                QTimer::singleShot(qEnvironmentVariableIntValue("ETER_BACKUP_HANDBACK") * 1000, [] {
+                    if (!takenWindow) return;
+                    std::printf("tartalék: visszaadás\n");
+                    std::fflush(stdout);
+                    // A megerősítő kérdés a tesztben magától igent kap.
+                    QTimer::singleShot(300, [] {
+                        for (QWidget *w : QApplication::topLevelWidgets())
+                            if (auto *box = qobject_cast<QMessageBox *>(w))
+                                if (auto *yes = box->button(QMessageBox::Yes)) yes->click();
+                    });
+                    takenWindow->handBack();
+                });
+        }
+        const int rc = QCoreApplication::exec();
+        takenWindow.reset();
+        takenDb.reset();
+        return rc;
+    }
     if (parser.isSet(editorOpt)) {
         // Szerkesztő mód: nincs saját adás és saját adatbázis; a playout adatainak tükre egy ideiglenes fájlban.
         QTemporaryDir tmp;
@@ -329,11 +527,19 @@ int main(int argc, char **argv)
             RemoteTarget t;
             t.host = testHost;
             t.port = quint16(qEnvironmentVariableIntValue("ETER_EDITOR_PORT"));
+            t.user = qEnvironmentVariable("ETER_EDITOR_USER");
             t.password = qEnvironmentVariable("ETER_EDITOR_PASS");
             t.pathFrom = qEnvironmentVariable("ETER_EDITOR_FROM");
             t.pathTo = qEnvironmentVariable("ETER_EDITOR_TO");
             editor.connectTo(t);
             if (qEnvironmentVariableIsSet("ETER_EDITOR_TEST")) runEditorTest(editor);
+            if (qEnvironmentVariableIsSet("ETER_EDITOR_TEST2")) runEditorTest2(editor);
+            if (qEnvironmentVariableIsSet("ETER_EDITOR_CLOSE"))      // az ablak bezárása (fejlesztéshez): ki kell lépnie
+                QTimer::singleShot(qEnvironmentVariableIntValue("ETER_EDITOR_CLOSE") * 1000, &editor, [&editor] {
+                    std::printf("szerkesztő: bezárás\n");
+                    std::fflush(stdout);
+                    editor.close();
+                });
             if (qEnvironmentVariableIsSet("ETER_EDITOR_WATCH")) {
                 // Figyelő szerkesztő: kiírja a kapcsolat és a playlist változásait, majd a megadott idő után kilép.
                 QObject::connect(editor.client(), &remote::Client::loggedIn, &editor, [](const QString &) { std::printf("figyelő: belépve\n"); std::fflush(stdout); });
@@ -392,8 +598,18 @@ int main(int argc, char **argv)
     }
     MainWindow window(&db, parser.value(backendOpt));
     window.show();
+    if (qEnvironmentVariableIsSet("ETER_WATCH_STATE")) {
+        // Fejlesztéshez: az állapot másodpercenként, kilépés a megadott idő után.
+        auto *t = new QTimer(&window);
+        QObject::connect(t, &QTimer::timeout, &window, [&window] {
+            std::printf("fő: %s\n", qPrintable(window.debugState()));
+            std::fflush(stdout);
+        });
+        t->start(1000);
+        QTimer::singleShot(qEnvironmentVariableIntValue("ETER_WATCH_STATE") * 1000, [] { QApplication::exit(0); });
+    }
     const QStringList files = parser.positionalArguments();
-    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt)) window.library()->importPaths(files);
+    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt)) window.library()->importPaths(files);
 
     if (parser.isSet(importTestOpt)) {
         // Az importáló ablak teljes útja: mappa, kategóriaválasztás, beolvasás.
@@ -1061,6 +1277,421 @@ int main(int argc, char **argv)
             QApplication::exit(0);
         });
     }
+    if (parser.isSet(flowTestOpt)) {
+        // 150 kitalált zeneszám (a fájlok nem kellenek a generáláshoz), séma: 3 szám 4–5 energiával, majd kitöltés.
+        // ETER_FLOW_RULES=0: szabályok nélkül (összehasonlításhoz).
+        const bool rules = qEnvironmentVariable("ETER_FLOW_RULES", "1") != QLatin1String("0");
+        const int music = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        QRandomGenerator rng(7);
+        for (int i = 0; i < 150; ++i) {
+            Item it;
+            it.categoryId = music;
+            it.path = QStringLiteral("/nincs/szam%1.mp3").arg(i);
+            it.title = QStringLiteral("Szám %1").arg(i);
+            it.artist = QStringLiteral("Előadó %1").arg(i % 45);
+            it.durationMs = 170000 + rng.bounded(80000);
+            const int id = db.addItem(it);
+            const int energy = i % 10 == 0 ? 0 : 1 + rng.bounded(5);
+            const int parts = i % 6 == 0 ? (1 << 4) : 0;              // minden hatodik csak este szólhat
+            db.setItemFlow({id}, energy, 80 + rng.bounded(80), parts);
+        }
+        const int clock = db.addClock(QStringLiteral("Folyam"), "#f5a524");
+        ClockSlot s;
+        s.clockId = clock;
+        s.type = "category";
+        s.categoryId = music;
+        s.count = 3;
+        s.energyMin = 4;
+        s.energyMax = 5;
+        db.addSlot(s);
+        s = ClockSlot();
+        s.clockId = clock;
+        s.type = "fill";
+        s.categoryId = music;
+        db.addSlot(s);
+        for (int d = 0; d < 7; ++d)
+            for (int h = 0; h < 24; ++h) db.setGrid(d, h, clock);
+        db.setSetting("artist_separation_min", "20");
+        db.setSetting("title_separation_min", "180");
+        db.setSetting("rule_slow_max", rules ? "1" : "0");
+        db.setSetting("rule_energy_jump", rules ? "2" : "0");
+        db.setSetting("rule_bpm_jump_pct", rules ? "25" : "0");
+        Scheduler sched(&db);
+        const QDateTime from(eter::now().date(), QTime(16, 0));
+        const GenerateResult r = sched.generate(from, 6, true);           // 16–22: a 19 órás napszakhatáron át
+        const QVector<int> starts = Scheduler::daypartStarts(&db);
+        int slowPairs = 0, bigJumps = 0, bpmJumps = 0, wrongPart = 0, wrongBand = 0, n = 0;
+        int prevKey = 0, inHour = 0;
+        Item prev;
+        for (const Entry &e : db.pendingEntries()) {
+            const Item &it = e.item;
+            if (e.playlistKey != prevKey) { prevKey = e.playlistKey; inHour = 0; }
+            const int part = Scheduler::daypartOf(e.playlistKey % 100, starts);
+            if (it.dayparts && !(it.dayparts & (1 << part))) ++wrongPart;
+            if (inHour < 3 && it.energy > 0 && it.energy < 4) ++wrongBand;
+            if (prev.id) {
+                if (prev.energy > 0 && prev.energy <= 2 && it.energy > 0 && it.energy <= 2) ++slowPairs;
+                if (prev.energy > 0 && it.energy > 0 && std::abs(prev.energy - it.energy) > 2) ++bigJumps;
+                double ratio = it.bpm / prev.bpm;
+                if (ratio < 0.75) ratio *= 2;
+                if (ratio > 1.5) ratio /= 2;
+                if (std::abs(ratio - 1) > 0.25) ++bpmJumps;
+            }
+            prev = it;
+            ++inHour;
+            ++n;
+        }
+        std::printf("szabályok %s: %d óra, %d elem, lazítás %d | két lassú egymás után: %d, 2-nél nagyobb energiaugrás: %d, "
+                    "25%%-nál nagyobb tempóváltás: %d, rossz napszak: %d, a 4–5-ös helyen kisebb energia: %d\n",
+                    rules ? "be" : "ki", r.hours, n, r.relaxed, slowPairs, bigJumps, bpmJumps, wrongPart, wrongBand);
+        return 0;
+    }
+    if (parser.isSet(loggerTestOpt)) {
+        // ETER_LOG_DIR mappába rögzít ETER_LOG_SECS másodpercig. ETER_LOG_PFL: csak előhallgatás szól (a felvétel néma kell legyen).
+        const int cat = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        QVector<int> ids;
+        for (const QString &f : files) {
+            eter::Decoder dec;
+            if (!dec.open(f.toStdString())) continue;
+            Item it;
+            it.categoryId = cat;
+            it.path = QFileInfo(f).absoluteFilePath();
+            it.title = QFileInfo(f).completeBaseName();
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            ids << db.addItem(it);
+        }
+        db.notifyItemsChanged();
+        window.appendItems(ids);
+        {
+            QSettings st;
+            st.setValue("logger/enabled", true);
+            st.setValue("logger/folder", qEnvironmentVariable("ETER_LOG_DIR"));
+            st.setValue("logger/kbps", 128);
+            st.setValue("logger/days", 30);
+        }
+        window.configureLogger();
+        const bool pflOnly = qEnvironmentVariableIsSet("ETER_LOG_PFL");
+        window.setMode(MainWindow::Auto);
+        QTimer::singleShot(200, &window, [&window, pflOnly, files] {
+            if (pflOnly) {
+                auto &pfl = window.engine()->source(eter::Engine::Pfl);
+                pfl.load(QFileInfo(files.first()).absoluteFilePath().toStdString());
+                pfl.play();
+            } else {
+                window.next();
+            }
+        });
+        auto *t = new QTimer(&window);
+        QObject::connect(t, &QTimer::timeout, &window, [&window] {
+            std::printf("  %s\n", qPrintable(window.loggerStatus()));
+            std::fflush(stdout);
+        });
+        t->start(2000);
+        QTimer::singleShot(qEnvironmentVariableIntValue("ETER_LOG_SECS") * 1000, [] {
+            QSettings().remove("logger");
+            QApplication::exit(0);
+        });
+    }
+    if (parser.isSet(fixTestOpt)) {
+        // Fájlok: zene (a hírek.wav kivételével); a playlist: az első ETER_FIX_N zene, utána a hírek fix időpontra
+        // (ETER_FIX_AT mp múlva). ETER_FIX_ADJUST: manual / fill / both. ETER_FIX_SHOT: a párbeszédablak képe.
+        const int music = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        const int news = db.addCategory(QStringLiteral("Hírek"), "news", "#e5484d");
+        QVector<int> songs;
+        int newsId = 0;
+        for (const QString &f : files) {
+            eter::Decoder dec;
+            if (!dec.open(f.toStdString())) continue;
+            Item it;
+            const bool isNews = QFileInfo(f).completeBaseName() == QLatin1String("hirek");
+            it.categoryId = isNews ? news : music;
+            it.path = QFileInfo(f).absoluteFilePath();
+            it.title = isNews ? QStringLiteral("Hírek") : QFileInfo(f).completeBaseName();
+            it.artist = isNews ? QString() : QStringLiteral("Előadó %1").arg(songs.size() + 1);
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            const int id = db.addItem(it);
+            if (isNews) newsId = id; else songs << id;
+        }
+        db.notifyItemsChanged();
+        const int n = std::clamp(qEnvironmentVariableIntValue("ETER_FIX_N"), 1, int(songs.size()));
+        window.appendItems(songs.mid(0, n));
+        const QDateTime now = eter::now();
+        const QDateTime at = now.addSecs(qEnvironmentVariableIntValue("ETER_FIX_AT"));
+        int key = 0;
+        const int pl = db.playlistFor(at.date(), at.time().hour(), &key);
+        db.addEntry(pl, newsId, "manual", at.time().minute() * 60 + at.time().second());
+        emit window.schedulerPage()->generated({});
+        db.setSetting("fix_adjust", qEnvironmentVariable("ETER_FIX_ADJUST", "manual"));
+        window.setMode(MainWindow::Auto);
+        auto report = [&window](const char *when) {
+            std::printf("%-22s %s\n  sorok: %s\n", when, qPrintable(window.fixDebug()), qPrintable(window.debugState()));
+            std::fflush(stdout);
+        };
+        QTimer::singleShot(1500, &window, [report] { report("kezdetben"); });
+        QTimer::singleShot(2500, &window, [&window] {
+            if (qEnvironmentVariableIsSet("ETER_FIX_SHOT")) {
+                window.grab().save(qEnvironmentVariable("ETER_FIX_SHOT") + "-main.png");
+                window.openFixDialog();
+            }
+        });
+        QTimer::singleShot(3500, &window, [&window, report] {
+            for (QWidget *w : QApplication::topLevelWidgets())
+                if (w->isVisible() && w->windowTitle().contains(QStringLiteral("fix időponthoz"))) {
+                    w->grab().save(qEnvironmentVariable("ETER_FIX_SHOT") + "-dialog.png");
+                    for (QPushButton *b : w->findChildren<QPushButton *>())
+                        if (b->property("accent").toBool() && qEnvironmentVariableIsSet("ETER_FIX_APPLY")) {
+                            std::printf("párbeszédablak: %s\n", qPrintable(b->text()));
+                            b->click();
+                        }
+                }
+            report("3,5 mp után");
+        });
+        QTimer::singleShot(5000, [] { QApplication::exit(0); });
+    }
+    if (parser.isSet(fileTestOpt)) {
+        // A fájlok másolata egy ideiglenes mappában; a 3. fájlt eltüntetjük, majd visszatesszük.
+        static QTemporaryDir dir;
+        const int cat = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        QVector<int> ids;
+        QStringList copies;
+        for (int n = 0; n < files.size(); ++n) {
+            const QString to = dir.filePath(QStringLiteral("%1_%2").arg(n).arg(QFileInfo(files[n]).fileName()));
+            QFile::copy(files[n], to);
+            copies << to;
+            eter::Decoder dec;
+            if (!dec.open(to.toStdString())) continue;
+            Item it;
+            it.categoryId = cat;
+            it.path = to;
+            it.title = QFileInfo(files[n]).completeBaseName();
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            ids << db.addItem(it);
+        }
+        db.notifyItemsChanged();
+        window.appendItems(ids);
+        const QString victim = copies.value(2), parked = victim + QStringLiteral(".el");
+        auto show = [&window](const char *when) {
+            std::printf("%-34s hiányzik: [%s]\n", when, qPrintable(window.missingTitles().join(", ")));
+            std::fflush(stdout);
+        };
+        QTimer::singleShot(2500, &window, [&window, show, victim, parked] {
+            show("indulás után");
+            QFile::rename(victim, parked);
+            window.checkFilesNow();
+        });
+        QTimer::singleShot(4000, &window, [&window, show] {
+            show("a 3. fájl eltávolítva");
+            window.showMissingFiles();
+        });
+        QTimer::singleShot(5000, &window, [&window] {
+            window.grab().save("missing-main.png");
+            for (QWidget *w : QApplication::topLevelWidgets())
+                if (w->isVisible() && w->windowTitle().contains(QStringLiteral("Hiányzó"))) w->grab().save("missing-dialog.png");
+            window.scanLibraryFiles();
+        });
+        QTimer::singleShot(6500, &window, [&window, show, victim, parked] {
+            for (QWidget *w : QApplication::topLevelWidgets())
+                if (w->isVisible() && w->windowTitle().contains(QStringLiteral("hangtárban"))) {
+                    w->grab().save("missing-library.png");
+                    if (auto *l = w->findChild<QLabel *>()) std::printf("hangtár: %s\n", qPrintable(l->text()));
+                }
+            QFile::rename(parked, victim);
+            window.checkFilesNow();
+        });
+        QTimer::singleShot(8000, &window, [show] {
+            show("visszatéve");
+            QApplication::exit(0);
+        });
+    }
+    if (parser.isSet(clickTestOpt)) {
+        // 1. fájl zene, 2. fájl szignál (nem zene), 3. fájl zene. Mix editor: a szignál alapból nem halkul;
+        // kattintás a sávokban előhallgatást indít onnan, húzás nem. ETER_CLICK_AIR: utána adás automata módban.
+        const int music = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        const int jingle = db.addCategory(QStringLiteral("Szignál"), "jingle", "#ffb020");
+        QVector<int> ids;
+        for (int n = 0; n < files.size(); ++n) {
+            eter::Decoder dec;
+            if (!dec.open(files[n].toStdString())) continue;
+            Item it;
+            it.categoryId = n == 1 ? jingle : music;
+            it.path = QFileInfo(files[n]).absoluteFilePath();
+            it.title = QFileInfo(files[n]).completeBaseName();
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            ids << db.addItem(it);
+        }
+        db.notifyItemsChanged();
+        window.appendItems(ids);
+        auto &e = *window.engine();
+        const eter::Engine::Channel chs[3] = {eter::Engine::Pfl, eter::Engine::Pfl2, eter::Engine::Pfl4};
+        auto sources = [&e, chs] {
+            QString s;
+            for (int k = 0; k < 3; ++k) {
+                auto &src = e.source(chs[k]);
+                s += QStringLiteral(" %1:%2@%3").arg(k + 1).arg(src.playing() ? "szól" : "áll").arg(src.position() / 48000.0, 0, 'f', 1);
+            }
+            return s;
+        };
+        if (!qEnvironmentVariableIsSet("ETER_CLICK_AIR")) QTimer::singleShot(400, &window, [&window, sources] {
+            for (QToolButton *b : window.findChildren<QToolButton *>())
+                if (b->text() == QStringLiteral("Mix editor")) b->click();
+            MixEditorPage *page = window.mixPage();
+            for (QPushButton *b : page->findChildren<QPushButton *>())
+                if (b->text() == QStringLiteral("3 elem") && !b->isChecked()) b->click();
+            page->selectPair(0);
+            QApplication::processEvents();
+            MixTimeline *tl = page->timeline();
+            for (int j = 0; j < tl->transitions(); ++j) {
+                const MixParams &p = tl->params(j);
+                std::printf("%d→%d: mix %.1f, kiúsztatás %.1f, a kimenő vége %.1f (hossza %.1f)\n", j + 1, j + 2, p.mixOutMs / 1000.0,
+                            p.fadeOutMs / 1000.0, tl->outEndTrack(j) / 1000.0, tl->clipEnd(j) / 1000.0 - tl->clipStart(j) / 1000.0);
+            }
+            auto mouse = [tl](QPointF from, QPointF to) {
+                QMouseEvent press(QEvent::MouseButtonPress, from, tl->mapToGlobal(from), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(tl, &press);
+                if (to != from) {
+                    QMouseEvent move(QEvent::MouseMove, to, tl->mapToGlobal(to), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+                    QApplication::sendEvent(tl, &move);
+                }
+                QMouseEvent release(QEvent::MouseButtonRelease, to, tl->mapToGlobal(to), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(tl, &release);
+            };
+            auto steps = std::make_shared<QVector<std::function<void()>>>();
+            // a) kattintás a 2. sávban (a szignál), a közepén
+            steps->append([tl, mouse, sources] {
+                const qint64 t = (tl->clipStart(1) + tl->clipEnd(1)) / 2;
+                const QPointF at(tl->xAt(t), tl->laneRect(1).center().y());
+                std::printf("kattintás a 2. sávban, %.1f mp-nél:", t / 1000.0);
+                mouse(at, at);
+                std::printf("%s\n", qPrintable(sources()));
+            });
+            steps->append([sources, tl] { std::printf("  0,6 mp múlva:%s  lejátszófej: %.1f mp\n", qPrintable(sources()), tl->playhead() / 1000.0); });
+            // b) kattintás az 1. sáv elején (üres hely is számít)
+            steps->append([tl, mouse, sources] {
+                const qint64 t = tl->clipStart(0) + 1000;
+                const QPointF at(tl->xAt(t), tl->laneRect(0).top() + 8);
+                std::printf("kattintás az 1. sávban, %.1f mp-nél:", t / 1000.0);
+                mouse(at, at);
+                std::printf("%s\n", qPrintable(sources()));
+            });
+            steps->append([sources, tl] { std::printf("  0,6 mp múlva:%s  lejátszófej: %.1f mp\n", qPrintable(sources()), tl->playhead() / 1000.0); });
+            // c) a gomb továbbra is működik: leállít, majd indít
+            steps->append([page, sources] {
+                for (QPushButton *b : page->findChildren<QPushButton *>())
+                    if (b->text() == QStringLiteral("Leállítás")) b->click();
+                std::printf("gomb (leállítás):%s\n", qPrintable(sources()));
+            });
+            steps->append([page, sources] {
+                for (QPushButton *b : page->findChildren<QPushButton *>())
+                    if (b->text() == QStringLiteral("Előhallgatás")) b->click();
+                std::printf("gomb (előhallgatás):%s\n", qPrintable(sources()));
+            });
+            steps->append([page, sources] {
+                std::printf("  0,6 mp múlva:%s\n", qPrintable(sources()));
+                for (QPushButton *b : page->findChildren<QPushButton *>())
+                    if (b->text() == QStringLiteral("Leállítás")) b->click();
+            });
+            // d) húzás: a mix pont változik, előhallgatás nem indul
+            steps->append([tl, mouse, sources] {
+                const double before = tl->params(0).mixOutMs / 1000.0;
+                const QPointF from = tl->handlePos(MixTimeline::Block, 0);
+                mouse(from, from + QPointF(-40, 0));
+                std::printf("húzás: mix %.1f → %.1f mp;%s\n", before, tl->params(0).mixOutMs / 1000.0, qPrintable(sources()));
+            });
+            // e) 2 képpontos remegés még kattintás
+            steps->append([tl, mouse, sources] {
+                const double before = tl->params(0).mixOutMs / 1000.0;
+                const QPointF from = tl->handlePos(MixTimeline::Block, 0);
+                mouse(from, from + QPointF(2, 1));
+                std::printf("remegő kattintás az elemen: mix %.1f → %.1f mp;%s\n", before, tl->params(0).mixOutMs / 1000.0, qPrintable(sources()));
+            });
+            steps->append([sources] { std::printf("  0,6 mp múlva:%s\n", qPrintable(sources())); QApplication::exit(0); });
+            auto *run = new QTimer(tl);
+            auto idx = std::make_shared<int>(0);
+            QObject::connect(run, &QTimer::timeout, tl, [steps, idx, run] {
+                if (*idx < steps->size()) (*steps)[(*idx)++]();
+                else run->stop();
+            });
+            run->start(600);
+        });
+        if (qEnvironmentVariableIsSet("ETER_CLICK_AIR")) {
+            // Adás: a szignál a mix pontnál nem halkul, a 3. elem alatta indul.
+            window.setMode(MainWindow::Auto);
+            QTimer::singleShot(300, &window, [&window] { window.next(); });
+            auto *sampler = new QTimer(&window);
+            auto t0 = std::make_shared<qint64>(QDateTime::currentMSecsSinceEpoch());
+            QObject::connect(sampler, &QTimer::timeout, &window, [&window, t0] {
+                auto &e = *window.engine();
+                std::printf("  %5.1f s  %s  halkul: P1 %d, P2 %d\n", (QDateTime::currentMSecsSinceEpoch() - *t0) / 1000.0, qPrintable(window.debugState()),
+                            e.source(eter::Engine::Player1).fading(), e.source(eter::Engine::Player2).fading());
+                std::fflush(stdout);
+            });
+            sampler->start(1000);
+            QTimer::singleShot(qEnvironmentVariableIntValue("ETER_CLICK_AIR") * 1000, [] { QApplication::exit(0); });
+        }
+    }
+    if (parser.isSet(countTestOpt)) {
+        // Visszaszámláló: az első elem (12 mp) utolsó 10 másodperce. ETER_COUNT_AUTO: automata mód, mix ponttal 8 mp-nél.
+        const int cat = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        QVector<int> ids;
+        for (const QString &f : files) {
+            eter::Decoder dec;
+            if (!dec.open(f.toStdString())) continue;
+            Item it;
+            it.categoryId = cat;
+            it.path = QFileInfo(f).absoluteFilePath();
+            it.title = QFileInfo(f).completeBaseName();
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            ids << db.addItem(it);
+        }
+        db.notifyItemsChanged();
+        window.appendItems(ids);
+        const bool autoMode = !qEnvironmentVariable("ETER_COUNT_AUTO").isEmpty();
+        if (autoMode) {
+            const QVector<Entry> en = db.pendingEntries();
+            Transition t;
+            t.fromEntryId = en[0].id;
+            t.toEntryId = en[1].id;
+            t.mixOutMs = 8000;
+            t.outEndMs = 10000;
+            t.fadeOutMs = 2000;
+            t.fadeOutCurve = "scurve";
+            db.saveTransition(t);
+            emit window.mixPage()->mixSaved({});
+        }
+        window.setMode(autoMode ? MainWindow::Auto : MainWindow::Assist);
+        auto t0 = std::make_shared<qint64>(0);
+        QTimer::singleShot(300, &window, [&window, t0] {
+            *t0 = QDateTime::currentMSecsSinceEpoch();
+            window.next();
+        });
+        auto last = std::make_shared<QString>(QStringLiteral("-"));
+        auto *sampler = new QTimer(&window);
+        QObject::connect(sampler, &QTimer::timeout, &window, [&window, t0, last] {
+            if (!*t0) return;
+            const QString now = window.countdownText();
+            if (now != *last) {
+                std::printf("  %5.2f s  %s\n", (QDateTime::currentMSecsSinceEpoch() - *t0) / 1000.0,
+                            now.isEmpty() ? "(nincs visszaszámláló)" : qPrintable(now));
+                std::fflush(stdout);
+                *last = now;
+            }
+        });
+        sampler->start(20);
+        QTimer::singleShot(300 + 5000, &window, [&window] {
+            window.grab().save("countdown.png");
+            // A visszaszámláló helyén kattintva az alatta lévő elem kapja meg (nem kattintható).
+            for (QWidget *w : window.findChildren<QWidget *>())
+                if (w->accessibleName() == QLatin1String("countdown")) {
+                    const QPoint g = w->mapToGlobal(w->rect().center());
+                    QWidget *under = QApplication::widgetAt(g);
+                    std::printf("  a visszaszámláló közepén lévő elem: %s (%s)\n", under ? under->metaObject()->className() : "semmi",
+                                under == w ? "a visszaszámláló – HIBA" : "nem a visszaszámláló");
+                    std::printf("  egéresemények átengedve: %d, fókuszálható: %d\n", w->testAttribute(Qt::WA_TransparentForMouseEvents),
+                                w->focusPolicy() != Qt::NoFocus);
+                }
+        });
+        QTimer::singleShot(300 + 14000, [] { QApplication::exit(0); });
+    }
     if (parser.isSet(serveTestOpt)) {
         // Playout oldal: a, hirek, b, c, d a playlistben; távoli szerkesztés a „teszt” jelszóval; „a” szól.
         const int cat = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
@@ -1083,6 +1714,23 @@ int main(int argc, char **argv)
         st.setValue("remote/port", qEnvironmentVariableIsSet("ETER_REMOTE_PORT") ? qEnvironmentVariableIntValue("ETER_REMOTE_PORT") : 7399);
         st.setValue("remote/salt", salt.toBase64());
         st.setValue("remote/key", remote::deriveKey(salt, QStringLiteral("teszt")).toBase64());
+        // ETER_SERVE_USERS: „név:jelszó:jog,jog;…”; ETER_SERVE_UPLOADDIR: a feltöltések mappája.
+        {
+            QVector<remote::User> users;
+            for (const QString &spec : qEnvironmentVariable("ETER_SERVE_USERS").split(QLatin1Char(';'), Qt::SkipEmptyParts)) {
+                const QStringList p = spec.split(QLatin1Char(':'));
+                if (p.size() < 2) continue;
+                remote::User u;
+                u.name = p[0];
+                u.salt = remote::newSalt();
+                u.key = remote::deriveKey(u.salt, p[1]);
+                if (p.size() > 2) u.perms = p[2].split(QLatin1Char(','), Qt::SkipEmptyParts);
+                users << u;
+            }
+            remote::saveUsers(users);
+            if (qEnvironmentVariableIsSet("ETER_SERVE_UPLOADDIR")) st.setValue("remote/uploadDir", qEnvironmentVariable("ETER_SERVE_UPLOADDIR"));
+            else st.remove("remote/uploadDir");
+        }
         window.configureRemote();
         std::printf("playout: %s\n", qPrintable(window.remoteStatus()));
         std::fflush(stdout);
@@ -1095,6 +1743,10 @@ int main(int argc, char **argv)
             while (q.next()) std::printf("playout: átmenet %d → %d, mix %d ms\n", q.value(0).toInt(), q.value(1).toInt(), q.value(2).toInt());
             QSqlQuery o("SELECT i.title, e.overlay_offset_ms FROM playlist_entries e JOIN items i ON i.id = e.item_id WHERE e.overlay_offset_ms IS NOT NULL");
             while (o.next()) std::printf("playout: ráfektetve: %s (%d ms)\n", qPrintable(o.value(0).toString()), o.value(1).toInt());
+            QSqlQuery u("SELECT i.id, i.title, c.kind, i.file_path, i.duration_ms FROM items i JOIN categories c ON c.id = i.category_id "
+                        "WHERE i.file_path LIKE '%Eter-feltoltesek%' OR i.file_path LIKE '%feltolt%'");
+            while (u.next()) std::printf("playout: feltöltött elem %d: %s (%s) %s, %d ms\n", u.value(0).toInt(), qPrintable(u.value(1).toString()),
+                                         qPrintable(u.value(2).toString()), qPrintable(u.value(3).toString()), u.value(4).toInt());
             Q_UNUSED(db);
             std::fflush(stdout);
             QApplication::exit(0);
@@ -1570,8 +2222,14 @@ int main(int argc, char **argv)
             window.grab().save(out);
             int n = 0;
             for (QWidget *w : QApplication::topLevelWidgets())
-                if (w->isVisible() && w != &window && qobject_cast<QDialog *>(w))
+                if (w->isVisible() && w != &window && qobject_cast<QDialog *>(w)) {
                     w->grab().save(QString(out).replace(".png", QStringLiteral("-%1.png").arg(++n)));
+                    if (auto *tabs = w->findChild<QTabWidget *>("settingsTabs"))       // a Beállítások minden lapja
+                        for (int t = 1; t < tabs->count(); ++t) {
+                            tabs->setCurrentIndex(t);
+                            w->grab().save(QString(out).replace(".png", QStringLiteral("-%1-%2.png").arg(n).arg(t)));
+                        }
+                }
             QApplication::exit(0);
         });
     }

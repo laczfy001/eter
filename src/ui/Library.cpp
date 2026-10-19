@@ -23,6 +23,13 @@
 #include <QListWidget>
 #include <QLocale>
 #include <QMenu>
+#include <QApplication>
+#include <thread>
+#include <QPointer>
+#include <QDialogButtonBox>
+#include <QDialog>
+#include "audio/Analysis.h"
+#include "sched/Scheduler.h"
 #include <QMimeData>
 #include <QPainter>
 #include <QProgressBar>
@@ -179,6 +186,8 @@ void LibraryModel::apply()
         case 1: r = col.compare(x.artist, y.artist); break;
         case 2: r = col.compare(x.categoryName, y.categoryName); break;
         case 3: r = x.durationMs < y.durationMs ? -1 : x.durationMs > y.durationMs; break;
+        case 5: r = x.energy < y.energy ? -1 : x.energy > y.energy; break;
+        case 6: r = x.bpm < y.bpm ? -1 : x.bpm > y.bpm; break;
         default: r = x.lastPlayedAt < y.lastPlayedAt ? -1 : x.lastPlayedAt > y.lastPlayedAt; break;
         }
         if (r == 0) r = col.compare(x.artist, y.artist);
@@ -214,6 +223,8 @@ QVariant LibraryModel::data(const QModelIndex &index, int role) const
         case 1: return it->artist;
         case 2: return it->categoryName;
         case 3: return formatMs(it->durationMs);
+        case 5: return it->energy > 0 ? QString(it->energy, QChar(0x25CF)) + QString(5 - it->energy, QChar(0x25CB)) : QString();
+        case 6: return it->bpm > 0 ? QString::number(it->bpm, 'f', 0) : QString();
         default: return formatLastPlayed(it->lastPlayedAt);
         }
     }
@@ -225,6 +236,7 @@ QVariant LibraryModel::data(const QModelIndex &index, int role) const
     }
     if (role == Qt::ForegroundRole && (c == 2 || c == 4)) return QColor("#c9ced6");
     if (role == Qt::DecorationRole && c == 2 && !it->color.isEmpty()) return swatch(QColor(it->color));
+    if (role == Qt::ForegroundRole && c == 5) return QColor("#f5a524");
     if (role == Qt::ToolTipRole) return it->path;
     return {};
 }
@@ -233,7 +245,7 @@ QVariant LibraryModel::headerData(int section, Qt::Orientation o, int role) cons
 {
     if (o != Qt::Horizontal || role != Qt::DisplayRole) return {};
     static const QString names[] = {TR("Cím"), TR("Előadó"), TR("Kategória"),
-                                    TR("Hossz"), TR("Utoljára adásban")};
+                                    TR("Hossz"), TR("Utoljára adásban"), TR("Energia"), TR("BPM")};
     return names[section];
 }
 
@@ -277,13 +289,13 @@ LibraryPanel::LibraryPanel(Database *db, QWidget *parent) : QFrame(parent), db_(
     search_->setClearButtonEnabled(true);
     search_->setMinimumWidth(140);
     search_->setAccessibleName(TR("Keresés az adatbázisban"));
-    auto *importBtn = new QPushButton(TR("Importálás"));
+    auto *importBtn = importBtn_ = new QPushButton(TR("Importálás"));
     importBtn->setFocusPolicy(Qt::NoFocus);
     auto *menu = new QMenu(importBtn);
     menu->addAction(TR("Fájlok…"), this, &LibraryPanel::chooseFiles);
     menu->addAction(TR("Mappa…"), this, &LibraryPanel::chooseFolder);
     importBtn->setMenu(menu);
-    auto *catBtn = new QPushButton(TR("Kategóriák…"));
+    auto *catBtn = catBtn_ = new QPushButton(TR("Kategóriák…"));
     catBtn->setFocusPolicy(Qt::NoFocus);
     h->addWidget(title);
     h->addSpacing(6);
@@ -319,9 +331,13 @@ LibraryPanel::LibraryPanel(Database *db, QWidget *parent) : QFrame(parent), db_(
     hh->setSectionResizeMode(2, QHeaderView::Fixed);
     hh->setSectionResizeMode(3, QHeaderView::Fixed);
     hh->setSectionResizeMode(4, QHeaderView::Fixed);
+    hh->setSectionResizeMode(5, QHeaderView::Fixed);
+    hh->setSectionResizeMode(6, QHeaderView::Fixed);
     view_->setColumnWidth(2, 150);
     view_->setColumnWidth(3, 64);
     view_->setColumnWidth(4, 130);
+    view_->setColumnWidth(5, 70);
+    view_->setColumnWidth(6, 50);
     view_->installEventFilter(this);
     setAcceptDrops(true);
     installEventFilter(this);
@@ -407,7 +423,7 @@ bool LibraryPanel::eventFilter(QObject *obj, QEvent *ev)
             return true;
         }
         if (key == Qt::Key_Delete) {
-            deleteSelected();
+            if (!remote_) deleteSelected();
             return true;
         }
     }
@@ -425,7 +441,8 @@ bool LibraryPanel::eventFilter(QObject *obj, QEvent *ev)
                 if (u.isLocalFile()) paths << u.toLocalFile();
             if (!paths.isEmpty()) {
                 e->acceptProposedAction();
-                importPaths(paths);
+                if (remote_) emit filesDropped(paths);
+                else importPaths(paths);
                 return true;
             }
         }
@@ -440,6 +457,10 @@ void LibraryPanel::contextMenu(const QPoint &pos)
     QMenu menu(this);
     menu.addAction(TR("Hozzáadás a playlisthez"), this, [this, ids] { emit addToPlaylist(ids); });
     menu.addAction(TR("Előhallgatás"), this, [this] { emit previewRequested(); });
+    if (remote_) {
+        menu.exec(view_->viewport()->mapToGlobal(pos));
+        return;
+    }
     menu.addAction(TR("Szerkesztés… (adatok, intro, outro)"), this, [this, ids] { emit editRequested(ids.first()); });
     menu.addAction(TR("Időzítés…"), this, [this, ids] { emit scheduleRequested(ids.first()); });
     menu.addSeparator();
@@ -450,6 +471,12 @@ void LibraryPanel::contextMenu(const QPoint &pos)
             emit message(TR("%1 elem áthelyezve ide: %2").arg(ids.size()).arg(c.name));
         });
     }
+    // Az ütemező szabályaihoz: energia, napszak, tempó (több elemre egyszerre is).
+    QMenu *energy = menu.addMenu(TR("Energia"));
+    for (int e = 0; e <= 5; ++e) energy->addAction(Scheduler::energyName(e), this, [this, ids, e] { setEnergy(ids, e); });
+    menu.addAction(TR("Napszakok…"), this, [this, ids] { editDayparts(ids); });
+    menu.addAction(ids.size() == 1 ? TR("Tempó becslése") : TR("Tempó becslése (%1 elem)").arg(ids.size()), this,
+                   [this, ids] { estimateTempo(ids); });
     menu.addSeparator();
     menu.addAction(TR("Törlés a hangtárból"), this, &LibraryPanel::deleteSelected);
     menu.exec(view_->viewport()->mapToGlobal(pos));
@@ -1000,4 +1027,83 @@ void LogDialog::exportCsv()
         }
     });
     showNonModal(dlg);
+}
+
+void LibraryPanel::setEnergy(const QVector<int> &ids, int energy)
+{
+    db_->setItemFlow(ids, energy, -1, -1);
+    db_->notifyItemsChanged();
+    emit message(energy ? TR("%1 elem energiája: %2").arg(ids.size()).arg(energy) : TR("%1 elem energiája törölve").arg(ids.size()));
+}
+
+void LibraryPanel::editDayparts(const QVector<int> &ids)
+{
+    const QVector<int> starts = Scheduler::daypartStarts(db_);
+    int mask = db_->item(ids.first()).dayparts;
+    QDialog dlg(this);
+    dlg.setWindowTitle(ids.size() == 1 ? TR("Napszakok") : TR("Napszakok (%1 elem)").arg(ids.size()));
+    auto *v = new QVBoxLayout(&dlg);
+    auto *note = new QLabel(TR("Az ütemező ezt az elemet csak a bejelölt napszakokban teszi a playlistbe. "
+                               "Ha egyik sincs bejelölve, bármikor szólhat."));
+    note->setWordWrap(true);
+    v->addWidget(note);
+    QCheckBox *boxes[Scheduler::kDayparts];
+    for (int p = 0; p < Scheduler::kDayparts; ++p) {
+        const int to = p + 1 < Scheduler::kDayparts ? starts[p + 1] : 24;
+        boxes[p] = new QCheckBox(QStringLiteral("%1   (%2:00 – %3:00)").arg(Scheduler::daypartName(p)).arg(starts[p]).arg(to));
+        boxes[p]->setChecked(mask & (1 << p));
+        v->addWidget(boxes[p]);
+    }
+    auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    bb->button(QDialogButtonBox::Ok)->setText(TR("Mentés"));
+    bb->button(QDialogButtonBox::Cancel)->setText(TR("Mégse"));
+    v->addWidget(bb);
+    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    if (dlg.exec() != QDialog::Accepted) return;
+    mask = 0;
+    for (int p = 0; p < Scheduler::kDayparts; ++p)
+        if (boxes[p]->isChecked()) mask |= 1 << p;
+    if (mask == (1 << Scheduler::kDayparts) - 1) mask = 0;     // mind bejelölve: bármikor
+    db_->setItemFlow(ids, -1, -1, mask);
+    db_->notifyItemsChanged();
+    emit message(TR("%1 elem napszakai elmentve.").arg(ids.size()));
+}
+
+void LibraryPanel::estimateTempo(const QVector<int> &ids)
+{
+    // Háttérszálon, elemenként; a korábbi, még futó becslés leáll.
+    if (tempoCancel_) tempoCancel_->store(true);
+    auto cancel = std::make_shared<std::atomic<bool>>(false);
+    tempoCancel_ = cancel;
+    QVector<QPair<int, QString>> work;
+    for (int id : ids) work.push_back({id, db_->item(id).path});
+    QPointer<LibraryPanel> self(this);
+    emit message(TR("Tempó becslése: %1 elem…").arg(work.size()));
+    std::thread([self, work, cancel] {
+        int found = 0;
+        for (int i = 0; i < work.size(); ++i) {
+            if (cancel->load()) return;
+            const double bpm = eter::estimateBpm(work[i].second.toStdString(), *cancel);
+            if (cancel->load()) return;
+            if (bpm > 0) ++found;
+            const int id = work[i].first, n = i + 1, total = int(work.size()), ok = found;
+            QMetaObject::invokeMethod(qApp, [self, id, bpm, n, total, ok] {
+                if (!self) return;
+                if (bpm > 0) self->db_->setItemFlow({id}, -1, bpm, -1);
+                if (n == total || n % 20 == 0) {
+                    self->db_->notifyItemsChanged();
+                    emit self->message(n == total ? TR("Tempó becslése kész: %1 / %2 elemnél sikerült.").arg(ok).arg(total)
+                                                  : TR("Tempó becslése: %1 / %2…").arg(n).arg(total));
+                }
+            }, Qt::QueuedConnection);
+        }
+    }).detach();
+}
+
+void LibraryPanel::setRemoteMode(bool on)
+{
+    remote_ = on;
+    importBtn_->setVisible(!on);
+    catBtn_->setVisible(!on);
 }

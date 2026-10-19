@@ -15,10 +15,13 @@
 #include "SettingsDialog.h"
 #include "Theme.h"
 #include "Widgets.h"
+#include "audio/ProgramLogger.h"
 
 #include <QApplication>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QDir>
+#include <QFile>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -127,19 +130,49 @@ MainWindow::MainWindow(Database *db, const QString &backendOverride, QWidget *pa
     remoteLibTimer_->setInterval(800);
     connect(remoteLibTimer_, &QTimer::timeout, this, [this] {
         if (!remote_ || !remote_->clientCount()) return;
-        remote_->broadcast(remoteLibrary());
-        remote_->broadcast(remoteState());                // a hangtár után a playlist is újra kell (a tükör így épül)
+        if (remote_->count(remote::Server::Editors)) {
+            remote_->broadcast(remoteLibrary(), remote::Server::Editors);
+            remote_->broadcast(remoteState(), remote::Server::Editors);   // a hangtár után a playlist is újra kell (a tükör így épül)
+        }
+        // A tartalékok a teljes adatbázis másolatát kapják, de ritkábban (fél perccel a változás után).
+        if (remote_->count(remote::Server::Backups) && snapshotTimer_ && !snapshotTimer_->isActive()) snapshotTimer_->start();
     });
     connect(db_, &Database::itemsChanged, this, [this] { if (remote_ && remote_->clientCount()) remoteLibTimer_->start(); });
     connect(db_, &Database::categoriesChanged, this, [this] { if (remote_ && remote_->clientCount()) remoteLibTimer_->start(); });
     configureRemote();
+
+    // Hiányzó fájlok: változás után rövid késleltetéssel, és percenként újra (a hálózati meghajtó eltűnhet).
+    fileCheckTimer_ = new QTimer(this);
+    fileCheckTimer_->setSingleShot(true);
+    fileCheckTimer_->setInterval(1500);
+    connect(fileCheckTimer_, &QTimer::timeout, this, &MainWindow::requestFileCheck);
+    fileRecheckTimer_ = new QTimer(this);
+    fileRecheckTimer_->setInterval(60000);
+    connect(fileRecheckTimer_, &QTimer::timeout, this, &MainWindow::requestFileCheck);
+    fileRecheckTimer_->start();
+    requestFileCheck();
+
+    logger_ = std::make_unique<ProgramLogger>();
+    configureLogger();
+
+    // Tartalék playoutoknak: a változások után fél perccel, és tíz percenként mindenképp új adatbázis-másolat.
+    snapshotTimer_ = new QTimer(this);
+    snapshotTimer_->setSingleShot(true);
+    snapshotTimer_->setInterval(30000);
+    connect(snapshotTimer_, &QTimer::timeout, this, &MainWindow::sendSnapshot);
+    auto *periodic = new QTimer(this);
+    periodic->setInterval(10 * 60000);
+    connect(periodic, &QTimer::timeout, this, &MainWindow::sendSnapshot);
+    periodic->start();
 }
 
 MainWindow::~MainWindow()
 {
     timer_->stop();
     if (remote_) {
-        // Elsőként és csendben: a leállítás már nem értesítheti a bomló ablakot.
+        // Elsőként és csendben: a leállítás már nem értesítheti a bomló ablakot. A tartalékok megtudják, hogy ez
+        // szabályos leállás (nem kell átvenniük az adást).
+        remote_->goodbye();
         remote_->disconnect(this);
         delete remote_;
         remote_ = nullptr;
@@ -317,6 +350,7 @@ void MainWindow::buildUi()
     showPage(0);
     showLeft(db_->setting("left_view", "0").toInt());
     setCentralWidget(central);
+    countdown_ = new CountdownOverlay(central);     // az utolsó 10 másodperc; csak kijelzés, nem kattintható
 
     dbStatus_ = new QLabel;
     statusBar()->addPermanentWidget(dbStatus_);
@@ -324,6 +358,9 @@ void MainWindow::buildUi()
     statusBar()->addPermanentWidget(schedStatus_);
     audioStatus_ = new QLabel;
     statusBar()->addPermanentWidget(audioStatus_);
+    loggerStatus_ = new QLabel;
+    loggerStatus_->hide();
+    statusBar()->addPermanentWidget(loggerStatus_);
     statusBar()->setSizeGripEnabled(false);
     auto updateDbStatus = [this] {
         dbStatus_->setText(TR("Adatbázis: %1 · %2 elem").arg(db_->path()).arg(db_->itemCount()));
@@ -526,6 +563,22 @@ QWidget *MainWindow::buildPlaylistPanel()
     h->addWidget(clear);
     v->addWidget(head);
 
+    // A következő fix időpont: mennyit késik vagy siet hozzá a playlist (csak ha számít).
+    fixBar_ = new QFrame;
+    fixBar_->setObjectName("fixBar");
+    auto *fb = new QHBoxLayout(fixBar_);
+    fb->setContentsMargins(12, 5, 8, 5);
+    fixText_ = new QLabel;
+    fixText_->setTextFormat(Qt::RichText);
+    fixBtn_ = new QPushButton(TR("Igazítás…"));
+    fixBtn_->setFocusPolicy(Qt::NoFocus);
+    fixBtn_->setToolTip(TR("Kitöltés vagy rövidítés, hogy a fix idejű elem pontosan induljon"));
+    fb->addWidget(fixText_, 1);
+    fb->addWidget(fixBtn_);
+    fixBar_->hide();
+    connect(fixBtn_, &QPushButton::clicked, this, &MainWindow::openFixDialog);
+    v->addWidget(fixBar_);
+
     table_ = new PlaylistTable;
     table_->setObjectName("playlistTable");
     table_->setColumnCount(6);
@@ -562,6 +615,14 @@ QWidget *MainWindow::buildPlaylistPanel()
     auto *hint = new QLabel(TR("Elem hozzáadása: húzd ide a hangtárból · a sorok és a blokkok húzással átrendezhetők"));
     hint->setObjectName("small");
     f->addWidget(listInfo_);
+    missingBtn_ = new QPushButton;
+    missingBtn_->setFocusPolicy(Qt::NoFocus);
+    missingBtn_->setToolTip(TR("A playlist néhány elemének fájlja nem érhető el – kattints a részletekért"));
+    missingBtn_->setStyleSheet(QStringLiteral("QPushButton { color: #ffb4ae; background: #3a1d1f; border: 1px solid #e5484d;"
+                                              " border-radius: 4px; padding: 2px 10px; font-weight: 600; }"));
+    missingBtn_->hide();
+    connect(missingBtn_, &QPushButton::clicked, this, &MainWindow::showMissingFiles);
+    f->addWidget(missingBtn_);
     f->addStretch(1);
     f->addWidget(hint);
     v->addWidget(foot);
@@ -697,6 +758,21 @@ void MainWindow::buildMenus()
         if (!QProcess::startDetached(exe, {QStringLiteral("--editor")}))
             say(TR("A szerkesztő nem indítható: %1").arg(exe));
     });
+    file->addAction(TR("Újraindítás tartalék playoutként…"), this, [this] {
+        // Ezen a gépen ezután a fő playout tükre fut készenlétben (a saját adás leáll).
+        if (anythingPlaying()) {
+            QMessageBox::information(this, TR("Tartalék playout"), TR("Előbb állítsd le az adást ezen a gépen."));
+            return;
+        }
+        if (QMessageBox::question(this, TR("Tartalék playout"),
+                                  TR("Az Éter tartalék playoutként indul újra: egy fő playout gépet tükröz, és átveszi az adást, ha az "
+                                     "eltűnik. A tartalék saját másolatot használ, ennek a gépnek a hangtárához nem nyúl.\n\nÚjraindítod?"),
+                                  QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+            return;
+        const QString appImage = qEnvironmentVariable("APPIMAGE");
+        const QString exe = appImage.isEmpty() ? QCoreApplication::applicationFilePath() : appImage;
+        if (QProcess::startDetached(exe, {QStringLiteral("--backup")})) close();
+    });
     file->addSeparator();
     file->addAction(TR("Kilépés"), QKeySequence(Qt::CTRL | Qt::Key_Q), this, &QWidget::close);
 
@@ -718,6 +794,9 @@ void MainWindow::buildMenus()
     data->addSeparator();
     data->addAction(TR("Kategóriák…"), library_, &LibraryPanel::openCategories);
     data->addAction(TR("Adásnapló…"), QKeySequence(Qt::CTRL | Qt::Key_L), this, &MainWindow::openLog);
+    data->addSeparator();
+    data->addAction(TR("Hiányzó fájlok a playlistben…"), this, &MainWindow::showMissingFiles);
+    data->addAction(TR("Hiányzó fájlok keresése a hangtárban…"), this, &MainWindow::scanLibraryFiles);
 
     auto *tools = menuBar()->addMenu(TR("&Eszközök"));
     tools->addAction(TR("Beállítások…"), QKeySequence(Qt::CTRL | Qt::Key_Comma), this,
@@ -946,6 +1025,8 @@ void MainWindow::tick()
     runOutFades();
     runVoiceTrack();
     runOverlays();
+    updateCountdown();
+    pumpLogger();
 
     // Előhallgatás
     auto &pfl = engine_.source(Engine::Pfl);
@@ -967,6 +1048,7 @@ void MainWindow::tick()
         updateStartTimes();
         autoGenerate();
         runTimedEvents();
+        autoAdjustFixes();
         followPlaying();
         table_->viewport()->update();                       // haladási sávok, hátralévő idők
         // A szerkesztők 3 másodpercenként friss időpontokat kapnak (a becsült kezdések telnek).
@@ -1423,6 +1505,13 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
         statusColor = QColor("#ffb4ae");
         break;
     }
+    if (rowMissing(row)) {
+        // A fájl nem érhető el: adásba kerülésekor kimaradna.
+        bg = mixColor(panel, QColor("#e5484d"), 0.30);
+        stripe = QColor("#e5484d");
+        status = TR("HIÁNYZÓ FÁJL");
+        statusColor = QColor("#ffb4ae");
+    }
     static const QColor purple("#b99cff");
     const bool ovlActive = row.overlay && (row.overlayVoice >= 0 || overlayActive(i));
     if (ovlActive && row.state == Row::Playing) {
@@ -1530,6 +1619,12 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     QStringList chips;
     QVector<QColor> chipColors;
     if (row.fixedAt.isValid()) { chips << QStringLiteral("FIX"); chipColors << theme::amber; }
+    for (const FixInfo &f : fixes_)
+        if (f.rowId == row.id && std::llabs(f.diffMs) >= 5000) {
+            // Mennyit késik (+) vagy siet (−) a playlist ehhez a fix ponthoz.
+            chips << (f.diffMs > 0 ? QStringLiteral("−") : QStringLiteral("+")) + mmss(std::llabs(f.diffMs));
+            chipColors << (f.diffMs > 0 ? QColor("#e5484d") : theme::amber);
+        }
     if (vtFrom_.contains(row.id)) { chips << QStringLiteral("VT"); chipColors << QColor("#7fd6e8"); }
     if (customFrom_.contains(row.id)) { chips << QStringLiteral("MIX"); chipColors << QColor("#9aa3af"); }
     if (row.overlay && !ovlActive && !dim) { chips << TR("RÁF"); chipColors << purple; }   // jelölve, de nincs mire ráfeküdnie
@@ -1734,6 +1829,10 @@ void MainWindow::startStandby(int fadeOutPlayer, int fadeMs)
         runOutFades();
         return;
     }
+    if (plan.nonMusic && atMixPoint) {
+        // Nem zenei elem a mix pontján: nem halkul, a saját végéig szól a következő alatt.
+        return;
+    }
     if (plan.fadeOutMs >= 0) {
         // Beállított kiúsztatás; 0 esetén a kimenő elem a saját végéig szól.
         const int ms = static_cast<int>(std::min<qint64>(plan.fadeOutMs, leftMs));
@@ -1873,6 +1972,7 @@ MainWindow::MixPlan MainWindow::planFor(int outPlayer, int inPlayer)
         const Item &it = outRow->item;
         plan.mixOutFrames = it.userMixOutMs > 0 ? it.userMixOutMs * eter::kRate / 1000 : players_[outPlayer]->mixOutFrame();
         if (it.fadeOutMs >= 0) plan.fadeOutMs = static_cast<int>(it.fadeOutMs);
+        else if (!it.kind.isEmpty() && it.kind != QLatin1String("music")) plan.nonMusic = true;   // alapból nem halkul
         if (!it.fadeCurve.isEmpty()) plan.curve = curveFromName(it.fadeCurve);
         if (it.cueOutMs > 0 && it.userMixOutMs > 0) plan.outEndFrames = it.cueOutMs * eter::kRate / 1000;
     }
@@ -2360,7 +2460,7 @@ void MainWindow::reconcile()
     }
 }
 
-void MainWindow::appendItems(const QVector<int> &itemIds, int at, int groupId, const QString &groupName)
+void MainWindow::appendItems(const QVector<int> &itemIds, int at, int groupId, const QString &groupName, const QString &source)
 {
     if (itemIds.isEmpty()) return;
     int index;
@@ -2389,7 +2489,7 @@ void MainWindow::appendItems(const QVector<int> &itemIds, int at, int groupId, c
         int playlist = nowPlaylist;
         if (index < rows_.size()) playlist = index > 0 ? rows_[index - 1].playlistId : rows_[index].playlistId;
         else if (index > 0 && rows_[index - 1].playlistKey > nowKey) playlist = rows_[index - 1].playlistId;
-        const Entry e = db_->addEntry(playlist, itemId, "manual", -1, groupId, group);
+        const Entry e = db_->addEntry(playlist, itemId, source, -1, groupId, group);
         if (!e.id) continue;
         rows_.insert(index++, makeRow(e));
         ++added;
@@ -2734,6 +2834,8 @@ void MainWindow::refreshTable()
     listInfo_->setText(rows_.isEmpty()
                            ? TR("Üres lista")
                            : TR("%1 várakozó elem · hátralévő: %2").arg(waiting).arg(formatMs(pendingFrames * 1000 / eter::kRate)));
+    updateMissingUi();
+    if (fileCheckTimer_ && !fileCheckTimer_->isActive()) fileCheckTimer_->start();
 }
 
 // A „Kezdés" oszlop: a lejátszott és szóló elemeknél a tényleges kezdés,
@@ -2762,6 +2864,7 @@ void MainWindow::updateStartTimes()
     startText_.resize(rows_.size());
     QVector<QDateTime> at(rows_.size());
     QVector<int> overlays;
+    QVector<FixInfo> fixes;
     for (int r = 0; r < rows_.size(); ++r) {
         const Row &row = rows_[r];
         QString text;
@@ -2777,6 +2880,15 @@ void MainWindow::updateStartTimes()
             break;
         case Row::Cued:
         case Row::Pending:
+            if (row.fixedAt.isValid() && row.fixedAt > now) {
+                // A pontos időre igazításhoz: amikor magától odaérne, és ehhez képest a fix időpont.
+                FixInfo f;
+                f.rowId = row.id;
+                f.fixedAt = row.fixedAt;
+                f.arrive = t;
+                f.diffMs = t.msecsTo(row.fixedAt);
+                fixes << f;
+            }
             // Automata üzemmódban a fix idejű elem a saját időpontjában indul.
             if (mode_ == Auto && row.fixedAt.isValid() && row.fixedAt > now)
                 t = fixedFade ? row.fixedAt : std::max(t, row.fixedAt);
@@ -2791,6 +2903,8 @@ void MainWindow::updateStartTimes()
         }
         startText_[r] = text;
     }
+    fixes_ = fixes;
+    updateFixBar();
     for (int r : overlays) {
         int ai = -1, ci = -1;
         overlayTargets(r, &ai, &ci);
@@ -3153,35 +3267,68 @@ void MainWindow::configureRemote()
     QSettings s;
     const bool enabled = s.value("remote/enabled", false).toBool();
     const quint16 port = quint16(s.value("remote/port", remote::kDefaultPort).toUInt());
-    const QByteArray salt = QByteArray::fromBase64(s.value("remote/salt").toByteArray());
-    const QByteArray key = QByteArray::fromBase64(s.value("remote/key").toByteArray());
+    const QVector<remote::User> users = remote::loadUsers();
     remoteError_.clear();
-    if (!enabled || key.isEmpty()) {
+    if (!enabled || users.isEmpty()) {
         if (remote_) remote_->stop();
         return;
     }
     if (!remote_) {
         remote_ = new remote::Server(this);
         connect(remote_, &remote::Server::authenticated, this, [this](remote::Connection *c) {
-            say(TR("Távoli szerkesztő csatlakozott: %1").arg(c->peer()), 8000);
+            if (c->role == QLatin1String("onair")) {
+                // A tartalék vette át az adást, és most újra elérte ezt a gépet.
+                say(TR("A TARTALÉK PLAYOUT VAN ADÁSBAN (%1). Itt ne indíts adást: a tartalékon a Visszaadás gomb adja vissza.").arg(c->peer()), 0);
+                auto *box = new QMessageBox(QMessageBox::Warning, TR("Tartalék playout adásban"),
+                                            TR("A tartalék playout (%1) vette át az adást, amíg ez a gép nem volt elérhető.\n\n"
+                                               "Itt ne indíts adást. Ha ez a gép újra rendben van, a tartalékon a „Visszaadás” gombbal "
+                                               "kerül ide vissza az adás, pontosan onnan, ahol a tartalék tart.").arg(c->peer()),
+                                            QMessageBox::Ok, this);
+                box->setAttribute(Qt::WA_DeleteOnClose);
+                box->setModal(false);
+                box->show();
+                c->send(remoteState());
+                return;
+            }
+            if (c->role == QLatin1String("backup")) {
+                say(TR("Tartalék playout csatlakozott: %1").arg(c->peer()), 8000);
+                c->send(remoteSnapshot());
+                c->send(remoteState());
+                return;
+            }
+            say(TR("Távoli szerkesztő csatlakozott: %1").arg(c->user.isEmpty() ? c->peer() : c->user + QStringLiteral(" · ") + c->peer()), 8000);
             c->send(remoteLibrary());
             c->send(remoteState());
         });
         connect(remote_, &remote::Server::request, this, [this](remote::Connection *c, const QJsonObject &m) {
             if (m.value("t").toString() != QLatin1String("op")) return;
-            const QString err = applyRemoteOp(m);
-            c->send(QJsonObject{{"t", "ack"}, {"id", m.value("id").toInt()}, {"ok", err.isEmpty()}, {"error", err}});
-            remoteStateTimer_->start();
+            QJsonObject reply{{"t", "ack"}, {"id", m.value("id").toInt()}};
+            const QString err = applyRemoteOp(m, c, &reply);
+            reply.insert("ok", err.isEmpty());
+            reply.insert("error", err);
+            c->send(reply);
+            if (!m.value("op").toString().startsWith(QLatin1String("upload"))) remoteStateTimer_->start();
         });
         connect(remote_, &remote::Server::clientsChanged, this, [this](int n) {
             if (schedStatus_) schedStatus_->setToolTip(n ? TR("Távoli szerkesztők: %1").arg(n) : QString());
+            // A bontott kapcsolatok félkész feltöltései törlődnek (a kapcsolat a következő körben szűnik meg).
+            QTimer::singleShot(0, this, [this] {
+                for (auto it = uploads_.begin(); it != uploads_.end();) {
+                    if (!it->conn) {
+                        if (it->file) it->file->remove();
+                        it = uploads_.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            });
         });
     }
     if (remote_->running() && remote_->port() == port) {
-        remote_->start(port, salt, key, &remoteError_);     // új jelszóval
+        remote_->setUsers(users);                          // új jelszavak: a meglévő kapcsolatok maradnak
         return;
     }
-    if (!remote_->start(port, salt, key, &remoteError_))
+    if (!remote_->start(port, users, &remoteError_))
         say(TR("A távoli szerkesztés nem indult el a(z) %1-es porton: %2").arg(port).arg(remoteError_), 12000);
 }
 
@@ -3192,10 +3339,11 @@ QString MainWindow::remoteStatus() const
     QStringList ips;
     for (const QHostAddress &a : QNetworkInterface::allAddresses())
         if (a.protocol() == QAbstractSocket::IPv4Protocol && !a.isLoopback()) ips << a.toString();
+    const QStringList who = remote_->connectedUsers();
     return TR("fut · cím: %1 · port: %2 · kapcsolatok: %3")
         .arg(ips.isEmpty() ? QStringLiteral("127.0.0.1") : ips.join(QStringLiteral(", ")))
         .arg(remote_->port())
-        .arg(remote_->clientCount());
+        .arg(who.isEmpty() ? QStringLiteral("0") : who.join(QStringLiteral(", ")));
 }
 
 QJsonObject MainWindow::remoteLibrary()
@@ -3228,6 +3376,12 @@ QJsonObject MainWindow::remoteState() const
             o.insert("group", r.groupId);
             o.insert("groupName", r.groupName);
         }
+        if (rowMissing(r)) o.insert("missing", true);
+        if (r.state == Row::Playing && r.player >= 0) {
+            // A tartalékoknak: hol tart az elem (az átvételnél innen folytatja).
+            o.insert("pos", players_[r.player]->position() * 1000 / eter::kRate);
+            o.insert("dur", players_[r.player]->duration() * 1000 / eter::kRate);
+        }
         if (r.overlay) o.insert("ovl", QJsonObject{{"offset", r.overlayOffsetMs}, {"duck", r.overlayDuckDb}, {"voice", r.overlayVoice}});
         rows.push_back(o);
         ids << r.id;
@@ -3238,9 +3392,25 @@ QJsonObject MainWindow::remoteState() const
                        {"rows", rows}, {"transitions", trs}};
 }
 
-QString MainWindow::applyRemoteOp(const QJsonObject &m)
+QString MainWindow::applyRemoteOp(const QJsonObject &m, remote::Connection *c, QJsonObject *reply)
 {
     const QString op = m.value("op").toString();
+    // Jogosultság: melyik művelethez mi kell.
+    {
+        QString need;
+        if (op == QLatin1String("move")) need = QStringLiteral("order");
+        else if (op == QLatin1String("remove")) need = QStringLiteral("delete");
+        else if (op == QLatin1String("insert")) need = QStringLiteral("insert");
+        else if (op.startsWith(QLatin1String("upload"))) need = QStringLiteral("upload");
+        else if (op == QLatin1String("handback")) need = QStringLiteral("backup");
+        else need = QStringLiteral("mix");
+        if (c && !c->perms.contains(need)) return TR("Ehhez nincs jogod (%1).").arg(remote::permName(need));
+    }
+    if (op.startsWith(QLatin1String("upload"))) return applyUpload(m, c, reply);
+    if (op == QLatin1String("handback")) {
+        if (c && !c->perms.contains(QStringLiteral("backup"))) return TR("Ehhez nincs jogod (%1).").arg(remote::permName("backup"));
+        return applyHandback(m);
+    }
     auto waitingRow = [this](int id) -> Row * {
         Row *r = rowById(id);
         return r && (r->state == Row::Pending || r->state == Row::Cued) ? r : nullptr;
@@ -3290,6 +3460,22 @@ QString MainWindow::applyRemoteOp(const QJsonObject &m)
         if (to < firstMovable()) return TR("Az adásban lévő elem elé nem tehető sor.");
         moveRow(from, to, true);
         what = TR("sorrend: %1").arg(rowById(id) ? rowById(id)->item.title : QString());
+    } else if (op == QLatin1String("insert")) {
+        // Elemek a hangtárból a playlistbe: a megadott sor elé, vagy (0) a kézzel betett elemek végére.
+        QVector<int> ids;
+        for (const QJsonValue &v : m.value("items").toArray())
+            if (db_->item(v.toInt()).id) ids << v.toInt();
+        if (ids.isEmpty()) return TR("Az elem már nincs a hangtárban.");
+        if (ids.size() > 200) return TR("Egyszerre legfeljebb 200 elem szúrható be.");
+        const int before = m.value("before").toInt();
+        int at = -1;
+        if (before > 0) {
+            if (!rowById(before)) return TR("A sor már nincs a playlistben.");
+            at = indexOfRow(before);
+            if (at < firstMovable()) return TR("Az adásban lévő elem elé nem tehető sor.");
+        }
+        appendItems(ids, at);
+        what = ids.size() == 1 ? TR("beszúrva: %1").arg(db_->item(ids.first()).title) : TR("%1 elem beszúrva").arg(ids.size());
     } else if (op == QLatin1String("remove")) {
         Row *r = waitingRow(m.value("entry").toInt());
         if (!r) return TR("Csak a még várakozó sor törölhető.");
@@ -3308,6 +3494,96 @@ QString MainWindow::applyRemoteOp(const QJsonObject &m)
     } else {
         return TR("Ismeretlen művelet: %1").arg(op);
     }
-    say(TR("Távoli szerkesztés – %1").arg(what), 6000);
+    say(c && !c->user.isEmpty() ? TR("Távoli szerkesztés (%1) – %2").arg(c->user, what) : TR("Távoli szerkesztés – %1").arg(what), 6000);
     return {};
+}
+
+// ------------------------------------------------------ visszaszámláló
+
+// Az adásban lévő (nem kiúszó) elem utolsó 10 másodperce. A cél az elem tényleges vége (a beállított végpont,
+// ha van); automata üzemmódban a következő elem indulása, ha az korábbi.
+void MainWindow::configureLogger()
+{
+    QSettings st;
+    ProgramLogger::Config c;
+    c.enabled = st.value("logger/enabled", false).toBool();
+    c.folder = st.value("logger/folder").toString();
+    if (c.folder.isEmpty()) c.folder = ProgramLogger::defaultFolder();
+    c.kbps = st.value("logger/kbps", 128).toInt();
+    c.keepDays = st.value("logger/days", 30).toInt();
+    engine_.setProgramTap(c.enabled);
+    logger_->configure(c);
+}
+
+void MainWindow::pumpLogger()
+{
+    if (!logger_ || !logger_->config().enabled) {
+        if (loggerStatus_ && loggerStatus_->isVisible()) loggerStatus_->hide();
+        return;
+    }
+    if (tapBuf_.empty()) tapBuf_.resize(size_t(eter::kRate) * 2);   // 1 mp
+    for (int guard = 0; guard < 20; ++guard) {
+        const int n = engine_.readProgram(tapBuf_.data(), eter::kRate);
+        if (n <= 0) break;
+        logger_->feed(tapBuf_.data(), n);
+    }
+    if (clockDivider_ == 0 && loggerStatus_) {
+        const QString err = logger_->lastError();
+        loggerStatus_->setVisible(true);
+        loggerStatus_->setText(err.isEmpty() ? TR("● Rögzítés") : TR("● Rögzítés: hiba"));
+        loggerStatus_->setStyleSheet(err.isEmpty() ? QStringLiteral("color: #ff6b6b; font-weight: 600;")
+                                                   : QStringLiteral("color: #ffb020; font-weight: 600;"));
+        loggerStatus_->setToolTip(err.isEmpty() ? logger_->currentFile() : err);
+    }
+}
+
+QString MainWindow::loggerStatus() const
+{
+    if (!logger_ || !logger_->config().enabled) return TR("kikapcsolva");
+    const QString err = logger_->lastError();
+    if (!err.isEmpty()) return TR("hiba: %1").arg(err);
+    const QString f = logger_->currentFile();
+    return f.isEmpty() ? TR("indul…") : TR("rögzít: %1").arg(QDir::toNativeSeparators(f));
+}
+
+void MainWindow::updateCountdown()
+{
+    if (!countdown_) return;
+    int onAir = -1;
+    for (int i = 0; i < 2; ++i)
+        if (players_[i]->isPlaying() && !leaving(i)) onAir = i;
+    if (onAir < 0) {
+        countdown_->showCount(0, 0, {});
+        return;
+    }
+    PlayerWidget *p = players_[onAir];
+    qint64 end = p->duration();
+    if (outFade_[onAir].rowId >= 0 && outFade_[onAir].rowId == p->rowId) end = std::min(end, outFade_[onAir].endFrame);
+    if (mode_ == Auto) {
+        const int standby = standbyPlayer();
+        if (standby >= 0 && !standbyIsEarlyFixed()) {
+            const qint64 mix = planFor(onAir, standby).mixOutFrames;
+            if (mix > 0) end = std::min(end, mix);
+        }
+    }
+    if (end <= 0) {
+        countdown_->showCount(0, 0, {});
+        return;
+    }
+    const qint64 leftMs = std::max<qint64>(0, end - p->position()) * 1000 / eter::kRate;
+    if (leftMs > 10000 || leftMs <= 0) {
+        countdown_->showCount(0, 0, {});
+        return;
+    }
+    const int secs = int((leftMs + 999) / 1000);           // 10 … 1
+    const double frac = (leftMs % 1000) / 1000.0;
+    const Row *row = rowById(p->rowId);
+    QString title = row ? row->item.title : QString();
+    if (row && !row->item.artist.isEmpty()) title += QStringLiteral(" – ") + row->item.artist;
+    countdown_->showCount(secs, frac == 0 ? 1.0 : frac, TR("%1. LEJÁTSZÓ · %2").arg(QString::number(onAir + 1), title));
+}
+
+QString MainWindow::countdownText() const
+{
+    return countdown_ && countdown_->isVisible() ? countdown_->property("debugText").toString() : QString();
 }

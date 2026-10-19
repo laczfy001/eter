@@ -2,7 +2,7 @@
 # Builds the Windows package (a zip with eter.exe and every DLL it needs).
 # Run it in an MSYS2 "UCRT64" shell. Packages needed:
 #   pacman -S --needed git make diffutils zip mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake \
-#       mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-qt6-base
+#       mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-qt6-base mingw-w64-ucrt-x86_64-lame
 # and a built FFmpeg (scripts/build_ffmpeg.sh, in the same shell).
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,6 +16,11 @@ PREFIX="${MINGW_PREFIX:-/ucrt64}"
 # clock) make ninja re-run CMake forever: "manifest 'build.ninja' still dirty after 100 tries".
 find "$ROOT" -path "$ROOT/build" -prune -o -type f -newermt "$(date '+%Y-%m-%d %H:%M:%S')" -exec touch {} +
 
+# The MP3 encoder for the program logger (added in 0.17): installed here if an older setup lacks it.
+if [ ! -f "$PREFIX/include/lame/lame.h" ]; then
+    pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-lame
+fi
+
 cmake -S "$ROOT" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build "$BUILD"
 
@@ -24,6 +29,8 @@ mkdir -p "$DIST"
 cp "$BUILD/eter.exe" "$DIST/"
 # Szerkesztő mód indítója: egy másik gépen futó playout playlistjének szerkesztése.
 printf '@echo off\r\nstart "" "%%~dp0eter.exe" --editor\r\n' > "$DIST/Eter-szerkeszto.cmd"
+# Tartalék playout indítója: egy fő playout gép tükre, amely átveszi az adást, ha az eltűnik.
+printf '@echo off\r\nstart "" "%%~dp0eter.exe" --backup\r\n' > "$DIST/Eter-tartalek.cmd"
 
 # Qt libraries and plugins
 DEPLOY=""

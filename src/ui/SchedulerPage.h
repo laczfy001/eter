@@ -60,13 +60,16 @@ private:
     QLabel *slotCategoryLabel_, *slotItemLabel_, *slotCountLabel_;
     QPushButton *slotPick_;
     QSpinBox *slotCount_;
+    QComboBox *slotEnergyMin_, *slotEnergyMax_;
+    QLabel *slotEnergyLabel_, *slotEnergyDash_;
     QCheckBox *slotFixed_;
     QTimeEdit *slotTime_;
     QLabel *slotHint_;
     bool loading_ = false;
 
     QSpinBox *artistGap_, *titleGap_, *ahead_;
-    QComboBox *policy_;
+    QComboBox *policy_, *fixAdjust_, *fixCategory_;
+    void reloadFixCategories();
     QCheckBox *autoGen_;
     QPointer<QDialog> picker_;
 };

@@ -33,6 +33,11 @@ struct Engine::OutDev {
     std::atomic<Source *> slots[Engine::ChannelCount];
     std::atomic<int> toneLeft{0};
     double tonePhase = 0.0;
+    // Adásrögzítés: az adásba szóló csatornák jele ide is kerül (egy író: a hangszál; egy olvasó: a felület szála).
+    static constexpr int64_t kTapFrames = kRate * 10;
+    std::atomic<bool> tap{false};
+    std::vector<float> tapRing;
+    std::atomic<int64_t> tapWr{0}, tapRd{0};
 
     OutDev()
     {
@@ -46,12 +51,39 @@ struct Engine::OutDev {
     }
 };
 
+static bool isProgramChannel(int c)
+{
+    return c == Engine::Player1 || c == Engine::Player2 || c == Engine::Vt || c == Engine::Ovl1 || c == Engine::Ovl2
+           || (c >= Engine::Cart1 && c <= Engine::CartLast);
+}
+
 static void dataCallback(ma_device *dev, void *output, const void *, ma_uint32 frames)
 {
     auto *o = static_cast<Engine::OutDev *>(dev->pUserData);
     float *out = static_cast<float *>(output);   // a miniaudio előre kinullázza
-    for (auto &slot : o->slots) {
-        if (Source *s = slot.load(std::memory_order_acquire))
+    // Előbb az adás csatornái, hogy a rögzítés ne tartalmazza az előhallgatást (ha ugyanazon a kimeneten szól).
+    bool any = false;
+    for (int c = 0; c < Engine::ChannelCount; ++c) {
+        if (!isProgramChannel(c)) continue;
+        if (Source *s = o->slots[c].load(std::memory_order_acquire)) {
+            s->mixInto(out, static_cast<int>(frames));
+            any = true;
+        }
+    }
+    if (any && o->tap.load(std::memory_order_acquire)) {
+        const int64_t wr = o->tapWr.load(std::memory_order_relaxed), rd = o->tapRd.load(std::memory_order_acquire);
+        if (wr - rd + frames <= Engine::OutDev::kTapFrames) {      // tele: a felület nem olvasta (elmarad egy darab)
+            for (ma_uint32 i = 0; i < frames; ++i) {
+                const int64_t at = ((wr + i) % Engine::OutDev::kTapFrames) * 2;
+                o->tapRing[at] = out[i * 2];
+                o->tapRing[at + 1] = out[i * 2 + 1];
+            }
+            o->tapWr.store(wr + frames, std::memory_order_release);
+        }
+    }
+    for (int c = 0; c < Engine::ChannelCount; ++c) {
+        if (isProgramChannel(c)) continue;
+        if (Source *s = o->slots[c].load(std::memory_order_acquire))
             s->mixInto(out, static_cast<int>(frames));
     }
     int tone = o->toneLeft.load(std::memory_order_relaxed);
@@ -310,11 +342,59 @@ bool Engine::setRouteOne(Channel ch, const std::string &deviceName, std::string 
             if (err) *err = i18n::textStd("A kimenet nem nyitható meg: ") + ma_result_description(r);
             return false;
         }
+        dev->tapRing.assign(static_cast<size_t>(OutDev::kTapFrames) * 2, 0.f);
+        dev->tap.store(tapOn_);
         it = outs_.emplace(deviceName, std::move(dev)).first;
     }
     it->second->slots[ch].store(&sources_[ch], std::memory_order_release);
     routed_[ch] = true;
     return true;
+}
+
+void Engine::setProgramTap(bool on)
+{
+    tapOn_ = on;
+    for (auto &kv : outs_) {
+        // Bekapcsoláskor a régi tartalom eldobva: a rögzítés mostantól indul.
+        kv.second->tapRd.store(kv.second->tapWr.load());
+        kv.second->tap.store(on, std::memory_order_release);
+    }
+}
+
+int Engine::readProgram(float *dst, int maxFrames)
+{
+    if (!tapOn_ || maxFrames <= 0) return 0;
+    // Az 1-es lejátszó kimenete az óra: ennyit olvasunk; a többi adást vivő kimenet ugyanennyit tesz hozzá.
+    OutDev *master = nullptr;
+    if (routed_[Player1]) {
+        auto it = outs_.find(routes_[Player1]);
+        if (it != outs_.end()) master = it->second.get();
+    }
+    if (!master)
+        for (auto &kv : outs_)
+            if (kv.second->tapWr.load() != kv.second->tapRd.load()) { master = kv.second.get(); break; }
+    if (!master) return 0;
+    auto avail = [](OutDev *o) { return o->tapWr.load(std::memory_order_acquire) - o->tapRd.load(std::memory_order_relaxed); };
+    const int n = static_cast<int>(std::min<int64_t>(avail(master), maxFrames));
+    if (n <= 0) return 0;
+    std::memset(dst, 0, sizeof(float) * size_t(n) * 2);
+    for (auto &kv : outs_) {
+        OutDev *o = kv.second.get();
+        int64_t a = avail(o);
+        if (o != master && a > n + kRate / 2) {                     // lemaradt (másik óra): a többlet eldobva
+            o->tapRd.fetch_add(a - n);
+            a = n;
+        }
+        const int take = static_cast<int>(std::min<int64_t>(a, n));
+        const int64_t rd = o->tapRd.load(std::memory_order_relaxed);
+        for (int i = 0; i < take; ++i) {
+            const int64_t at = ((rd + i) % OutDev::kTapFrames) * 2;
+            dst[i * 2] += o->tapRing[at];
+            dst[i * 2 + 1] += o->tapRing[at + 1];
+        }
+        o->tapRd.store(rd + take, std::memory_order_release);
+    }
+    return n;
 }
 
 void Engine::testTone(Channel ch, int ms)

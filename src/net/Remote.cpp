@@ -3,6 +3,8 @@
 
 #include <QCryptographicHash>
 #include <QJsonDocument>
+#include <QSettings>
+#include <QJsonArray>
 #include <QMessageAuthenticationCode>
 #include <QRandomGenerator>
 #include <QTcpServer>
@@ -20,7 +22,7 @@ QJsonObject itemToJson(const Item &it)
     return QJsonObject{{"id", it.id}, {"cat", it.categoryId}, {"title", it.title}, {"artist", it.artist}, {"path", it.path},
                        {"dur", it.durationMs}, {"last", it.lastPlayedAt}, {"mix", it.mixOutMs}, {"userMix", it.userMixOutMs},
                        {"cueIn", it.cueInMs}, {"fadeOut", it.fadeOutMs}, {"curve", it.fadeCurve}, {"intro", it.introMs},
-                       {"cueOut", it.cueOutMs}};
+                       {"cueOut", it.cueOutMs}, {"energy", it.energy}, {"bpm", it.bpm}, {"parts", it.dayparts}};
 }
 
 Item itemFromJson(const QJsonObject &o)
@@ -40,6 +42,9 @@ Item itemFromJson(const QJsonObject &o)
     it.fadeCurve = o.value("curve").toString();
     it.introMs = o.value("intro").toInteger();
     it.cueOutMs = o.value("cueOut").toInteger();
+    it.energy = std::clamp(o.value("energy").toInt(), 0, 5);
+    it.bpm = o.value("bpm").toDouble();
+    it.dayparts = o.value("parts").toInt();
     return it;
 }
 
@@ -85,6 +90,47 @@ Transition transitionFromJson(const QJsonObject &o)
 }
 
 // ------------------------------------------------------------ belépés
+
+QString permName(const QString &perm)
+{
+    if (perm == QLatin1String("order")) return TR("sorrend");
+    if (perm == QLatin1String("delete")) return TR("törlés");
+    if (perm == QLatin1String("insert")) return TR("beszúrás a hangtárból");
+    if (perm == QLatin1String("mix")) return TR("mix és ráfektetés");
+    if (perm == QLatin1String("upload")) return TR("feltöltés és voice track");
+    if (perm == QLatin1String("backup")) return TR("tartalék playout");
+    return perm;
+}
+
+QVector<User> loadUsers()
+{
+    QSettings s;
+    QVector<User> out;
+    const QByteArray key = QByteArray::fromBase64(s.value("remote/key").toByteArray());
+    if (!key.isEmpty()) out.push_back({QString(), QByteArray::fromBase64(s.value("remote/salt").toByteArray()), key, allPerms()});
+    for (const QJsonValue &v : QJsonDocument::fromJson(s.value("remote/users").toByteArray()).array()) {
+        const QJsonObject o = v.toObject();
+        User u;
+        u.name = o.value("name").toString().trimmed();
+        u.salt = QByteArray::fromBase64(o.value("salt").toString().toLatin1());
+        u.key = QByteArray::fromBase64(o.value("key").toString().toLatin1());
+        for (const QJsonValue &p : o.value("perms").toArray())
+            if (allPerms().contains(p.toString())) u.perms << p.toString();
+        if (!u.name.isEmpty() && !u.key.isEmpty()) out.push_back(u);
+    }
+    return out;
+}
+
+void saveUsers(const QVector<User> &users)
+{
+    QJsonArray a;
+    for (const User &u : users) {
+        if (u.name.isEmpty()) continue;
+        a.push_back(QJsonObject{{"name", u.name}, {"salt", QString::fromLatin1(u.salt.toBase64())},
+                                {"key", QString::fromLatin1(u.key.toBase64())}, {"perms", QJsonArray::fromStringList(u.perms)}});
+    }
+    QSettings().setValue("remote/users", QJsonDocument(a).toJson(QJsonDocument::Compact));
+}
 
 QByteArray newSalt()
 {
@@ -141,6 +187,13 @@ void Connection::send(const QJsonObject &msg)
     socket_->write(QJsonDocument(msg).toJson(QJsonDocument::Compact) + '\n');
 }
 
+void Connection::flushNow(int ms)
+{
+    if (socket_->state() != QAbstractSocket::ConnectedState) return;
+    socket_->flush();
+    if (socket_->bytesToWrite() > 0) socket_->waitForBytesWritten(ms);
+}
+
 void Connection::close()
 {
     socket_->flush();
@@ -180,11 +233,10 @@ Server::~Server()
     stop();
 }
 
-bool Server::start(quint16 port, const QByteArray &salt, const QByteArray &key, QString *err)
+bool Server::start(quint16 port, const QVector<User> &users, QString *err)
 {
     stop();
-    salt_ = salt;
-    key_ = key;
+    users_ = users;
     if (!tcp_->listen(QHostAddress::Any, port)) {
         if (err) *err = tcp_->errorString();
         return false;
@@ -212,10 +264,41 @@ int Server::clientCount() const
     return n;
 }
 
-void Server::broadcast(const QJsonObject &msg)
+static bool inAudience(const Connection *c, Server::Audience to)
+{
+    const bool backup = c->role == QLatin1String("backup") || c->role == QLatin1String("onair");
+    return to == Server::Everyone || (to == Server::Backups) == backup;
+}
+
+void Server::broadcast(const QJsonObject &msg, Audience to)
 {
     for (const QPointer<Connection> &c : clients_)
-        if (c && c->authenticated) c->send(msg);
+        if (c && c->authenticated && inAudience(c, to)) c->send(msg);
+}
+
+int Server::count(Audience to) const
+{
+    int n = 0;
+    for (const QPointer<Connection> &c : clients_)
+        if (c && c->authenticated && inAudience(c, to)) ++n;
+    return n;
+}
+
+void Server::goodbye()
+{
+    for (const QPointer<Connection> &c : clients_)
+        if (c && c->authenticated) {
+            c->send(QJsonObject{{"t", "bye"}});
+            c->flushNow(300);
+        }
+}
+
+QStringList Server::onAirBackups() const
+{
+    QStringList out;
+    for (const QPointer<Connection> &c : clients_)
+        if (c && c->authenticated && c->role == QLatin1String("onair")) out << c->peer();
+    return out;
 }
 
 void Server::accept()
@@ -233,23 +316,50 @@ void Server::accept()
         // Aki 15 másodpercen belül nem lép be, azt bontjuk.
         QTimer::singleShot(15000, c, [c] { if (!c->authenticated) c->close(); });
         c->send(QJsonObject{{"t", "hello"}, {"app", "Éter"}, {"version", QStringLiteral(ETER_VERSION)}, {"proto", kProtocol},
-                            {"salt", QString::fromLatin1(salt_.toBase64())}, {"nonce", QString::fromLatin1(c->nonce.toBase64())}});
+                            {"nonce", QString::fromLatin1(c->nonce.toBase64())}});
     }
 }
 
 void Server::onMessage(Connection *c, const QJsonObject &m)
 {
     if (!c->authenticated) {
-        if (m.value("t").toString() != QLatin1String("auth")) return;
+        const QString t = m.value("t").toString();
+        if (t == QLatin1String("login")) {
+            // A felhasználó sója; ismeretlen névre is válaszolunk (véletlen sóval), hogy a nevek ne legyenek kitalálhatók.
+            const QString name = m.value("user").toString().trimmed();
+            c->user = name;
+            c->role = m.value("role").toString();
+            if (c->role != QLatin1String("backup") && c->role != QLatin1String("onair")) c->role = QStringLiteral("editor");
+            c->pendingKey.clear();
+            c->perms.clear();
+            QByteArray salt = newSalt();
+            for (const User &u : users_)
+                if (u.name.compare(name, Qt::CaseInsensitive) == 0) {
+                    salt = u.salt;
+                    c->pendingKey = u.key;
+                    c->perms = u.perms;
+                    c->user = u.name;
+                }
+            c->send(QJsonObject{{"t", "challenge"}, {"salt", QString::fromLatin1(salt.toBase64())}});
+            return;
+        }
+        if (t != QLatin1String("auth")) return;
         const QByteArray mac = QByteArray::fromBase64(m.value("mac").toString().toLatin1());
-        if (key_.isEmpty() || !sameBytes(mac, answer(key_, c->nonce))) {
-            c->send(QJsonObject{{"t", "auth"}, {"ok", false}, {"error", TR("Hibás jelszó.")}});
+        if (c->pendingKey.isEmpty() || !sameBytes(mac, answer(c->pendingKey, c->nonce))) {
+            c->send(QJsonObject{{"t", "auth"}, {"ok", false}, {"error", TR("Hibás felhasználónév vagy jelszó.")}});
             // Kis várakozás a bontás előtt: a jelszó próbálgatása így lassú.
             QTimer::singleShot(1500, c, [c] { c->close(); });
             return;
         }
+        // A tartalék szerephez külön jog kell (a teljes hangtár másolatát kapja).
+        if (c->role != QLatin1String("editor") && !c->perms.contains(QStringLiteral("backup"))) {
+            c->send(QJsonObject{{"t", "auth"}, {"ok", false}, {"error", TR("Ennek a felhasználónak nincs joga tartalék playoutként csatlakozni.")}});
+            QTimer::singleShot(500, c, [c] { c->close(); });
+            return;
+        }
         c->authenticated = true;
-        c->send(QJsonObject{{"t", "auth"}, {"ok", true}});
+        c->pendingKey.clear();
+        c->send(QJsonObject{{"t", "auth"}, {"ok", true}, {"user", c->user}, {"perms", QJsonArray::fromStringList(c->perms)}});
         emit clientsChanged(clientCount());
         emit authenticated(c);
         return;
@@ -257,14 +367,24 @@ void Server::onMessage(Connection *c, const QJsonObject &m)
     emit request(c, m);
 }
 
+QStringList Server::connectedUsers() const
+{
+    QStringList out;
+    for (const QPointer<Connection> &c : clients_)
+        if (c && c->authenticated) out << QStringLiteral("%1 (%2)").arg(c->user.isEmpty() ? TR("alap jelszó") : c->user, c->peer());
+    return out;
+}
+
 // ---------------------------------------------------------------- kliens
 
 Client::Client(QObject *parent) : QObject(parent) {}
 
-void Client::connectTo(const QString &host, quint16 port, const QString &password)
+void Client::connectTo(const QString &host, quint16 port, const QString &user, const QString &password)
 {
     disconnectFromHost();
+    user_ = user.trimmed();
     password_ = password;
+    perms_.clear();
     wasReady_ = false;
     auto *s = new QTcpSocket;
     auto *c = new Connection(s, this);
@@ -273,24 +393,39 @@ void Client::connectTo(const QString &host, quint16 port, const QString &passwor
         const QString t = m.value("t").toString();
         if (t == QLatin1String("hello")) {
             if (m.value("proto").toInt() != kProtocol) {
-                emit failed(TR("A playout más verziójú (%1) – frissítsd mindkét gépen az Étert.").arg(m.value("version").toString()));
+                // Előbb leválik, hogy a bontás ne írja felül az okot egy általános üzenettel.
+                conn_ = nullptr;
                 c->close();
+                c->deleteLater();
+                emit failed(TR("A playout más verziójú (%1) – frissítsd mindkét gépen az Étert.").arg(m.value("version").toString()));
                 return;
             }
             version_ = m.value("version").toString();
+            c->nonce = QByteArray::fromBase64(m.value("nonce").toString().toLatin1());
+            c->send(QJsonObject{{"t", "login"}, {"user", user_}, {"role", role_}});
+            return;
+        }
+        if (t == QLatin1String("challenge")) {
             const QByteArray salt = QByteArray::fromBase64(m.value("salt").toString().toLatin1());
-            const QByteArray nonce = QByteArray::fromBase64(m.value("nonce").toString().toLatin1());
-            const QByteArray key = deriveKey(salt, password_);
-            c->send(QJsonObject{{"t", "auth"}, {"mac", QString::fromLatin1(answer(key, nonce).toBase64())}});
+            const QByteArray key = (!cacheKey_.isEmpty() && salt == cacheSalt_ && password_.isEmpty()) ? cacheKey_ : deriveKey(salt, password_);
+            lastSalt_ = salt;
+            lastKey_ = key;
+            c->send(QJsonObject{{"t", "auth"}, {"mac", QString::fromLatin1(answer(key, c->nonce).toBase64())}});
             return;
         }
         if (t == QLatin1String("auth")) {
             if (!m.value("ok").toBool()) {
-                emit failed(m.value("error").toString(TR("A belépés nem sikerült.")));
+                const QString error = m.value("error").toString(TR("A belépés nem sikerült."));
+                conn_ = nullptr;
+                c->close();
+                c->deleteLater();
+                emit failed(error);
                 return;
             }
             c->authenticated = true;
             wasReady_ = true;
+            perms_.clear();
+            for (const QJsonValue &v : m.value("perms").toArray()) perms_ << v.toString();
             emit loggedIn(version_);
             return;
         }

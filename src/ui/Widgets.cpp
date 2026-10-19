@@ -1,5 +1,6 @@
 #include "i18n.h"
 #include "Widgets.h"
+#include <QEvent>
 #include "Theme.h"
 
 #include <QMouseEvent>
@@ -150,4 +151,82 @@ void MeterWidget::paintEvent(QPaintEvent *)
         }
         y += bar_ + 3;
     }
+}
+
+// ------------------------------------------------------- visszaszámláló
+
+CountdownOverlay::CountdownOverlay(QWidget *parent) : QWidget(parent)
+{
+    setAttribute(Qt::WA_TransparentForMouseEvents);
+    setAttribute(Qt::WA_TranslucentBackground);
+    setAttribute(Qt::WA_NoSystemBackground);
+    setFocusPolicy(Qt::NoFocus);
+    setAccessibleName(QStringLiteral("countdown"));
+    hide();
+    parent->installEventFilter(this);
+}
+
+bool CountdownOverlay::eventFilter(QObject *o, QEvent *e)
+{
+    if (o == parentWidget() && e->type() == QEvent::Resize) place();
+    return false;
+}
+
+void CountdownOverlay::place()
+{
+    QWidget *p = parentWidget();
+    const int w = std::min(560, std::max(260, p->width() - 32));
+    const int h = 92;
+    setGeometry((p->width() - w) / 2, p->height() - h - 18, w, h);
+}
+
+void CountdownOverlay::showCount(int seconds, double fraction, const QString &label)
+{
+    if (seconds <= 0) {
+        if (isVisible()) hide();
+        seconds_ = 0;
+        return;
+    }
+    const bool changed = seconds != seconds_ || label != label_ || std::abs(fraction - fraction_) > 0.04;
+    seconds_ = seconds;
+    fraction_ = fraction;
+    label_ = label;
+    if (!isVisible()) {
+        place();
+        show();
+        raise();
+    }
+    setProperty("debugText", QStringLiteral("%1 | %2").arg(seconds).arg(label));
+    if (changed) update();
+}
+
+void CountdownOverlay::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    const QRectF r = QRectF(rect()).adjusted(2, 2, -2, -2);
+    // Minden másodperc elején erősebb, utána halványul: a szám „üt”, de nem villog zavaróan.
+    const double pulse = 0.72 + 0.28 * std::clamp(fraction_, 0.0, 1.0);
+    QColor bg(150, 18, 24);
+    bg.setAlphaF(0.82 * pulse + 0.1);
+    p.setPen(QPen(QColor(255, 120, 110, 220), 2));
+    p.setBrush(bg);
+    p.drawRoundedRect(r, 14, 14);
+
+    QFont big(QStringLiteral("IBM Plex Mono"));
+    big.setPixelSize(62);
+    big.setWeight(QFont::Bold);
+    p.setFont(big);
+    p.setPen(Qt::white);
+    const QRectF numBox(r.left() + 18, r.top(), 96, r.height());
+    p.drawText(numBox, Qt::AlignCenter, QString::number(seconds_));
+
+    QFont small = font();
+    small.setPixelSize(15);
+    small.setWeight(QFont::DemiBold);
+    p.setFont(small);
+    p.setPen(QColor(255, 225, 222));
+    const QRectF textBox(numBox.right() + 12, r.top() + 10, r.right() - numBox.right() - 28, r.height() - 20);
+    p.drawText(textBox, Qt::AlignVCenter | Qt::AlignLeft | Qt::TextWordWrap,
+               QFontMetrics(small).elidedText(label_, Qt::ElideRight, int(textBox.width() * 2 - 20)));
 }

@@ -1,5 +1,6 @@
 // Mix editor: két vagy három egymást követő elem átmeneteinek beállítása idővonalon, előhallgatással.
 #pragma once
+#include <functional>
 #include "audio/Engine.h"
 #include "db/Database.h"
 
@@ -107,6 +108,7 @@ public:
 signals:
     void paramsEdited(int j);
     void overlayDropped();                                  // a harmadik elemet a második eleje elé húzták: ráfektetés
+    void timeClicked(qint64 ms);                            // kattintás (húzás nélkül) az idővonalon: előhallgatás innen
     void activeChanged(int j);
     void viewChanged();
 
@@ -125,8 +127,10 @@ private:
     double xOf(qint64 ms) const;
 public:
     qint64 msAt(double x) const;
-private:
+    double xAt(qint64 ms) const { return xOf(ms); }
     QRectF laneRect(int lane) const;                        // 0..n−1: elemek, n: voice track
+    qint64 playhead() const { return playhead_; }
+private:
     qint64 naturalEnd(int k) const;
     qint64 vtLen(int j) const { return std::max<qint64>(vt_[j].durMs, 500); }
     qint64 ovlLen(int j) const { return std::max<qint64>(ovl_[j].durMs > 0 ? ovl_[j].durMs : tr_[j].ovlDurMs, 500); }
@@ -143,6 +147,8 @@ private:
     qint64 playhead_ = -1;
     Hit drag_;
     double dragOffsetMs_ = 0;
+    QPointF pressPos_;
+    bool pressed_ = false, moved_ = false;          // lenyomva, és el is mozdult (húzás, nem kattintás)
 };
 
 class MixEditorPage : public QWidget {
@@ -155,6 +161,10 @@ public:
     void stopPreview();
     // Távoli szerkesztő: a voice track felvétele és fájlból betöltése itt nem érhető el (a playout gépén nem lenne meg).
     void setRemoteMode(bool on);
+    // Távoli szerkesztő: a felvett vagy fájlból választott voice track feltöltése a playoutra. A done a playouton
+    // létrejött elem azonosítójával hívandó (0: nem sikerült). allowed: a felhasználónak van-e joga hozzá.
+    using VtUploader = std::function<void(const QString &localPath, const QString &title, std::function<void(int itemId)> done)>;
+    void setVtUploader(VtUploader uploader, bool allowed);
     bool previewing() const { return phase_ != 0; }
     MixTimeline *timeline() { return timeline_; }
 
@@ -196,7 +206,8 @@ private:
     bool saveOne(int j, QVector<int> &changedItems);
     void resetToAuto();
     void togglePreview();
-    void startPreview(bool forRecording);
+    void startPreview(bool forRecording, qint64 atMs = -1);   // atMs: az idővonal ideje, ahonnan szól
+    void startPreviewAt(qint64 timelineMs);
     void previewTick();
     void applyVt(int j);
     void setVtItem(int itemId);
@@ -274,6 +285,8 @@ private:
         int vtPlaying = 0;
     } pv_;
     bool recordMode_ = false;
+    bool remoteMode_ = false;
+    VtUploader vtUploader_;
     int recordFor_ = 0;                     // melyik átmenethez készül a felvétel
     qint64 previewStartMs_ = 0;             // az idővonalon, ahonnan az előhallgatás indult
     QPointer<QDialog> vtDialog_;

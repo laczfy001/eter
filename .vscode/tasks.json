@@ -10,7 +10,7 @@
             "label": "Éter: 1. install build tools (first time only)",
             "type": "process",
             "command": "C:\\msys64\\usr\\bin\\bash.exe",
-            "args": ["-lc", "pacman -S --needed --noconfirm git make diffutils zip mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-qt6-base"],
+            "args": ["-lc", "pacman -S --needed --noconfirm git make diffutils zip mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-qt6-base mingw-w64-ucrt-x86_64-lame"],
             "problemMatcher": []
         },
         {

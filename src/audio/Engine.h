@@ -55,6 +55,12 @@ public:
     bool recording() const;
     float recordPeak();                // csúcsszint a legutóbbi lekérdezés óta
 
+    // Adásrögzítéshez: az adásba szóló csatornák (lejátszók, voice track, ráfektetés, cartwall) jele, az előhallgatás
+    // és a teszthang nélkül, sztereó 48 kHz. A felület szálán hívandó; ha több kimenet visz adást, összeadja őket.
+    void setProgramTap(bool on);
+    bool programTap() const { return tapOn_; }
+    int readProgram(float *dst, int maxFrames);        // ennyi képkocka került dst-be
+
     struct Impl;
     struct OutDev;
     struct Recorder;
@@ -69,6 +75,8 @@ private:
     std::array<bool, ChannelCount> routed_{};
     std::map<std::string, std::unique_ptr<OutDev>> outs_;
     std::unique_ptr<Recorder> rec_;
+    bool tapOn_ = false;
+    std::vector<float> tapMix_;
 };
 
 } // namespace eter

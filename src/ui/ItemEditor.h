@@ -11,6 +11,7 @@
 #include <thread>
 
 class QComboBox;
+class QCheckBox;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
@@ -89,7 +90,12 @@ private:
     Item item_;
     QLineEdit *title_, *artist_, *album_;
     QSpinBox *year_;
-    QComboBox *category_;
+    QComboBox *category_, *energy_;
+    QDoubleSpinBox *bpm_;
+    QCheckBox *dayparts_[5];
+    QPushButton *bpmEstimate_, *bpmTap_;
+    QVector<qint64> taps_;
+    std::thread bpmThread_;
     MarkerWave *wave_;
     QDoubleSpinBox *spin_[3];
     QPushButton *play_, *save_;

@@ -639,6 +639,9 @@ void MixTimeline::mousePressEvent(QMouseEvent *e)
 {
     if (e->button() != Qt::LeftButton) return;
     const QPointF pos = e->position();
+    pressPos_ = pos;
+    pressed_ = true;
+    moved_ = false;
     drag_ = hitTest(pos);
     if (drag_.h == None) return;
     const int j = drag_.j;
@@ -666,8 +669,12 @@ void MixTimeline::mouseMoveEvent(QMouseEvent *e)
         setCursor(h.h == None ? Qt::ArrowCursor
                   : (h.h == Block || h.h == VtBlock || h.h == OvlBlock) ? Qt::SizeHorCursor
                   : (h.h == TrimLeft || h.h == TrimRight) ? Qt::SplitHCursor : Qt::PointingHandCursor);
+        if (pressed_ && (pos - pressPos_).manhattanLength() > 4) moved_ = true;
         return;
     }
+    // Néhány képpontnyi remegés még kattintás: nem módosít semmit.
+    if (!moved_ && (pos - pressPos_).manhattanLength() <= 4) return;
+    moved_ = true;
     const int j = drag_.j;
     MixParams &p = tr_[j];
     const qint64 t = msAt(pos.x()) - qint64(dragOffsetMs_);
@@ -736,12 +743,15 @@ void MixTimeline::mouseMoveEvent(QMouseEvent *e)
     emit paramsEdited(j);
 }
 
-void MixTimeline::mouseReleaseEvent(QMouseEvent *)
+void MixTimeline::mouseReleaseEvent(QMouseEvent *e)
 {
-    const bool drop = (drag_.h == Block || drag_.h == MixPoint) && drag_.j == 1 && overlayPending();
+    const bool drop = moved_ && (drag_.h == Block || drag_.h == MixPoint) && drag_.j == 1 && overlayPending();
+    const bool click = pressed_ && !moved_ && e->button() == Qt::LeftButton && !clips_.isEmpty();
     drag_ = Hit();
+    pressed_ = moved_ = false;
     update();
     if (drop) emit overlayDropped();
+    else if (click) emit timeClicked(std::max<qint64>(0, msAt(pressPos_.x())));
 }
 
 void MixTimeline::wheelEvent(QWheelEvent *e)
@@ -1119,6 +1129,12 @@ MixEditorPage::MixEditorPage(Database *db, eter::Engine *engine, QWidget *parent
     connect(ovlRemove_, &QPushButton::clicked, this, &MixEditorPage::dissolveOverlay);
     // A húzás eseménykezelője alatt ne épüljön át a lista: a ráfektetés a következő eseménykörben történik.
     connect(timeline_, &MixTimeline::overlayDropped, this, [this] { QTimer::singleShot(0, this, &MixEditorPage::makeOverlayFromTriple); });
+    // Kattintás bármelyik sávban: előhallgatás onnan (ha már szól, onnan folytatódik).
+    connect(timeline_, &MixTimeline::timeClicked, this, [this](qint64 ms) {
+        if (recordMode_ || currentIndex() < 0) return;
+        if (previewing()) stopPreview();
+        startPreview(false, ms);
+    });
 
     loadCurrent();
 }
@@ -1243,11 +1259,14 @@ MixParams MixEditorPage::resolveMix(const MixPair &pair, int *kind) const
     else if (w.ready) p.mixOutMs = w.autoMixMs;
     else if (pair.from.mixOutMs > 0) p.mixOutMs = pair.from.mixOutMs;
     else p.mixOutMs = std::max<qint64>(0, pair.from.durationMs - defaultFadeMs_);
-    p.fadeOutMs = pair.from.fadeOutMs >= 0 ? pair.from.fadeOutMs : defaultFadeMs_;
+    // Nem zenei elem (szignál, hírek, reklám…) alapból nem halkul: a végéig szól, a következő a mix pontján indul alatta.
+    const bool music = pair.from.kind.isEmpty() || pair.from.kind == QLatin1String("music");
+    p.fadeOutMs = pair.from.fadeOutMs >= 0 ? pair.from.fadeOutMs : music ? defaultFadeMs_ : 0;
     p.curve = pair.from.fadeCurve.isEmpty() ? QStringLiteral("scurve") : pair.from.fadeCurve;
     p.cueInMs = pair.to.cueInMs;
-    p.outEndMs = pair.from.cueOutMs > 0 ? pair.from.cueOutMs : p.mixOutMs + p.fadeOutMs;
     const qint64 dur = w.ready ? w.durMs : pair.from.durationMs;
+    p.outEndMs = pair.from.cueOutMs > 0 ? pair.from.cueOutMs
+                 : (!music && pair.from.fadeOutMs < 0 && dur > 0) ? dur : p.mixOutMs + p.fadeOutMs;
     if (dur > 0) p.outEndMs = std::min(p.outEndMs, dur);
     return p;
 }
@@ -1681,8 +1700,17 @@ void MixEditorPage::makeOverlayFromTriple()
 
 void MixEditorPage::setRemoteMode(bool on)
 {
+    remoteMode_ = on;
     recordBtn_->setVisible(!on);
     vtFile_->setVisible(!on);
+}
+
+void MixEditorPage::setVtUploader(VtUploader uploader, bool allowed)
+{
+    vtUploader_ = std::move(uploader);
+    const bool show = !remoteMode_ || (vtUploader_ && allowed);
+    recordBtn_->setVisible(show);
+    vtFile_->setVisible(show);
 }
 
 void MixEditorPage::setTriple(bool on)
@@ -1751,6 +1779,12 @@ void MixEditorPage::chooseVtFile()
     vtDialog_ = dlg;
     connect(dlg, &QFileDialog::fileSelected, this, [this](const QString &path) {
         if (path.isEmpty()) return;
+        if (vtUploader_) {
+            // Távoli szerkesztő: a fájl a playoutra kerül, ott lesz belőle voice track.
+            emit message(TR("A voice track feltöltése a playoutra…"));
+            vtUploader_(path, QFileInfo(path).completeBaseName(), [this](int id) { if (id) setVtItem(id); });
+            return;
+        }
         int id = db_->itemIdByPath(path);
         if (!id) {
             eter::Decoder dec;
@@ -1854,28 +1888,45 @@ void MixEditorPage::finishRecording()
         emit message(TR("A felvétel nem menthető ide: %1").arg(path));
         return;
     }
+    const QString title = TR("Voice track %1").arg(now.toString("MM.dd. HH:mm:ss"));
+    const qint64 durMs = qint64(cut.size()) * 1000 / eter::kRate;
+    // A felvétel az előhallgatás indulásakor kezdődött; a levágott csenddel későbbre kerül.
+    const qint64 offset = round100(startedAt + qint64(first) * 1000 / eter::kRate - timeline_->clipStart(j + 1));
+    const int fromEntry = pairs_[currentIndex()].fromEntry;
+    auto apply = [this, j, offset, durMs, fromEntry](int id) {
+        if (!id) {
+            showParams();
+            return;
+        }
+        // Közben másik átmenetre váltottak: a voice track a hangtárban megvan, de ide nem kerül automatikusan.
+        if (currentIndex() < 0 || pairs_[currentIndex()].fromEntry != fromEntry || j >= shown()) {
+            emit message(TR("A voice track elkészült, de közben másik átmenetet nyitottál meg; a Hangtár… gombbal választható."));
+            return;
+        }
+        MixParams p = timeline_->params(j);
+        p.vtItemId = id;
+        p.vtOffsetMs = offset;
+        dirty_[j] = true;
+        scopePair_->setChecked(true);
+        timeline_->setParams(j, p, false);
+        applyVt(j);
+        showParams();
+        emit message(TR("Felvétel kész (%1). Hallgasd vissza, igazítsd a helyét, majd mentsd.").arg(formatMs(durMs)));
+    };
+    if (vtUploader_) {
+        emit message(TR("A felvétel feltöltése a playoutra…"));
+        vtUploader_(path, title, apply);
+        return;
+    }
     Item it;
     it.categoryId = db_->voiceTrackCategory();
     it.path = path;
-    it.title = TR("Voice track %1").arg(now.toString("MM.dd. HH:mm:ss"));
+    it.title = title;
     it.artist = QStringLiteral("");
-    it.durationMs = qint64(cut.size()) * 1000 / eter::kRate;
+    it.durationMs = durMs;
     const int id = db_->addItem(it);
     db_->notifyItemsChanged();
-    if (!id) {
-        showParams();
-        return;
-    }
-    // A felvétel az előhallgatás indulásakor kezdődött; a levágott csenddel későbbre kerül.
-    MixParams p = timeline_->params(j);
-    p.vtItemId = id;
-    p.vtOffsetMs = round100(startedAt + qint64(first) * 1000 / eter::kRate - timeline_->clipStart(j + 1));
-    dirty_[j] = true;
-    scopePair_->setChecked(true);
-    timeline_->setParams(j, p, false);
-    applyVt(j);
-    showParams();
-    emit message(TR("Felvétel kész (%1). Hallgasd vissza, igazítsd a helyét, majd mentsd.").arg(formatMs(it.durationMs)));
+    apply(id);
 }
 
 // ---------------------------------------------------------- előhallgatás
@@ -1890,7 +1941,7 @@ void MixEditorPage::togglePreview()
     else startPreview(false);
 }
 
-void MixEditorPage::startPreview(bool forRecording)
+void MixEditorPage::startPreview(bool forRecording, qint64 atMs)
 {
     const int i = currentIndex();
     if (i < 0) return;
@@ -1935,12 +1986,16 @@ void MixEditorPage::startPreview(bool forRecording)
         pv_.dur[k] = w.ready ? w.durMs : it.durationMs;
     }
     for (int j = 0; j < nTr; ++j) pv_.tr[j].outEndMs = timeline_->outEndTrack(j);
+    if (atMs >= 0) {
+        startPreviewAt(atMs);
+    } else {
     // Honnan indul: az első átmenet előtt 5 mp-cel. Hármas nézetben, ha a középső elem hosszú,
     // és a második átmenet van kijelölve, akkor közvetlenül az előtt.
     int firstClip = 0;
     if (pv_.n == 3 && a == 1 && pv_.tr[1].mixOutMs - pv_.cue[1] > 30000) {
         firstClip = 1;
         pv_.vtStarted[0] = true;
+        pv_.ovlStarted[0] = true;
     }
     const int j0 = firstClip;
     qint64 pos = pv_.tr[j0].mixOutMs - 5000;
@@ -1952,6 +2007,7 @@ void MixEditorPage::startPreview(bool forRecording)
         engine_->source(kClipCh[k]).seek((k == firstClip ? pos : pv_.cue[k]) * eter::kRate / 1000);
     pv_.started = firstClip;
     engine_->source(kClipCh[firstClip]).play();
+    }
     phase_ = 1;
     previewBtn_->setText(TR("Leállítás"));
     previewBtn_->setIcon(theme::icon(theme::Icon::Stop, theme::blueSoft));
@@ -2052,6 +2108,74 @@ void MixEditorPage::previewTick()
             const bool again = loop_->isChecked();
             stopPreview();
             if (again) startPreview(false);           // a közben módosított beállításokkal indul újra
+        }
+    }
+}
+
+void MixEditorPage::startPreviewAt(qint64 t)
+{
+    // Az idővonal t időpontjától: ami ott épp szól, a megfelelő helyéről indul, a többi a maga idején.
+    t = std::max(t, pv_.start[0]);
+    int last = 0;                                            // az utolsó elem, amely t-ig elindult
+    for (int k = 1; k < pv_.n; ++k)
+        if (pv_.start[k] <= t) last = k;
+    previewStartMs_ = t;
+    for (int k = 0; k < pv_.n; ++k) {
+        auto &src = engine_->source(kClipCh[k]);
+        if (k > last) {
+            src.seek(pv_.cue[k] * eter::kRate / 1000);
+            continue;
+        }
+        const qint64 into = t - pv_.start[k];                    // ennyivel a kezdete után
+        qint64 end = pv_.dur[k] > 0 ? pv_.dur[k] : pv_.cue[k] + into + 1;
+        if (k < pv_.n - 1) end = std::min(end, pv_.tr[k].outEndMs > 0 ? pv_.tr[k].outEndMs : end);
+        const qint64 pos = pv_.cue[k] + into;
+        if (pos >= end - 30 && k < last) {                       // már elhallgatott
+            pv_.faded[k] = true;
+            continue;
+        }
+        src.seek(pos * eter::kRate / 1000);
+        if (k > 0) {
+            // Beúsztatás közben: a hátralévő részével, a megfelelő szintről.
+            const MixParams &p = pv_.tr[k - 1];
+            const double g0 = dbToGain(p.startLevelDb);
+            if (into < p.fadeInMs) {
+                const double f = double(into) / double(std::max<qint64>(1, p.fadeInMs));
+                src.play(int(p.fadeInMs - into), float(g0 + (1.0 - g0) * f));
+            } else {
+                src.play();
+            }
+        } else {
+            src.play();
+        }
+    }
+    pv_.started = last;
+    // Voice trackek és ráfektetett elemek: ami t-nél már tart, a megfelelő helyéről szól; ami véget ért, nem indul.
+    for (int j = 0; j < pv_.n - 1; ++j) {
+        if (pv_.vtDur[j] > 0) {
+            const qint64 into = t - (pv_.start[j + 1] + pv_.tr[j].vtOffsetMs);
+            if (into >= pv_.vtDur[j]) pv_.vtStarted[j] = true;
+            else if (into > 0) {
+                auto &vt = engine_->source(kVtCh[j]);
+                vt.seek(into * eter::kRate / 1000);
+                pv_.vtStarted[j] = true;
+                vt.play();
+                ++pv_.vtPlaying;
+                for (int c = 0; c < pv_.n; ++c) engine_->source(kClipCh[c]).setDuck(float(dbToGain(pv_.tr[j].vtDuckDb)));
+            }
+        }
+        if (pv_.ovlDur[j] > 0) {
+            const qint64 into = t - (pv_.start[j + 1] + pv_.tr[j].ovlOffsetMs);
+            if (into >= pv_.ovlDur[j]) pv_.ovlStarted[j] = true;
+            else if (into > 0) {
+                auto &ov = engine_->source(kOvlCh[j]);
+                const Item it = db_->item(pv_.tr[j].ovlItemId);
+                ov.seek((std::max<qint64>(0, it.cueInMs) + into) * eter::kRate / 1000);
+                pv_.ovlStarted[j] = true;
+                ov.play();
+                if (pv_.tr[j].ovlDuckDb < 0)
+                    for (int c = 0; c < pv_.n; ++c) engine_->source(kClipCh[c]).setDuck(float(dbToGain(pv_.tr[j].ovlDuckDb)));
+            }
         }
     }
 }

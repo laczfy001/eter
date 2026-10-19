@@ -30,6 +30,9 @@ struct Item {
     QString fadeCurve;              // "linear", "log", "scurve" vagy üres
     qint64 introMs = 0;             // az intro vége (az ének kezdete); 0 = nincs megadva
     qint64 cueOutMs = 0;            // a számhoz mentett vég (itt hallgat el); 0 = nincs megadva
+    int energy = 0;                 // 1 nagyon nyugodt … 5 nagyon pörgős; 0 = nincs megadva
+    double bpm = 0;                 // tempó; 0 = nem ismert
+    int dayparts = 0;               // napszakok bitmaszkja (lásd daypartOf); 0 = bármikor szólhat
     // Ennyi ideig tölti ki az adást: a mix pontig, ennek híján a teljes hossz egy becsült átfedéssel.
     qint64 airMs() const { return mixOutMs > 0 ? mixOutMs : std::max<qint64>(0, durationMs - (durationMs > 30000 ? 3000 : 0)); }
 };
@@ -86,6 +89,7 @@ struct ClockSlot {
     int itemId = 0;
     int count = 1;
     int fixedOffsetS = -1;          // −1 = folytatólagos
+    int energyMin = 0, energyMax = 0;   // a választható elemek energiája; 0 = nincs korlát
     QString label;                  // megjelenítéshez: kategória vagy elem neve
     QString kind, color;
 };
@@ -164,6 +168,8 @@ public:
     // Az elem szerkesztőjéhez: album és év (ezek nincsenek az Item-ben), az adatok és a jelölőpontok mentése.
     void itemExtra(int id, QString *album, int *year);
     void updateItemDetails(int id, int categoryId, const QString &title, const QString &artist, const QString &album, int year);
+    // Energia, tempó és napszakok (az ütemező szabályaihoz); negatív érték: az a mező marad.
+    void setItemFlow(const QVector<int> &ids, int energy, double bpm, int dayparts);
     // introMs: 0 = nincs; outroMs (az outro kezdete, vagyis a mix pont): 0 = automatikus.
     void setItemMarkers(int id, qint64 cueInMs, qint64 introMs, qint64 outroMs);
     bool deleteItem(int id, QString *err = nullptr);
@@ -241,6 +247,7 @@ public:
         QString status;                                  // pending, playing, played, skipped
     };
     bool mirrorLibrary(const QVector<Category> &categories, const QVector<Item> &items);
+    bool mirrorUpsertItem(const Item &item, const Category &category);
     bool mirrorState(const QVector<MirrorRow> &rows, const QVector<Transition> &transitions);
     // Ha be van állítva, a Mix editor mentései (átmenet, a számok jelölői) ide is jelzik magukat:
     // a távoli szerkesztő így küldi tovább őket a playoutnak.

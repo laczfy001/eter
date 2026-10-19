@@ -6,12 +6,15 @@
 #include <QDateTime>
 #include <QMainWindow>
 #include <QPointer>
+#include <QHash>
 #include <QSet>
 #include <QVector>
+#include <memory>
 
 class QAction;
 class QComboBox;
 class QDialog;
+class QFrame;
 class QLabel;
 class QProgressBar;
 class QPushButton;
@@ -29,7 +32,10 @@ class CartwallPanel;
 class ItemEditorDialog;
 class TimedEventsPage;
 class MiniMix;
-namespace remote { class Server; class Connection; }
+class CountdownOverlay;
+class FileCheck;
+class ProgramLogger;
+namespace remote { class Server; class Connection; class Client; }
 class QJsonObject;
 class QPainter;
 class QStyleOptionViewItem;
@@ -58,7 +64,8 @@ public:
     void refreshDeviceLists();
 
     // Elemek hozzáadása a playlisthez; at < 0: a végére.
-    void appendItems(const QVector<int> &itemIds, int at = -1, int groupId = 0, const QString &groupName = {});
+    void appendItems(const QVector<int> &itemIds, int at = -1, int groupId = 0, const QString &groupName = {},
+                     const QString &source = QStringLiteral("manual"));
     // Mentett playlist beillesztése blokként; at < 0: a végére.
     void insertSavedPlaylist(int savedPlaylistId, int at = -1);
     void toggleGroup(int groupId);
@@ -151,6 +158,7 @@ private:
         int vtItemId = 0;                 // voice track az átmenet fölött
         qint64 vtOffsetMs = 0;
         double vtDuckDb = -9;
+        bool nonMusic = false;            // nem zenei elem saját beállítás nélkül: a mix pontnál nem halkul
     };
     // A kimenő elem időzített vége: a mix pont után tovább szól, és a beállított végpontján úszik ki.
     struct OutFade { int rowId = -1; qint64 startFrame = 0; qint64 endFrame = 0; int fadeMs = 0;
@@ -292,9 +300,101 @@ public:
     QString remoteStatus() const;
     QJsonObject remoteState() const;                   // a playlist élő állapota a szerkesztőknek
     QJsonObject remoteLibrary();                       // a hangtár a szerkesztőknek
-    QString applyRemoteOp(const QJsonObject &m);       // üres: sikerült; különben a hiba szövege
+    // Üres: sikerült; különben a hiba szövege. c: a kérő kapcsolat (a jogai miatt); reply: a válasz további mezői.
+    QString applyRemoteOp(const QJsonObject &m, remote::Connection *c = nullptr, QJsonObject *reply = nullptr);
+    QString applyUpload(const QJsonObject &m, remote::Connection *c, QJsonObject *reply);
+public:
+    static QString uploadFolder();
+private:
+private:
+    CountdownOverlay *countdown_ = nullptr;
+    void updateCountdown();
+public:
+    QString countdownText() const;                     // fejlesztéshez: a visszaszámláló állapota
+private:
+    // Hiányzó fájlok: a várakozó elemek (és voice trackjeik) fájljainak ellenőrzése háttérszálon.
+    FileCheck *fileCheck_ = nullptr;
+    QSet<QString> missing_;                            // a playlist elérhetetlen fájljai
+    QSet<int> missingItems_;                           // hangtárelemek elérhetetlen fájllal (az ütemező kihagyja őket)
+    QTimer *fileCheckTimer_ = nullptr, *fileRecheckTimer_ = nullptr;
+    QPushButton *missingBtn_ = nullptr;
+    QPointer<QDialog> missingDialog_;
+    QSet<int> warnedMissing_;                          // ezekre a sorokra már szólt
+    void requestFileCheck();
+    void onFilesChecked(const QStringList &checked, const QSet<QString> &missing);
+    void updateMissingUi();
+    bool rowMissing(const Row &r) const;
+    void removeRows(const QVector<int> &rowIds);
+public:
+    void showMissingFiles();
+    void scanLibraryFiles();
+    QStringList missingTitles() const;                 // fejlesztéshez: a hiányzó fájlú várakozó sorok
+    void checkFilesNow() { requestFileCheck(); }
+private:
+    // Pontos időre igazítás: a fix idejű elemekhez képest mennyit késik vagy siet a playlist.
+    struct FixInfo {
+        int rowId = 0;
+        QDateTime fixedAt, arrive;                     // a fix időpont, és amikor a sor magától odaérne
+        qint64 diffMs = 0;                             // > 0: ennyi hiányzik (csend lenne); < 0: ennyivel túllóg
+    };
+    QVector<FixInfo> fixes_;
+    QFrame *fixBar_ = nullptr;
+    QLabel *fixText_ = nullptr;
+    QPushButton *fixBtn_ = nullptr;
+    QSet<int> autoFixed_;                              // ezekhez a fix pontokhoz már igazított automatikusan
+    QPointer<QDialog> fixDialog_;
+    void updateFixBar();
+    void autoAdjustFixes();
+    const FixInfo *nextFix() const;
+    static qint64 rowAirMs(const Row &r);
+public:
+    struct FillPlan { QVector<Item> items; qint64 totalMs = 0; };
+    FillPlan proposeFill(int fixRowId, qint64 gapMs, int categoryId) const;
+    QVector<QPair<int, qint64>> proposeTrim(int fixRowId, qint64 overMs) const;   // sor → a kivétele utáni eltérés
+    int defaultFillCategory(int fixRowId) const;
+    void openFixDialog();
+    QString fixDebug() const;                          // fejlesztéshez
+private:
+    // Adásrögzítés (logger)
+    std::unique_ptr<ProgramLogger> logger_;
+    QLabel *loggerStatus_ = nullptr;
+    std::vector<float> tapBuf_;
+    void pumpLogger();
+public:
+    void configureLogger();                            // a beállítások szerint indítja vagy leállítja
+    QString loggerStatus() const;
+    ProgramLogger *logger() const { return logger_.get(); }
 private:
     remote::Server *remote_ = nullptr;
+    // Feltöltések a szerkesztőkből: azonosító → a készülő fájl
+    struct Upload {
+        QPointer<remote::Connection> conn;
+        std::shared_ptr<class QFile> file;
+        QString path, name, title;
+        qint64 size = 0, received = 0;
+        int categoryId = 0;
+        bool voiceTrack = false;
+    };
+    QHash<int, Upload> uploads_;
+    int nextUpload_ = 1;
+    // Tartalék playout: a fő gép oldalán az adatbázis-másolat küldése, a tartalék oldalán az átvétel és a visszaadás.
+    QTimer *snapshotTimer_ = nullptr;
+    QJsonObject remoteSnapshot();
+    void sendSnapshot();
+    QString applyHandback(const QJsonObject &m);
+    remote::Client *origin_ = nullptr;                // tartalékként adásban: a fő playout figyelése
+    QFrame *handbackBar_ = nullptr;
+    QLabel *handbackText_ = nullptr;
+    QString originHost_;
+    QStringList relaunchArgs_;
+public:
+    // A tartalék átveszi az adást: a megadott sor a megadott helyről szól (ha még tart), automata üzemmódban.
+    void takeOver(int entryId, qint64 positionMs);
+    // A fő playout figyelése az átvétel után; ha újra elérhető, a Visszaadás gomb visszaadja neki az adást.
+    void watchOrigin(const QString &host, quint16 port, const QString &user, const QByteArray &salt, const QByteArray &key,
+                     const QStringList &relaunchArgs);
+    void handBack();
+private:
     QTimer *remoteStateTimer_ = nullptr, *remoteLibTimer_ = nullptr;
     int remoteTick_ = 0;
     QString remoteError_;

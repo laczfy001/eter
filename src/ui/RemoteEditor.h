@@ -6,6 +6,9 @@
 #include "net/Remote.h"
 
 #include <QDialog>
+#include <QHash>
+#include <functional>
+#include <memory>
 #include <QJsonObject>
 #include <QMainWindow>
 
@@ -15,13 +18,15 @@ class QPushButton;
 class QSpinBox;
 class QTimer;
 class MixEditorPage;
+class LibraryPanel;
+class QFile;
 class PlaylistTable;
 namespace eter { class Engine; }
 
 struct RemoteTarget {
     QString host;
     quint16 port = remote::kDefaultPort;
-    QString password;
+    QString user, password;              // üres felhasználó: az alap jelszó
     QString pathFrom, pathTo;          // a hangfájlok mappája a playout gépen, és ugyanez ezen a gépen
 };
 
@@ -32,7 +37,7 @@ public:
     RemoteTarget target() const;
 
 private:
-    QLineEdit *host_, *password_, *from_, *to_;
+    QLineEdit *host_, *user_, *password_, *from_, *to_;
     QSpinBox *port_;
 };
 
@@ -48,7 +53,12 @@ public:
     void requestMove(int entryId, int beforeEntryId);
     void requestRemove(int entryId);
     void requestOverlay(int entryId, bool on);
+    void requestInsert(const QVector<int> &itemIds, int beforeEntryId);
+    // Hangfájl feltöltése a playout hangtárába (vt: voice trackként). A done az új elem azonosítójával hívódik (0: hiba).
+    void uploadFile(const QString &localPath, int categoryId, bool vt, const QString &title, std::function<void(int)> done);
+    LibraryPanel *library() const { return library_; }
     QString debugState() const;
+    bool busyUploading() const { return !uploads_.isEmpty(); }
 
 signals:
     void stateApplied();                               // új állapot érkezett és megjelent
@@ -63,6 +73,7 @@ private:
         QString state;                                 // pending, cued, playing, played, skipped, failed
         int player = -1;
         QString start;
+        bool missing = false;                          // a fájl a playout gépen nem érhető el
         int voice = -1;                                // szóló ráfektetett elem csatornája
     };
     void onMessage(const QJsonObject &m);
@@ -81,7 +92,12 @@ private:
     void setOnline(bool on, const QString &text);
     void contextMenu(const QPoint &pos);
     void openConnectDialog();
-    int send(const QString &op, const QJsonObject &args);
+    int send(const QString &op, const QJsonObject &args, std::function<void(const QJsonObject &ack)> onAck = {});
+    void applyPerms();
+    int chooseUploadCategory();                        // 0: mégse
+    void uploadPaths(const QStringList &paths, int beforeEntryId);
+    void nextUpload();
+    void previewLibraryItem();
 
     Database *db_;
     eter::Engine *engine_;
@@ -91,6 +107,20 @@ private:
     bool haveLibrary_ = false;
     QVector<Row> rows_;
     QHash<int, QString> pendingOps_;                   // elküldött, még meg nem válaszolt kérések
+    QHash<int, std::function<void(const QJsonObject &)>> callbacks_;
+    struct UploadJob {
+        QString local, title;
+        int categoryId = 0;
+        bool vt = false;
+        std::function<void(int)> done;
+        std::shared_ptr<QFile> file;
+        qint64 size = 0, sent = 0;
+        int token = 0;
+    };
+    QVector<UploadJob> uploads_;                       // az első fut, a többi vár
+    QHash<int, QString> uploadedLocal_;                // feltöltött elem → a helyi fájl (előhallgatáshoz)
+    LibraryPanel *library_ = nullptr;
+    bool libPreview_ = false;
 
     PlaylistTable *table_;
     MixEditorPage *mix_;

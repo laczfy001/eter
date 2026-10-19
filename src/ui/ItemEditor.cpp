@@ -9,6 +9,11 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <cmath>
+#include <QDateTime>
+#include <QCheckBox>
+#include "audio/Analysis.h"
+#include "sched/Scheduler.h"
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -258,6 +263,42 @@ ItemEditorDialog::ItemEditorDialog(Database *db, eter::Engine *engine, int itemI
     top->addLayout(form1, 1);
     top->addLayout(form2, 1);
     root->addLayout(top);
+
+    // Az ütemező szabályaihoz: energia, tempó, napszakok.
+    auto *flow = new QHBoxLayout;
+    flow->setSpacing(8);
+    energy_ = new QComboBox;
+    for (int e = 0; e <= 5; ++e) energy_->addItem(Scheduler::energyName(e), e);
+    energy_->setCurrentIndex(std::clamp(item_.energy, 0, 5));
+    energy_->setToolTip(TR("Az ütemező szabályaihoz: például ne jöjjön két lassú szám egymás után"));
+    bpm_ = new QDoubleSpinBox;
+    bpm_->setRange(0, 250);
+    bpm_->setDecimals(1);
+    bpm_->setSpecialValueText(TR("nem ismert"));
+    bpm_->setSuffix(TR(" BPM"));
+    bpm_->setValue(item_.bpm);
+    bpm_->setFixedWidth(120);
+    bpmEstimate_ = new QPushButton(TR("Becslés"));
+    bpmEstimate_->setToolTip(TR("A tempó becslése a hangfájlból"));
+    bpmTap_ = new QPushButton(TR("Ütem"));
+    bpmTap_->setToolTip(TR("Kattints az ütemre (legalább négyszer): a tempó a kattintások üteméből jön"));
+    flow->addWidget(new QLabel(TR("Energia")));
+    flow->addWidget(energy_);
+    flow->addSpacing(10);
+    flow->addWidget(new QLabel(TR("Tempó")));
+    flow->addWidget(bpm_);
+    flow->addWidget(bpmEstimate_);
+    flow->addWidget(bpmTap_);
+    flow->addSpacing(10);
+    flow->addWidget(new QLabel(TR("Napszak")));
+    for (int p = 0; p < Scheduler::kDayparts; ++p) {
+        dayparts_[p] = new QCheckBox(Scheduler::daypartName(p));
+        dayparts_[p]->setChecked(item_.dayparts & (1 << p));
+        dayparts_[p]->setToolTip(TR("Az ütemező csak a bejelölt napszakokban teszi be; ha egyik sincs bejelölve, bármikor"));
+        flow->addWidget(dayparts_[p]);
+    }
+    flow->addStretch(1);
+    root->addLayout(flow);
     info_ = new QLabel;
     info_->setObjectName("small");
     info_->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -369,6 +410,41 @@ ItemEditorDialog::ItemEditorDialog(Database *db, eter::Engine *engine, int itemI
     for (QLineEdit *e : {title_, artist_, album_}) connect(e, &QLineEdit::textEdited, this, [this] { markDirty(); });
     connect(year_, &QSpinBox::valueChanged, this, [this] { if (!loading_) markDirty(); });
     connect(category_, &QComboBox::activated, this, [this] { markDirty(); });
+    connect(energy_, &QComboBox::activated, this, [this] { markDirty(); });
+    connect(bpm_, &QDoubleSpinBox::valueChanged, this, [this] { if (!loading_) markDirty(); });
+    for (QCheckBox *b : dayparts_) connect(b, &QCheckBox::toggled, this, [this] { if (!loading_) markDirty(); });
+    connect(bpmTap_, &QPushButton::clicked, this, [this] {
+        // A legutóbbi kattintások átlagos távolsága; 2 mp szünet után újrakezdődik.
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (!taps_.isEmpty() && now - taps_.last() > 2000) taps_.clear();
+        taps_ << now;
+        if (taps_.size() > 12) taps_.remove(0);
+        if (taps_.size() >= 4) bpm_->setValue(std::round(60000.0 * (taps_.size() - 1) / double(taps_.last() - taps_.first()) * 10) / 10);
+        status_->setText(taps_.size() < 4 ? TR("Ütem: még %1 kattintás…").arg(4 - taps_.size()) : TR("Ütem: %1 BPM").arg(bpm_->value()));
+    });
+    connect(bpmEstimate_, &QPushButton::clicked, this, [this] {
+        if (bpmThread_.joinable()) return;
+        bpmEstimate_->setEnabled(false);
+        status_->setText(TR("Tempó becslése…"));
+        QPointer<ItemEditorDialog> self(this);
+        const std::string path = item_.path.toStdString();
+        auto flag = cancel_;
+        bpmThread_ = std::thread([self, path, flag] {
+            const double bpm = eter::estimateBpm(path, *flag);
+            if (flag->load()) return;
+            QMetaObject::invokeMethod(qApp, [self, bpm] {
+                if (!self) return;
+                if (self->bpmThread_.joinable()) self->bpmThread_.join();
+                self->bpmEstimate_->setEnabled(true);
+                if (bpm > 0) {
+                    self->bpm_->setValue(bpm);
+                    self->status_->setText(TR("Becsült tempó: %1 BPM (a fél- vagy dupla tempó is lehet: ellenőrizd az Ütem gombbal).").arg(bpm));
+                } else {
+                    self->status_->setText(TR("A tempó nem állapítható meg (nincs határozott ütem)."));
+                }
+            }, Qt::QueuedConnection);
+        });
+    });
     connect(cancel, &QPushButton::clicked, this, &ItemEditorDialog::reject);
     connect(save_, &QPushButton::clicked, this, [this] { save(); });
     connect(play_, &QPushButton::clicked, this, [this] {
@@ -423,6 +499,7 @@ ItemEditorDialog::~ItemEditorDialog()
 {
     cancel_->store(true);
     if (thread_.joinable()) thread_.join();
+    if (bpmThread_.joinable()) bpmThread_.join();
     if (playing_) stopPreview();
 }
 
@@ -520,6 +597,11 @@ bool ItemEditorDialog::save()
     }
     db_->updateItemDetails(item_.id, category_->currentData().toInt(), title, artist_->text(), album_->text(), year_->value());
     db_->setItemMarkers(item_.id, cue, intro, outro);
+    int mask = 0;
+    for (int p = 0; p < Scheduler::kDayparts; ++p)
+        if (dayparts_[p]->isChecked()) mask |= 1 << p;
+    if (mask == (1 << Scheduler::kDayparts) - 1) mask = 0;
+    db_->setItemFlow({item_.id}, energy_->currentData().toInt(), bpm_->value(), mask);
     item_ = db_->item(item_.id);
     dirty_ = false;
     save_->setEnabled(false);

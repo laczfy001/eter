@@ -36,8 +36,8 @@ static bool run(QSqlQuery &q)
     "i.id, i.category_id, c.name, c.kind, c.color, i.title, i.artist, i.file_path, i.duration_ms, " \
     "COALESCE(i.last_played_at, 0), COALESCE(i.mix_out_ms, i.auto_mix_out_ms, 0), COALESCE(i.mix_out_ms, 0), " \
     "i.cue_in_ms, COALESCE(i.fade_out_ms, -1), COALESCE(i.fade_curve, ''), COALESCE(i.intro_ms, 0), " \
-    "COALESCE(i.cue_out_ms, 0)"
-static const int kItemColumns = 17;
+    "COALESCE(i.cue_out_ms, 0), i.energy, i.bpm, i.dayparts"
+static const int kItemColumns = 20;
 static const char *kItemSelect = "SELECT " ETER_ITEM_COLS " FROM items i JOIN categories c ON c.id = i.category_id ";
 
 static Item readItem(const QSqlQuery &q, int o = 0)
@@ -60,6 +60,9 @@ static Item readItem(const QSqlQuery &q, int o = 0)
     it.fadeCurve = q.value(o + 14).toString();
     it.introMs = q.value(o + 15).toLongLong();
     it.cueOutMs = q.value(o + 16).toLongLong();
+    it.energy = q.value(o + 17).toInt();
+    it.bpm = q.value(o + 18).toDouble();
+    it.dayparts = q.value(o + 19).toInt();
     return it;
 }
 
@@ -92,7 +95,7 @@ bool Database::open(const QString &path, QString *err)
     int v = version;
     if (v == 0) {
         if (!createSchema(err)) return false;
-        v = 8;
+        v = 9;
     }
     if (v == 1) {
         // 2. séma: az automatikusan megtalált mix pont eltárolása az ütemező pontosabb tervezéséhez.
@@ -187,6 +190,16 @@ bool Database::open(const QString &path, QString *err)
         q.exec("ALTER TABLE playlist_entries ADD COLUMN overlay_duck_db REAL NOT NULL DEFAULT 0");
         q.exec("PRAGMA user_version = 8");
         v = 8;
+    }
+    if (v == 8) {
+        // 9. séma: energia, tempó és napszak az elemeken; energiasáv az órasémák helyein (ütemező szabályai).
+        q.exec("ALTER TABLE items ADD COLUMN energy INTEGER NOT NULL DEFAULT 0 CHECK (energy BETWEEN 0 AND 5)");
+        q.exec("ALTER TABLE items ADD COLUMN bpm REAL NOT NULL DEFAULT 0");
+        q.exec("ALTER TABLE items ADD COLUMN dayparts INTEGER NOT NULL DEFAULT 0");
+        q.exec("ALTER TABLE clock_slots ADD COLUMN energy_min INTEGER NOT NULL DEFAULT 0");
+        q.exec("ALTER TABLE clock_slots ADD COLUMN energy_max INTEGER NOT NULL DEFAULT 0");
+        q.exec("PRAGMA user_version = 9");
+        v = 9;
     }
     housekeeping();
     return true;
@@ -421,6 +434,28 @@ void Database::updateItemDetails(int id, int categoryId, const QString &title, c
     q.addBindValue(year > 0 ? QVariant(year) : QVariant());
     q.addBindValue(id);
     run(q);
+}
+
+void Database::setItemFlow(const QVector<int> &ids, int energy, double bpm, int dayparts)
+{
+    // energy / dayparts < 0, bpm < 0: az a mező nem változik.
+    beginBatch();
+    for (int id : ids) {
+        QSqlQuery q;
+        q.prepare("UPDATE items SET energy = CASE WHEN ? < 0 THEN energy ELSE ? END, "
+                  "bpm = CASE WHEN ? < 0 THEN bpm ELSE ? END, "
+                  "dayparts = CASE WHEN ? < 0 THEN dayparts ELSE ? END WHERE id = ?");
+        const int e = std::min(energy, 5);
+        q.addBindValue(e);
+        q.addBindValue(e);
+        q.addBindValue(bpm);
+        q.addBindValue(bpm);
+        q.addBindValue(dayparts);
+        q.addBindValue(dayparts);
+        q.addBindValue(id);
+        run(q);
+    }
+    endBatch();
 }
 
 void Database::setItemMarkers(int id, qint64 cueInMs, qint64 introMs, qint64 outroMs)
@@ -1025,7 +1060,7 @@ QVector<ClockSlot> Database::clockSlots(int clockId)
     QVector<ClockSlot> out;
     QSqlQuery q;
     q.prepare("SELECT s.id, s.position, s.slot_type, COALESCE(s.category_id, 0), COALESCE(s.item_id, 0), s.item_count, "
-              "COALESCE(s.fixed_offset_s, -1), c.name, c.kind, c.color, i.title, i.artist, ic.kind, ic.color "
+              "COALESCE(s.fixed_offset_s, -1), c.name, c.kind, c.color, i.title, i.artist, ic.kind, ic.color, s.energy_min, s.energy_max "
               "FROM clock_slots s LEFT JOIN categories c ON c.id = s.category_id "
               "LEFT JOIN items i ON i.id = s.item_id LEFT JOIN categories ic ON ic.id = i.category_id "
               "WHERE s.clock_id = ? ORDER BY s.position");
@@ -1041,6 +1076,8 @@ QVector<ClockSlot> Database::clockSlots(int clockId)
         s.itemId = q.value(4).toInt();
         s.count = q.value(5).toInt();
         s.fixedOffsetS = q.value(6).toInt();
+        s.energyMin = q.value(14).toInt();
+        s.energyMax = q.value(15).toInt();
         if (s.type == "item") {
             const QString artist = q.value(11).toString();
             s.label = q.value(10).toString() + (artist.isEmpty() ? QString() : QStringLiteral(" – ") + artist);
@@ -1059,8 +1096,8 @@ QVector<ClockSlot> Database::clockSlots(int clockId)
 int Database::addSlot(const ClockSlot &slot)
 {
     QSqlQuery q;
-    q.prepare("INSERT INTO clock_slots (clock_id, position, slot_type, category_id, item_id, item_count, fixed_offset_s) "
-              "VALUES (?, (SELECT COALESCE(MAX(position), 0) + 1 FROM clock_slots WHERE clock_id = ?), ?, ?, ?, ?, ?)");
+    q.prepare("INSERT INTO clock_slots (clock_id, position, slot_type, category_id, item_id, item_count, fixed_offset_s, energy_min, energy_max) "
+              "VALUES (?, (SELECT COALESCE(MAX(position), 0) + 1 FROM clock_slots WHERE clock_id = ?), ?, ?, ?, ?, ?, ?, ?)");
     q.addBindValue(slot.clockId);
     q.addBindValue(slot.clockId);
     q.addBindValue(slot.type);
@@ -1068,6 +1105,8 @@ int Database::addSlot(const ClockSlot &slot)
     q.addBindValue(slot.type == "item" && slot.itemId ? QVariant(slot.itemId) : QVariant());
     q.addBindValue(std::max(1, slot.count));
     q.addBindValue(slot.fixedOffsetS >= 0 ? QVariant(slot.fixedOffsetS) : QVariant());
+    q.addBindValue(std::clamp(slot.energyMin, 0, 5));
+    q.addBindValue(std::clamp(slot.energyMax, 0, 5));
     if (!run(q)) return 0;
     return q.lastInsertId().toInt();
 }
@@ -1075,13 +1114,15 @@ int Database::addSlot(const ClockSlot &slot)
 void Database::updateSlot(const ClockSlot &slot)
 {
     QSqlQuery q;
-    q.prepare("UPDATE clock_slots SET slot_type = ?, category_id = ?, item_id = ?, item_count = ?, fixed_offset_s = ? "
-              "WHERE id = ?");
+    q.prepare("UPDATE clock_slots SET slot_type = ?, category_id = ?, item_id = ?, item_count = ?, fixed_offset_s = ?, "
+              "energy_min = ?, energy_max = ? WHERE id = ?");
     q.addBindValue(slot.type);
     q.addBindValue(slot.type != "item" && slot.categoryId ? QVariant(slot.categoryId) : QVariant());
     q.addBindValue(slot.type == "item" && slot.itemId ? QVariant(slot.itemId) : QVariant());
     q.addBindValue(std::max(1, slot.count));
     q.addBindValue(slot.fixedOffsetS >= 0 ? QVariant(slot.fixedOffsetS) : QVariant());
+    q.addBindValue(std::clamp(slot.energyMin, 0, 5));
+    q.addBindValue(std::clamp(slot.energyMax, 0, 5));
     q.addBindValue(slot.id);
     run(q);
 }
@@ -1274,6 +1315,31 @@ QVector<Transition> Database::transitionsFor(const QVector<int> &toEntryIds)
 
 // A hangtár tükre: a kategóriák és az elemek a playout azonosítóival. A playlist tükre ezzel törlődik,
 // utána újra kell tölteni (mirrorState).
+bool Database::mirrorUpsertItem(const Item &it, const Category &category)
+{
+    // A szerkesztő tükrébe: a playouton most létrejött elem (feltöltés után), még a következő hangtárküldés előtt.
+    QSqlQuery q;
+    if (category.id) {
+        QSqlQuery c;
+        c.prepare("INSERT OR IGNORE INTO categories (id, kind, name, color) VALUES (?, ?, ?, ?)");
+        c.addBindValue(category.id);
+        c.addBindValue(category.kind);
+        c.addBindValue(category.name);
+        c.addBindValue(category.color);
+        if (c.exec() && c.numRowsAffected() > 0) emit categoriesChanged();
+    }
+    q.prepare("INSERT OR REPLACE INTO items (id, category_id, title, artist, file_path, duration_ms, cue_in_ms) VALUES (?, ?, ?, ?, ?, ?, 0)");
+    q.addBindValue(it.id);
+    q.addBindValue(it.categoryId);
+    q.addBindValue(it.title);
+    q.addBindValue(it.artist);
+    q.addBindValue(it.path);
+    q.addBindValue(std::max<qint64>(0, it.durationMs));
+    if (!run(q)) return false;
+    emit itemsChanged();
+    return true;
+}
+
 bool Database::mirrorLibrary(const QVector<Category> &categories, const QVector<Item> &items)
 {
     QSqlQuery q;
@@ -1293,8 +1359,8 @@ bool Database::mirrorLibrary(const QVector<Category> &categories, const QVector<
         ok = ins.exec();
     }
     ok = ok && ins.prepare("INSERT INTO items (id, category_id, title, artist, file_path, duration_ms, last_played_at, cue_in_ms, "
-                           "intro_ms, mix_out_ms, cue_out_ms, fade_out_ms, fade_curve, auto_mix_out_ms) "
-                           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                           "intro_ms, mix_out_ms, cue_out_ms, fade_out_ms, fade_curve, auto_mix_out_ms, energy, bpm, dayparts) "
+                           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     QSet<QString> paths;
     for (const Item &it : items) {
         if (!ok) break;
@@ -1315,6 +1381,9 @@ bool Database::mirrorLibrary(const QVector<Category> &categories, const QVector<
         ins.addBindValue(it.fadeOutMs >= 0 ? QVariant(it.fadeOutMs) : QVariant());
         ins.addBindValue(it.fadeCurve.isEmpty() ? QVariant() : QVariant(it.fadeCurve));
         ins.addBindValue(it.userMixOutMs <= 0 && it.mixOutMs > 0 ? QVariant(it.mixOutMs) : QVariant());
+        ins.addBindValue(std::clamp(it.energy, 0, 5));
+        ins.addBindValue(it.bpm);
+        ins.addBindValue(it.dayparts);
         ok = ins.exec();
     }
     if (!ok) {

@@ -3,6 +3,11 @@
 #include "MixEditorPage.h"
 #include "PlaylistTable.h"
 #include "Theme.h"
+#include <QFileDialog>
+#include <QFile>
+#include <QComboBox>
+#include "audio/Decoder.h"
+#include "Library.h"
 #include "audio/Engine.h"
 
 #include <QCloseEvent>
@@ -17,6 +22,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QApplication>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
@@ -49,6 +55,8 @@ RemoteConnectDialog::RemoteConnectDialog(QWidget *parent) : QDialog(parent)
     port_ = new QSpinBox;
     port_->setRange(1, 65535);
     port_->setValue(s.value("remoteEditor/port", remote::kDefaultPort).toInt());
+    user_ = new QLineEdit(s.value("remoteEditor/user").toString());
+    user_->setPlaceholderText(TR("üresen: az alap jelszó (teljes jog)"));
     password_ = new QLineEdit;
     password_->setEchoMode(QLineEdit::Password);
     from_ = new QLineEdit(s.value("remoteEditor/pathFrom").toString());
@@ -57,6 +65,7 @@ RemoteConnectDialog::RemoteConnectDialog(QWidget *parent) : QDialog(parent)
     to_->setPlaceholderText(TR("például smb://radio/Zene, \\\\radio\\Zene vagy /mnt/zene"));
     f->addRow(TR("Playout címe (IP)"), host_);
     f->addRow(TR("Port"), port_);
+    f->addRow(TR("Felhasználó"), user_);
     f->addRow(TR("Jelszó"), password_);
     f->addRow(TR("Hangfájlok a playout gépen"), from_);
     f->addRow(TR("Ugyanez ezen a gépen"), to_);
@@ -73,12 +82,22 @@ RemoteConnectDialog::RemoteConnectDialog(QWidget *parent) : QDialog(parent)
     v->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, this, [this] {
         if (host_->text().trimmed().isEmpty()) {
+            QMessageBox::warning(this, TR("Csatlakozás a playouthoz"), TR("Add meg a playout gép címét (IP-címét)."));
             host_->setFocus();
+            return;
+        }
+        if (password_->text().isEmpty()) {
+            // Jelszó nélkül meg sem próbál csatlakozni: a playout úgyis elutasítaná.
+            QMessageBox::warning(this, TR("Csatlakozás a playouthoz"),
+                                 TR("Add meg a távoli szerkesztés jelszavát. A jelszót a playout gépen, a Beállítások → "
+                                    "Távoli szerkesztés részben lehet megadni."));
+            password_->setFocus();
             return;
         }
         QSettings st;
         st.setValue("remoteEditor/host", host_->text().trimmed());
         st.setValue("remoteEditor/port", port_->value());
+        st.setValue("remoteEditor/user", user_->text().trimmed());
         st.setValue("remoteEditor/pathFrom", from_->text().trimmed());
         st.setValue("remoteEditor/pathTo", to_->text().trimmed());
         accept();
@@ -92,6 +111,7 @@ RemoteTarget RemoteConnectDialog::target() const
     RemoteTarget t;
     t.host = host_->text().trimmed();
     t.port = quint16(port_->value());
+    t.user = user_->text().trimmed();
     t.password = password_->text();
     t.pathFrom = from_->text().trimmed();
     t.pathTo = to_->text().trimmed();
@@ -184,10 +204,56 @@ RemoteEditorWindow::RemoteEditorWindow(Database *mirror, eter::Engine *engine, Q
     table_->setColumnWidth(2, 50);
     table_->setColumnWidth(3, 150);
     lv->addWidget(table_, 1);
-    split->addWidget(left);
+    // A playout hangtára: innen húzható elem a playlistbe; ide (vagy a playlistbe) ejtett fájl feltöltésre kerül.
+    library_ = new LibraryPanel(db_);
+    library_->setRemoteMode(true);
+    auto *libFoot = new QFrame;
+    libFoot->setObjectName("panelFooter");
+    auto *lf = new QHBoxLayout(libFoot);
+    lf->setContentsMargins(10, 6, 10, 6);
+    auto *uploadBtn = new QPushButton(TR("Feltöltés a playoutra…"));
+    uploadBtn->setObjectName("uploadButton");
+    uploadBtn->setToolTip(TR("Hangfájlok feltöltése erről a gépről a playout hangtárába"));
+    auto *libHint = new QLabel(TR("dupla kattintás vagy húzás: a playlistbe"));
+    libHint->setObjectName("small");
+    lf->addWidget(uploadBtn);
+    lf->addStretch(1);
+    lf->addWidget(libHint);
+    library_->setFooter(libFoot);
+    auto *leftSplit = new QSplitter(Qt::Vertical);
+    leftSplit->setHandleWidth(8);
+    leftSplit->setChildrenCollapsible(false);
+    leftSplit->addWidget(left);
+    leftSplit->addWidget(library_);
+    leftSplit->setStretchFactor(0, 3);
+    leftSplit->setStretchFactor(1, 2);
+    split->addWidget(leftSplit);
+    connect(uploadBtn, &QPushButton::clicked, this, [this] {
+        const QStringList files = QFileDialog::getOpenFileNames(this, TR("Feltöltés a playoutra"), QSettings().value("ui/lastDir").toString(),
+                                                                TR("Hangfájlok (*.%1);;Minden fájl (*)").arg(audioExtensions().join(" *.")));
+        if (files.isEmpty()) return;
+        QSettings().setValue("ui/lastDir", QFileInfo(files.first()).absolutePath());
+        uploadPaths(files, -1);
+    });
+    connect(library_, &LibraryPanel::filesDropped, this, [this](const QStringList &paths) { uploadPaths(paths, -1); });
+    connect(library_, &LibraryPanel::addToPlaylist, this, [this](const QVector<int> &ids) { requestInsert(ids, 0); });
+    connect(library_, &LibraryPanel::previewRequested, this, &RemoteEditorWindow::previewLibraryItem);
+    connect(library_, &LibraryPanel::message, this, [this](const QString &t) { statusBar()->showMessage(t, 8000); });
+    connect(table_, &PlaylistTable::itemsDropped, this, [this](const QVector<int> &ids, int at) {
+        requestInsert(ids, at >= 0 && at < rows_.size() ? rows_[at].entry.id : 0);
+    });
+    connect(table_, &PlaylistTable::pathsDropped, this, [this](const QStringList &paths, int at) {
+        uploadPaths(paths, at >= 0 && at < rows_.size() ? rows_[at].entry.id : 0);
+    });
 
     mix_ = new MixEditorPage(db_, engine_);
     mix_->setRemoteMode(true);
+    connect(mix_, &MixEditorPage::previewStarting, this, [this] {
+        if (libPreview_) {
+            engine_->source(eter::Engine::Pfl).stop();
+            libPreview_ = false;
+        }
+    });
     split->addWidget(mix_);
     split->setStretchFactor(0, 0);
     split->setStretchFactor(1, 1);
@@ -199,7 +265,7 @@ RemoteEditorWindow::RemoteEditorWindow(Database *mirror, eter::Engine *engine, Q
 
     retry_ = new QTimer(this);
     retry_->setInterval(3000);
-    connect(retry_, &QTimer::timeout, this, [this] { client_->connectTo(target_.host, target_.port, target_.password); });
+    connect(retry_, &QTimer::timeout, this, [this] { client_->connectTo(target_.host, target_.port, target_.user, target_.password); });
 
     connect(reconnect_, &QPushButton::clicked, this, &RemoteEditorWindow::openConnectDialog);
     connect(client_, &remote::Client::loggedIn, this, [this](const QString &version) {
@@ -209,7 +275,9 @@ RemoteEditorWindow::RemoteEditorWindow(Database *mirror, eter::Engine *engine, Q
         pendingOps_.clear();
         everConnected_ = true;
         retry_->stop();
-        setOnline(true, TR("Kapcsolódva: %1:%2 · playout %3").arg(target_.host).arg(target_.port).arg(version));
+        QString who = target_.user.isEmpty() ? QString() : TR(" · felhasználó: %1").arg(target_.user);
+        setOnline(true, TR("Kapcsolódva: %1:%2 · playout %3").arg(target_.host).arg(target_.port).arg(version) + who);
+        applyPerms();
     });
     connect(client_, &remote::Client::failed, this, [this](const QString &reason) {
         if (everConnected_ && !retry_->isActive()) retry_->start();
@@ -219,6 +287,13 @@ RemoteEditorWindow::RemoteEditorWindow(Database *mirror, eter::Engine *engine, Q
     connect(client_, &remote::Client::lost, this, [this](const QString &reason) {
         setOnline(false, TR("A kapcsolat megszakadt (%1) – újracsatlakozás…").arg(reason));
         retry_->start();
+        // A félbemaradt feltöltések elvesznek (a playout törli a darabjaikat).
+        for (UploadJob &j : uploads_)
+            if (j.done) j.done(0);
+        if (!uploads_.isEmpty()) statusBar()->showMessage(TR("A feltöltés megszakadt a kapcsolattal együtt."), 10000);
+        uploads_.clear();
+        callbacks_.clear();
+        pendingOps_.clear();
     });
     connect(client_, &remote::Client::message, this, &RemoteEditorWindow::onMessage);
 
@@ -235,6 +310,7 @@ RemoteEditorWindow::RemoteEditorWindow(Database *mirror, eter::Engine *engine, Q
         requestMove(rows_[from].entry.id, to < rows_.size() ? rows_[to].entry.id : 0);
     });
     connect(table_, &PlaylistTable::deletePressed, this, [this] {
+        if (!client_->can(QStringLiteral("delete"))) return;
         const int r = table_->currentRow();
         if (r >= 0 && r < rows_.size()) requestRemove(rows_[r].entry.id);
     });
@@ -255,8 +331,11 @@ void RemoteEditorWindow::closeEvent(QCloseEvent *e)
 {
     mix_->stopPreview();
     db_->remoteHook = nullptr;
+    retry_->stop();
     client_->disconnectFromHost();
     QMainWindow::closeEvent(e);
+    // A szerkesztő ablak bezárása mindig kilépés, akkor is, ha valami (párbeszédablak, kapcsolat) még nyitva maradt.
+    if (e->isAccepted()) QTimer::singleShot(0, qApp, &QCoreApplication::quit);
 }
 
 void RemoteEditorWindow::openConnectDialog()
@@ -267,6 +346,10 @@ void RemoteEditorWindow::openConnectDialog()
 
 void RemoteEditorWindow::connectTo(const RemoteTarget &t)
 {
+    if (t.password.isEmpty()) {
+        setOnline(false, TR("Nincs megadva jelszó – nem csatlakozik."));
+        return;
+    }
     target_ = t;
     pathProblem_.clear();
     localRoot_ = localFolder(t.pathTo, &pathProblem_);
@@ -274,7 +357,7 @@ void RemoteEditorWindow::connectTo(const RemoteTarget &t)
     haveLibrary_ = false;
     retry_->stop();
     setOnline(false, TR("Csatlakozás: %1:%2…").arg(t.host).arg(t.port));
-    client_->connectTo(t.host, t.port, t.password);
+    client_->connectTo(t.host, t.port, t.user, t.password);
 }
 
 void RemoteEditorWindow::setOnline(bool on, const QString &text)
@@ -282,21 +365,24 @@ void RemoteEditorWindow::setOnline(bool on, const QString &text)
     banner_->setText(text);
     banner_->setStyleSheet(on ? QStringLiteral("color: #45d483; font-weight: 600;") : QStringLiteral("color: #ffb4ae; font-weight: 600;"));
     // Kapcsolat nélkül nem lehet szerkeszteni: a módosítás nem jutna el a playouthoz.
-    table_->setDragEnabled(on);
-    mix_->setEnabled(on);
+    table_->setDragEnabled(on && client_->can(QStringLiteral("order")));
+    mix_->setEnabled(on && client_->can(QStringLiteral("mix")));
+    library_->setEnabled(on);
     reconnect_->setText(on ? TR("Másik playout…") : TR("Csatlakozás…"));
     if (!on) mix_->stopPreview();
 }
 
-int RemoteEditorWindow::send(const QString &op, const QJsonObject &args)
+int RemoteEditorWindow::send(const QString &op, const QJsonObject &args, std::function<void(const QJsonObject &)> onAck)
 {
     const int id = client_->sendOp(op, args);
     if (!id) {
         statusBar()->showMessage(TR("Nincs kapcsolat a playouttal – a módosítás nem ment át."), 8000);
+        if (onAck) onAck(QJsonObject{{"ok", false}, {"error", TR("nincs kapcsolat")}});
         return 0;
     }
     pendingOps_.insert(id, op);
-    status_->setText(TR("Küldés a playoutnak…"));
+    if (onAck) callbacks_.insert(id, std::move(onAck));
+    if (!op.startsWith(QLatin1String("upload"))) status_->setText(TR("Küldés a playoutnak…"));
     return id;
 }
 
@@ -371,6 +457,8 @@ void RemoteEditorWindow::onMessage(const QJsonObject &m)
         const QString op = pendingOps_.take(id);
         const bool ok = m.value("ok").toBool();
         const QString err = m.value("error").toString();
+        if (auto cb = callbacks_.take(id)) cb(m);
+        if (op.startsWith(QLatin1String("upload")) && ok) return;    // a feltöltés a saját állapotát mutatja
         status_->setText(ok ? TR("A playout átvette a módosítást.") : TR("A playout elutasította: %1").arg(err));
         if (!ok) statusBar()->showMessage(TR("A playout elutasította: %1").arg(err), 10000);
         emit opAnswered(id, ok, err);
@@ -386,6 +474,8 @@ void RemoteEditorWindow::applyLibrary(const QJsonObject &m)
     for (const QJsonValue &v : m.value("items").toArray()) {
         Item it = remote::itemFromJson(v.toObject());
         it.path = mapPath(it.path);
+        // A innen feltöltött fájl a playout feltöltési mappájába került, ami innen nem biztos, hogy látszik.
+        if (uploadedLocal_.contains(it.id) && !QFileInfo::exists(it.path)) it.path = uploadedLocal_.value(it.id);
         items.push_back(it);
     }
     const QJsonObject settings = m.value("settings").toObject();
@@ -448,6 +538,7 @@ void RemoteEditorWindow::applyState(const QJsonObject &m)
         r.state = o.value("state").toString();
         r.player = o.value("player").toInt(-1);
         r.start = o.value("start").toString();
+        r.missing = o.value("missing").toBool();
         rows.push_back(r);
         const QString status = r.state == QLatin1String("cued") ? QStringLiteral("pending")
                                : r.state == QLatin1String("failed") ? QStringLiteral("skipped") : r.state;
@@ -507,6 +598,7 @@ void RemoteEditorWindow::rebuildTable()
             if (r.player >= 0) status += QStringLiteral(" · %1").arg(r.player + 1);
         }
         if (ovl) status = r.state == QLatin1String("playing") ? TR("RÁFEKTETVE · SZÓL") : TR("RÁFEKTETVE");
+        if (r.missing) status = TR("HIÁNYZÓ FÁJL");
         QStringList chips;
         if (r.entry.fixedStartS >= 0) chips << QStringLiteral("FIX");
         if (customFrom.contains(r.entry.id)) chips << QStringLiteral("MIX");
@@ -520,6 +612,7 @@ void RemoteEditorWindow::rebuildTable()
         else if (r.state == QLatin1String("cued")) { bg = QColor("#14283d"); fg = theme::blueSoft; }
         else if (!live(i)) fg = QColor("#8a93a0");
         if (ovl) { bg = QColor(r.state == QLatin1String("playing") ? "#3d3160" : "#272338"); fg = QColor("#ddd2ff"); }
+        if (r.missing) { bg = QColor("#3a1d1f"); fg = QColor("#ffb4ae"); }
         const bool movable = r.state == QLatin1String("pending") || r.state == QLatin1String("cued");
         for (int c = 0; c < 4; ++c) {
             auto *item = table_->item(i, c);
@@ -598,19 +691,25 @@ void RemoteEditorWindow::contextMenu(const QPoint &pos)
     const Row row = rows_[r];
     const bool waiting = row.state == QLatin1String("pending") || row.state == QLatin1String("cued");
     QMenu menu(this);
-    if (waiting) {
-        if (row.entry.overlay) {
+    const bool canMix = client_->can(QStringLiteral("mix")), canDelete = client_->can(QStringLiteral("delete"));
+    if (waiting && (canMix || canDelete)) {
+        if (!canMix) {
+        } else if (row.entry.overlay) {
             menu.addAction(TR("Ráfektetés megszüntetése (önálló elem)"), this, [this, id = row.entry.id] { requestOverlay(id, false); });
         } else {
             menu.addAction(TR("Ráfektetés az előtte és utána álló elem átmenetére"), this,
                            [this, id = row.entry.id] { requestOverlay(id, true); });
         }
-        menu.addSeparator();
-        menu.addAction(TR("Törlés a playlistből"), this, [this, id = row.entry.id, title = row.entry.item.title] {
-            if (QMessageBox::question(this, TR("Törlés a playlistből"), TR("Törlöd a playlistből: „%1”?").arg(title),
-                                      QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes)
-                requestRemove(id);
-        });
+        if (canDelete) {
+            menu.addSeparator();
+            menu.addAction(TR("Törlés a playlistből"), this, [this, id = row.entry.id, title = row.entry.item.title] {
+                if (QMessageBox::question(this, TR("Törlés a playlistből"), TR("Törlöd a playlistből: „%1”?").arg(title),
+                                          QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes)
+                    requestRemove(id);
+            });
+        }
+    } else if (waiting) {
+        menu.addAction(TR("Ehhez a sorhoz nincs jogod műveletet végezni."))->setEnabled(false);
     } else {
         menu.addAction(TR("Ez a sor már szól vagy lejátszódott – nem módosítható."))->setEnabled(false);
     }
@@ -626,3 +725,200 @@ QString RemoteEditorWindow::debugState() const
 }
 
 QString RemoteEditorWindow::warningText() const { return warning_ && !warning_->isHidden() ? warning_->text() : QString(); }
+
+// ------------------------------------------------------------- jogok, beszúrás, feltöltés
+
+void RemoteEditorWindow::applyPerms()
+{
+    const bool order = client_->can(QStringLiteral("order")), insert = client_->can(QStringLiteral("insert")),
+               mix = client_->can(QStringLiteral("mix")), upload = client_->can(QStringLiteral("upload"));
+    table_->setDragEnabled(order);
+    table_->setAcceptDrops(order || insert || upload);
+    mix_->setEnabled(mix);
+    if (auto *b = library_->findChild<QPushButton *>(QStringLiteral("uploadButton"))) b->setVisible(upload);
+    library_->setVisible(insert || upload);
+    // A voice track felvétele és fájlból betöltése a playoutra töltődik fel.
+    mix_->setVtUploader([this](const QString &path, const QString &title, std::function<void(int)> done) {
+        uploadFile(path, 0, true, title, std::move(done));
+    }, upload);
+    QStringList names;
+    for (const QString &p : remote::allPerms())
+        if (client_->can(p)) names << remote::permName(p);
+    nowLabel_->setToolTip(names.isEmpty() ? TR("Csak megtekintés") : TR("Jogaid: %1").arg(names.join(QStringLiteral(", "))));
+    if (names.isEmpty()) statusBar()->showMessage(TR("Ezzel a felhasználóval csak megtekinteni lehet a playlistet."), 10000);
+}
+
+void RemoteEditorWindow::requestInsert(const QVector<int> &itemIds, int beforeEntryId)
+{
+    if (itemIds.isEmpty()) return;
+    if (!client_->can(QStringLiteral("insert"))) {
+        statusBar()->showMessage(TR("Nincs jogod elemet beszúrni a playlistbe."), 8000);
+        return;
+    }
+    QJsonArray ids;
+    for (int id : itemIds) ids.push_back(id);
+    send(QStringLiteral("insert"), QJsonObject{{"items", ids}, {"before", beforeEntryId}});
+}
+
+int RemoteEditorWindow::chooseUploadCategory()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle(TR("Feltöltés a playoutra"));
+    auto *v = new QVBoxLayout(&dlg);
+    v->addWidget(new QLabel(TR("Melyik kategóriába kerüljenek a feltöltött elemek a playout hangtárában?")));
+    auto *cat = new QComboBox;
+    for (const Category &c : db_->itemCategories()) cat->addItem(c.name, c.id);
+    cat->setCurrentIndex(std::max(0, cat->findData(QSettings().value("remoteEditor/uploadCategory").toInt())));
+    v->addWidget(cat);
+    auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    bb->button(QDialogButtonBox::Ok)->setText(TR("Feltöltés"));
+    bb->button(QDialogButtonBox::Cancel)->setText(TR("Mégse"));
+    v->addWidget(bb);
+    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    if (cat->count() == 0 || dlg.exec() != QDialog::Accepted) return 0;
+    QSettings().setValue("remoteEditor/uploadCategory", cat->currentData().toInt());
+    return cat->currentData().toInt();
+}
+
+void RemoteEditorWindow::uploadPaths(const QStringList &paths, int beforeEntryId)
+{
+    // beforeEntryId < 0: csak a hangtárba; 0: a hangtárba és a playlistbe (a kézzel betett elemek végére); > 0: e sor elé.
+    if (!client_->can(QStringLiteral("upload"))) {
+        statusBar()->showMessage(TR("Nincs jogod fájlt feltölteni a playoutra."), 8000);
+        return;
+    }
+    QStringList files;
+    for (const QString &p : paths) {
+        const QFileInfo fi(p);
+        if (fi.isFile() && audioExtensions().contains(fi.suffix().toLower())) files << fi.absoluteFilePath();
+    }
+    if (files.isEmpty()) {
+        statusBar()->showMessage(TR("Nincs feltölthető hangfájl a kijelöltek között."), 8000);
+        return;
+    }
+    const int category = qEnvironmentVariableIsSet("ETER_EDITOR_UPLOADCAT") ? qEnvironmentVariableIntValue("ETER_EDITOR_UPLOADCAT")
+                                                                             : chooseUploadCategory();
+    if (!category) return;
+    const bool insert = beforeEntryId >= 0 && client_->can(QStringLiteral("insert"));
+    auto ids = std::make_shared<QVector<int>>();
+    auto left = std::make_shared<int>(int(files.size()));
+    for (const QString &f : files)
+        uploadFile(f, category, false, QString(), [this, ids, left, insert, beforeEntryId](int id) {
+            if (id) ids->push_back(id);
+            if (--*left == 0 && insert && !ids->isEmpty()) requestInsert(*ids, beforeEntryId);
+        });
+}
+
+void RemoteEditorWindow::uploadFile(const QString &localPath, int categoryId, bool vt, const QString &title, std::function<void(int)> done)
+{
+    UploadJob j;
+    j.local = localPath;
+    j.categoryId = categoryId;
+    j.vt = vt;
+    j.title = title;
+    j.done = std::move(done);
+    uploads_.push_back(j);
+    if (uploads_.size() == 1) nextUpload();
+}
+
+void RemoteEditorWindow::nextUpload()
+{
+    if (uploads_.isEmpty()) return;
+    UploadJob &j = uploads_.first();
+    auto fail = [this](const QString &why) {
+        UploadJob job = uploads_.takeFirst();
+        statusBar()->showMessage(TR("A feltöltés nem sikerült (%1): %2").arg(QFileInfo(job.local).fileName(), why), 12000);
+        status_->setText(TR("A feltöltés nem sikerült."));
+        if (job.done) job.done(0);
+        QTimer::singleShot(0, this, &RemoteEditorWindow::nextUpload);
+    };
+    j.file = std::make_shared<QFile>(j.local);
+    if (!j.file->open(QIODevice::ReadOnly)) {
+        fail(TR("a fájl nem olvasható"));
+        return;
+    }
+    j.size = j.file->size();
+    j.sent = 0;
+    const QString name = QFileInfo(j.local).fileName();
+    send(QStringLiteral("uploadBegin"), QJsonObject{{"name", name}, {"size", j.size}, {"category", j.categoryId}, {"vt", j.vt}, {"title", j.title}},
+         [this, fail](const QJsonObject &ack) {
+             if (uploads_.isEmpty()) return;
+             if (!ack.value("ok").toBool()) {
+                 fail(ack.value("error").toString());
+                 return;
+             }
+             uploads_.first().token = ack.value("upload").toInt();
+             // Darabonként: a következő a nyugta után megy, így a hálózat és a playout lemeze diktálja az iramot.
+             auto step = std::make_shared<std::function<void()>>();
+             std::weak_ptr<std::function<void()>> weak = step;          // önmagára csak gyengén mutat (nincs körkörös hivatkozás)
+             *step = [this, fail, weak] {
+                 const auto self = weak.lock();
+                 if (!self || uploads_.isEmpty()) return;
+                 UploadJob &u = uploads_.first();
+                 const QString name = QFileInfo(u.local).fileName();
+                 if (u.sent >= u.size) {
+                     send(QStringLiteral("uploadEnd"), QJsonObject{{"upload", u.token}}, [this, fail, name](const QJsonObject &end) {
+                         if (uploads_.isEmpty()) return;
+                         if (!end.value("ok").toBool()) {
+                             fail(end.value("error").toString());
+                             return;
+                         }
+                         UploadJob done = uploads_.takeFirst();
+                         const int id = end.value("item").toInt();
+                         // Az új elem azonnal a tükörbe kerül (a teljes hangtár kicsit később jön), a helyi fájllal.
+                         Item it = remote::itemFromJson(end.value("itemData").toObject());
+                         it.id = id;
+                         it.path = done.local;
+                         // Ha a helyi fájl már egy másik elemé a tükörben (ugyanaz a fájl a közös mappában), a playout útvonala marad.
+                         const int other = db_->itemIdByPath(done.local);
+                         if (other && other != id) it.path = mapPath(end.value("path").toString());
+                         else uploadedLocal_.insert(id, done.local);
+                         if (db_->itemIdByPath(it.path) && db_->itemIdByPath(it.path) != id) it.path += QStringLiteral("#%1").arg(id);
+                         if (it.categoryId) db_->mirrorUpsertItem(it, remote::categoryFromJson(end.value("category").toObject()));
+                         status_->setText(TR("Feltöltve: %1").arg(name));
+                         statusBar()->showMessage(TR("Feltöltve a playoutra: %1").arg(name), 8000);
+                         if (done.done) done.done(id);
+                         QTimer::singleShot(0, this, &RemoteEditorWindow::nextUpload);
+                     });
+                     return;
+                 }
+                 const QByteArray chunk = u.file->read(512 * 1024);
+                 if (chunk.isEmpty()) {
+                     fail(TR("a fájl olvasása megszakadt"));
+                     return;
+                 }
+                 const qint64 offset = u.sent;
+                 u.sent += chunk.size();
+                 status_->setText(TR("Feltöltés: %1 – %2 %").arg(name).arg(u.size ? int(100 * u.sent / u.size) : 100));
+                 send(QStringLiteral("uploadChunk"), QJsonObject{{"upload", u.token}, {"offset", offset}, {"data", QString::fromLatin1(chunk.toBase64())}},
+                      [fail, self](const QJsonObject &ack) {
+                          if (!ack.value("ok").toBool()) fail(ack.value("error").toString());
+                          else (*self)();
+                      });
+             };
+             (*step)();
+         });
+}
+
+void RemoteEditorWindow::previewLibraryItem()
+{
+    auto &pfl = engine_->source(eter::Engine::Pfl);
+    if (libPreview_) {
+        pfl.stop();
+        libPreview_ = false;
+        return;
+    }
+    const Item it = library_->currentItem();
+    if (!it.id) return;
+    mix_->stopPreview();
+    std::string err;
+    if (!QFileInfo::exists(it.path) || !pfl.load(it.path.toStdString(), &err)) {
+        statusBar()->showMessage(TR("Nem játszható le ezen a gépen: %1").arg(it.path), 8000);
+        return;
+    }
+    if (it.cueInMs > 0) pfl.seek(it.cueInMs * eter::kRate / 1000);
+    pfl.play();
+    libPreview_ = true;
+    statusBar()->showMessage(TR("Előhallgatás: %1 (újra az Előhallgatás: leállítás)").arg(it.title), 6000);
+}

@@ -59,6 +59,11 @@ CREATE TABLE items (
     fade_out_ms   INTEGER,                      -- NULL = globális alapérték
     fade_curve    TEXT CHECK (fade_curve IN ('linear','log','scurve')),
     auto_mix_out_ms INTEGER,                    -- a program által megtalált mix pont (a hullámformából)
+
+    -- az ütemező szabályaihoz
+    energy        INTEGER NOT NULL DEFAULT 0 CHECK (energy BETWEEN 0 AND 5),   -- 1 nyugodt … 5 pörgős; 0 = nincs megadva
+    bpm           REAL NOT NULL DEFAULT 0,                                    -- tempó; 0 = nem ismert
+    dayparts      INTEGER NOT NULL DEFAULT 0,                                 -- napszakok bitmaszkja; 0 = bármikor
     gain_db       REAL NOT NULL DEFAULT 0,
 
     -- érvényesség (főleg reklámhoz)
@@ -103,6 +108,8 @@ CREATE TABLE clock_slots (
     item_count     INTEGER NOT NULL DEFAULT 1 CHECK (item_count >= 1),  -- pl. reklámblokk: 3 szpot
     fixed_offset_s INTEGER CHECK (fixed_offset_s BETWEEN 0 AND 3599),   -- fix idő az órán belül; NULL = folytatólagos
     optional       INTEGER NOT NULL DEFAULT 0 CHECK (optional IN (0,1)), -- pl. „voice track, ha van"
+    energy_min     INTEGER NOT NULL DEFAULT 0,  -- a választható elemek energiája (0 = nincs korlát)
+    energy_max     INTEGER NOT NULL DEFAULT 0,
     UNIQUE (clock_id, position),
     CHECK ( (slot_type = 'item' AND item_id IS NOT NULL)
          OR (slot_type IN ('category','fill') AND category_id IS NOT NULL) )
@@ -274,6 +281,6 @@ INSERT INTO settings (key, value) VALUES
 
 -- Kategóriákat a felhasználó hoz létre, ezért nincs előre feltöltött lista.
 
-PRAGMA user_version = 8;
+PRAGMA user_version = 9;
 
 COMMIT;

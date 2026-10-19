@@ -16,6 +16,7 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QSpinBox>
+#include "sched/Scheduler.h"
 #include <QSplitter>
 #include <QTableView>
 #include <QTableWidget>
@@ -348,6 +349,25 @@ QWidget *SchedulerPage::buildClockPanel()
     slotTime_->setAccessibleName(TR("Fix időpont"));
     row2->addWidget(slotFixed_);
     row2->addWidget(slotTime_);
+    row2->addSpacing(16);
+    // Energiasáv: csak ilyen energiájú elem kerülhet ide (az ismeretlen energiájú is).
+    slotEnergyLabel_ = new QLabel(TR("Energia"));
+    slotEnergyMin_ = new QComboBox;
+    slotEnergyMax_ = new QComboBox;
+    slotEnergyMin_->addItem(TR("bármi"), 0);
+    slotEnergyMax_->addItem(TR("bármi"), 0);
+    for (int e = 1; e <= 5; ++e) {
+        slotEnergyMin_->addItem(QString::number(e), e);
+        slotEnergyMax_->addItem(QString::number(e), e);
+    }
+    slotEnergyMin_->setToolTip(TR("A legkisebb energia, ami ide kerülhet (1 nagyon nyugodt … 5 nagyon pörgős)"));
+    slotEnergyMax_->setToolTip(TR("A legnagyobb energia, ami ide kerülhet"));
+    slotEnergyLabel_->setBuddy(slotEnergyMin_);
+    slotEnergyDash_ = new QLabel(QStringLiteral("–"));
+    row2->addWidget(slotEnergyLabel_);
+    row2->addWidget(slotEnergyMin_);
+    row2->addWidget(slotEnergyDash_);
+    row2->addWidget(slotEnergyMax_);
     row2->addStretch(1);
     fl->addLayout(row2);
     slotHint_ = new QLabel;
@@ -400,6 +420,74 @@ QWidget *SchedulerPage::buildClockPanel()
     rr2->addWidget(autoGen_);
     rr2->addStretch(1);
     rl->addLayout(rr2);
+    // Pontos időre igazítás: automata módban a fix pont előtt 20 perccel kitölti vagy rövidíti a playlistet.
+    // A zenei folyam szabályai (energia, tempó) és a napszakok határai.
+    auto *rr4 = new QHBoxLayout;
+    rr4->setSpacing(8);
+    rr = rr4;                                     // a spin() innentől ebbe a sorba tesz
+    auto *slowMax = spin(TR("Lassú egymás után"), QString(), 5, "rule_slow_max", "0");
+    slowMax->setSpecialValueText(TR("nincs szabály"));
+    slowMax->setToolTip(TR("Legfeljebb ennyi lassú (1-es vagy 2-es energiájú) szám jöhet egymás után. 1: két lassú szám nem jöhet egymás után."));
+    auto *jump = spin(TR("Energiaugrás"), QString(), 4, "rule_energy_jump", "0");
+    jump->setSpecialValueText(TR("nincs szabály"));
+    jump->setToolTip(TR("Két egymást követő szám energiája legfeljebb ennyivel térhet el (1: csak fokozatosan változik)"));
+    auto *bpmJump = spin(TR("Tempóváltás"), TR(" %"), 60, "rule_bpm_jump_pct", "0");
+    bpmJump->setSpecialValueText(TR("nincs szabály"));
+    bpmJump->setToolTip(TR("Két egymást követő szám tempója legfeljebb ennyi százalékkal térhet el (a fél- és dupla tempó egyezőnek számít)"));
+    rr4->addStretch(1);
+    rl->addLayout(rr4);
+    auto *rr5 = new QHBoxLayout;
+    rr5->setSpacing(8);
+    rr5->addWidget(new QLabel(TR("Napszakok kezdete")));
+    {
+        const QVector<int> starts = Scheduler::daypartStarts(db_);
+        QVector<QSpinBox *> hours;
+        for (int p = 1; p < Scheduler::kDayparts; ++p) {
+            auto *h = new QSpinBox;
+            h->setRange(0, 24);
+            h->setSuffix(TR(" óra"));
+            h->setValue(starts[p]);
+            rr5->addWidget(new QLabel(Scheduler::daypartName(p)));
+            rr5->addWidget(h);
+            hours << h;
+        }
+        for (QSpinBox *h : hours)
+            connect(h, &QSpinBox::valueChanged, this, [this, hours] {
+                QStringList parts{QStringLiteral("0")};
+                for (QSpinBox *x : hours) parts << QString::number(x->value());
+                db_->setSetting("daypart_starts", parts.join(QLatin1Char(',')));
+            });
+        for (QSpinBox *h : hours) h->setToolTip(TR("Az Éjjel 0 órakor kezdődik. Az elemek napszakai a hangtárban (jobb gomb → Napszakok…) "
+                                                    "vagy az elemszerkesztőben állíthatók."));
+    }
+    rr5->addStretch(1);
+    rl->addLayout(rr5);
+
+    auto *rr3 = new QHBoxLayout;
+    rr3->setSpacing(8);
+    auto *adjustLabel = new QLabel(TR("Fix pontok igazítása"));
+    fixAdjust_ = new QComboBox;
+    fixAdjust_->addItem(TR("kézzel (csak jelzi)"), "manual");
+    fixAdjust_->addItem(TR("automatikus kitöltés"), "fill");
+    fixAdjust_->addItem(TR("automatikus kitöltés és rövidítés"), "both");
+    fixAdjust_->setToolTip(TR("Automata üzemmódban a fix idejű elem előtt 20 perccel: ha a playlist nem érne oda pontosan, "
+                              "elemet tesz be (kitöltés) vagy vesz ki (rövidítés)"));
+    fixAdjust_->setCurrentIndex(std::max(0, fixAdjust_->findData(db_->setting("fix_adjust", "manual"))));
+    adjustLabel->setBuddy(fixAdjust_);
+    auto *fillLabel = new QLabel(TR("Kitöltés ebből"));
+    fixCategory_ = new QComboBox;
+    fillLabel->setBuddy(fixCategory_);
+    reloadFixCategories();
+    rr3->addWidget(adjustLabel);
+    rr3->addWidget(fixAdjust_);
+    rr3->addSpacing(12);
+    rr3->addWidget(fillLabel);
+    rr3->addWidget(fixCategory_);
+    rr3->addStretch(1);
+    rl->addLayout(rr3);
+    connect(fixAdjust_, &QComboBox::activated, this, [this] { db_->setSetting("fix_adjust", fixAdjust_->currentData().toString()); });
+    connect(fixCategory_, &QComboBox::activated, this, [this] { db_->setSetting("fix_fill_category", fixCategory_->currentData().toString()); });
+    connect(db_, &Database::categoriesChanged, this, &SchedulerPage::reloadFixCategories);
     v->addWidget(rules);
 
     connect(policy_, &QComboBox::activated, this, [this] { db_->setSetting("fixed_time_policy", policy_->currentData().toString()); });
@@ -478,6 +566,8 @@ QWidget *SchedulerPage::buildClockPanel()
     connect(slotCategory_, &QComboBox::activated, this, &SchedulerPage::applySlot);
     connect(slotCount_, &QSpinBox::valueChanged, this, &SchedulerPage::applySlot);
     connect(slotFixed_, &QCheckBox::toggled, this, &SchedulerPage::applySlot);
+    connect(slotEnergyMin_, &QComboBox::activated, this, &SchedulerPage::applySlot);
+    connect(slotEnergyMax_, &QComboBox::activated, this, &SchedulerPage::applySlot);
     connect(slotTime_, &QTimeEdit::timeChanged, this, &SchedulerPage::applySlot);
     connect(slotPick_, &QPushButton::clicked, this, &SchedulerPage::pickItem);
     return p;
@@ -552,6 +642,13 @@ void SchedulerPage::reloadSlots(int selectSlotId)
         } else {
             source = s.count > 1 ? QStringLiteral("%1 × %2").arg(s.count).arg(s.label) : s.label;
             ms = categoryAvgMs_.value(s.categoryId, 0) * s.count;
+        }
+        if (s.type != "item" && (s.energyMin || s.energyMax)) {
+            const QString lo = s.energyMin ? QString::number(s.energyMin) : QStringLiteral("1"),
+                          hi = s.energyMax ? QString::number(s.energyMax) : QStringLiteral("5");
+            source += TR("  · energia %1").arg(lo == hi ? lo : lo + QStringLiteral("–") + hi);
+        }
+        if (s.type == "category") {
             estimate = QStringLiteral("~") + formatMs(ms);
         }
         total += ms;
@@ -597,6 +694,8 @@ void SchedulerPage::showSlot()
     const int off = std::max(0, s.fixedOffsetS);
     slotTime_->setTime(QTime(0, off / 60, off % 60));
     slotItemLabel_->setText(s.label.isEmpty() ? TR("(nincs kiválasztva)") : s.label);
+    slotEnergyMin_->setCurrentIndex(std::max(0, slotEnergyMin_->findData(s.energyMin)));
+    slotEnergyMax_->setCurrentIndex(std::max(0, slotEnergyMax_->findData(s.energyMax)));
 
     const bool isItem = s.type == "item", isFill = s.type == "fill";
     slotCategoryLabel_->setVisible(!isItem);
@@ -607,6 +706,7 @@ void SchedulerPage::showSlot()
     slotPick_->setVisible(isItem);
     slotFixed_->setVisible(!isFill);
     slotTime_->setVisible(!isFill);
+    for (QWidget *w : std::initializer_list<QWidget *>{slotEnergyLabel_, slotEnergyMin_, slotEnergyDash_, slotEnergyMax_}) w->setVisible(!isItem);
     slotTime_->setEnabled(s.fixedOffsetS >= 0);
     slotHint_->setText(isFill ? TR("Annyi elemet tesz be ebből a kategóriából, amennyi a következő fix időpontig (vagy az óra végéig) kell.")
                        : s.fixedOffsetS >= 0 ? TR("Automata üzemmódban pontosan ekkor indul. Ha addig nem telne ki az idő, az ütemező az előző zenei kategóriából pótol.")
@@ -634,6 +734,9 @@ void SchedulerPage::applySlot()
         return;
     }
     s.count = s.type == "category" ? slotCount_->value() : 1;
+    s.energyMin = s.type != "item" ? slotEnergyMin_->currentData().toInt() : 0;
+    s.energyMax = s.type != "item" ? slotEnergyMax_->currentData().toInt() : 0;
+    if (s.energyMin && s.energyMax && s.energyMin > s.energyMax) std::swap(s.energyMin, s.energyMax);
     const QTime t = slotTime_->time();
     s.fixedOffsetS = s.type != "fill" && slotFixed_->isChecked() ? t.minute() * 60 + t.second() : -1;
     db_->updateSlot(s);
@@ -753,4 +856,13 @@ ItemPickerDialog::ItemPickerDialog(Database *db, QWidget *parent, const QString 
     connect(ok, &QPushButton::clicked, this, choose);
     connect(view_, &QTableView::doubleClicked, this, choose);
     connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
+}
+
+void SchedulerPage::reloadFixCategories()
+{
+    const QString current = db_->setting("fix_fill_category", "0");
+    fixCategory_->clear();
+    fixCategory_->addItem(TR("az előtte szóló zene kategóriája"), QStringLiteral("0"));
+    for (const Category &c : db_->itemCategories()) fixCategory_->addItem(c.name, QString::number(c.id));
+    fixCategory_->setCurrentIndex(std::max(0, fixCategory_->findData(current)));
 }
