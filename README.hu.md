@@ -1,20 +1,28 @@
 # Éter
 
-Rádiós adáslebonyolító Linuxra és Windowsra: két lejátszó, cartwall, hangtár, ütemező, mix editor,
+Rádiós adáslebonyolító Linuxra és Windowsra: három lejátszó (A, B, C), cartwall, hangtár, ütemező, mix editor,
 távoli playlist-szerkesztés, adásrögzítés és tartalék playout egyetlen asztali alkalmazásban.
 
 *English: [README.md](README.md)*
 
-![Az Adás oldal: két lejátszó, a playlist egy lenyitott átmenettel, és a hangtár](docs/screenshots/on-air.png)
+![Az Adás oldal: az adásban lévő lejátszó, a playlist egy lenyitott átmenettel, és a hangtár](docs/screenshots/on-air.png)
 
 ## Funkciók
 
 ### Adás
 
-- **Két lejátszó** hullámformával, intro-visszaszámlálóval, automata vagy asszisztált átúsztatással. Az adásban
+- **Három lejátszó (A, B, C)**, ebből a főablakban egy látszik: az, amelyik adásban van. Alatta egy sáv mutatja
+  mindhármat (ADÁSBAN / KIÚSZIK / KÉSZENLÉT, cím, idő, kimenet), és amíg szól, a voice trackot is; a sávon egy
+  lejátszóra kattintva az látszik. Három lejátszóval egy zene, egy jingle és a következő zene egyszerre is szólhat
+  (a következő dal már a jingle alatt indul, miközben az előző még kiúszik), automata és asszisztált módban is.
+  Hullámforma, intro-visszaszámláló, mix pont a hullámformán, automata vagy asszisztált átúsztatás. Az adásban
   lévő elem utolsó 10 másodpercében piros visszaszámláló jelenik meg az ablak alján (automata módban a mix pontig
   számol); nem kattintható.
-  Minden csatorna (1-es és 2-es lejátszó, előhallgatás, cartwall) külön hangkártyára tehető.
+  Minden csatorna (A, B és C lejátszó, előhallgatás, cartwall) külön hangkártyára tehető.
+- **Automatikus mix / Mix editor** kapcsoló a felső sávban: *Automatikus mix* állásban a két zene közti átmeneteket
+  a program keveri a hullámforma alapján (a következő dal eleji csendje kimarad); ahol bármelyik oldal nem zene
+  (jingle, hírek, reklám), ott a Mix editorban mentett beállítás érvényes, és a mentett voice track is megszólal.
+  *Mix editor* állásban minden átmenet a mentett beállítás szerint szól.
 - **Playlist** tervezett adásidővel és óraelválasztókkal. Minden sor mutatja a kezdést, a típusikont,
   a hosszt, a címet és az előadót, valamint az egyedi mix (MIX), a voice track (VT) és a fix időpont (FIX)
   jelzését. A nem zenei elemeket a kategóriájuk színe tölti ki; az adásban és a készenlétben lévő elem
@@ -27,7 +35,7 @@ távoli playlist-szerkesztés, adásrögzítés és tartalék playout egyetlen a
   (például egy szignál egy átúsztatás fölött). A saját csatornáján szól; várakozó elemen jobb gomb →
   „Ráfektetés az átmenetre”, vagy húzással a Mix editorban (lásd lent).
 - **Cartwall** a playlist helyén: színes gombfalak azonnal induló hangokkal, a hangtárból vagy fájlból
-  feltöltve, saját kimenettel (alapból az 1-es lejátszóét követi).
+  feltöltve, saját kimenettel (alapból az A lejátszóét követi).
 - **Pontos időre igazítás**: minden fix idejű elem (például az óra eleji hírek) előtt látszik, mennyi hiányzik vagy
   mennyivel lóg túl a playlist; a program kitöltést vagy kivehető elemet javasol, automata módban magától is igazít.
 - **Hiányzó fájlok**: a háttérben ellenőrzi a fájlokat; amelyik nem érhető el, az a sorban pirosan látszik jóval az

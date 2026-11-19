@@ -1,20 +1,28 @@
 # Éter
 
-Radio playout and automation for Linux and Windows: two players, a cartwall, a music library,
+Radio playout and automation for Linux and Windows: three players (A, B, C), a cartwall, a music library,
 a scheduler, a mix editor, remote playlist editing, a program logger and a backup playout in one desktop application.
 
 *Magyar leírás: [README.hu.md](README.hu.md)*
 
-![The On air page: two players, the playlist with an expanded transition, and the library](docs/screenshots/on-air.png)
+![The On air page: the player on air, the playlist with an expanded transition, and the library](docs/screenshots/on-air.png)
 
 ## Features
 
 ### On air
 
-- **Two players** with waveform, intro countdown and automatic or assisted crossfading. In the last
+- **Three players (A, B, C)**, of which the main window shows one: the one on air. A strip under it shows all three
+  (ON AIR / FADING / STANDBY, title, time, output) and, while one plays, the voice track; click a player in the strip
+  to look at it. With three players a song, a jingle and the next song can all sound at once (the next song starting
+  under the jingle while the previous one is still fading), in automatic and in assisted mode alike.
+  Waveform, intro countdown, mix point on the waveform, automatic or assisted crossfading. In the last
   10 seconds of the item on air a red countdown appears at the bottom of the window (in automatic mode it counts
   to the mix point); it never takes clicks.
-  Every channel (player 1, player 2, preview, cartwall) can go to its own sound card.
+  Every channel (players A, B and C, preview, cartwall) can go to its own sound card.
+- **Automatic mix / Mix editor** switch in the top bar: with *Automatic mix* the transitions between two songs are
+  mixed by the program from the waveform (silence at the start of the next song is skipped); transitions where
+  either side is not music (jingles, news, ads) still follow their saved Mix editor settings, and saved voice
+  tracks still play. With *Mix editor* every transition follows its saved settings.
 - **Playlist** with planned air times and hour separators. Each row shows the start time, a type icon,
   the length, title and artist, and marks for custom mixes (MIX), voice tracks (VT) and fixed times (FIX).
   Non-music items are filled with their category colour; the item on air and the one on standby stand out,
@@ -27,7 +35,7 @@ a scheduler, a mix editor, remote playlist editing, a program logger and a backu
   play at once (for example a jingle over a crossfade). It plays on its own channel; right-click a waiting
   item → "Overlay on the transition", or drag in the Mix editor (see below).
 - **Cartwall** in place of the playlist: coloured walls of instant-start buttons, filled from the library or
-  from files, with its own output (by default it follows player 1).
+  from files, with its own output (by default it follows player A).
 - **On time**: before every fixed-time item (the news at the top of the hour, say) the playlist shows how much is
   missing or over, suggests items to fill the gap or to take out, and in automatic mode can do it by itself.
 - **Missing files** are found in the background: rows whose file cannot be reached turn red well before they would go on

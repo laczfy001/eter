@@ -23,9 +23,10 @@ public:
     // Vt: az adásban szóló voice track; mindig az 1-es lejátszó kimenetén szól.
     // Cart1 … Cart8: a cartwall hangjai; közös kimenetük a Cart1 útválasztásával állítható.
     // Ovl1, Ovl2: az átmenetre ráfektetett playlist-elemek; az 1-es lejátszó kimenetén szólnak.
+    // Player3: a harmadik (C) lejátszó; saját kimenetre köthető.
     // Pfl6, Pfl7: a ráfektetett elemek előhallgatása a Mix editorban; a Pfl kimenetén szólnak.
     enum Channel { Player1 = 0, Player2 = 1, Pfl = 2, Pfl2 = 3, Vt = 4, Pfl3 = 5, Pfl4 = 6, Pfl5 = 7,
-                   Cart1 = 8, CartLast = 15, Ovl1 = 16, Ovl2 = 17, Pfl6 = 18, Pfl7 = 19, ChannelCount = 20 };
+                   Cart1 = 8, CartLast = 15, Ovl1 = 16, Ovl2 = 17, Pfl6 = 18, Pfl7 = 19, Player3 = 20, ChannelCount = 21 };
     static constexpr int kOverlayVoices = 2;
     static constexpr int kCartVoices = 8;
     static constexpr int kRoutedChannels = 3;

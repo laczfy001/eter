@@ -161,6 +161,8 @@ public:
     void stopPreview();
     // Távoli szerkesztő: a voice track felvétele és fájlból betöltése itt nem érhető el (a playout gépén nem lenne meg).
     void setRemoteMode(bool on);
+    // Automatikus mix: a zenék közti mentett átmenetek most nem érvényesek (a nem zeneieké igen).
+    void setAutoMixActive(bool on);
     // Távoli szerkesztő: a felvett vagy fájlból választott voice track feltöltése a playoutra. A done a playouton
     // létrejött elem azonosítójával hívandó (0: nem sikerült). allowed: a felhasználónak van-e joga hozzá.
     using VtUploader = std::function<void(const QString &localPath, const QString &title, std::function<void(int itemId)> done)>;
@@ -196,6 +198,7 @@ public:
     void selectPair(int index);
 private:
     void loadCurrent();
+    class QLabel *autoBanner_ = nullptr;
     MixParams resolve(const MixPair &pair, int *kind) const;
     MixParams resolveMix(const MixPair &pair, int *kind) const;   // a ráfektetett elem nélkül
     void requestWave(const Item &item);

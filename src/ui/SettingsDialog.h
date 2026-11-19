@@ -18,9 +18,11 @@ private:
 
     MainWindow *main_;
     QComboBox *backend_;
-    QComboBox *device_[4];
-    QLabel *state_[4];
-    QPushButton *test_[4];
+    static constexpr int kRows = 5;       // A, B, C lejátszó, előhallgatás, cartwall
+    static int channelOf(int row);
+    QComboBox *device_[kRows];
+    QLabel *state_[kRows];
+    QPushButton *test_[kRows];
     QLabel *count_;
     QLabel *remoteState_ = nullptr;
 };

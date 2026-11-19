@@ -50,6 +50,19 @@ public:
     // A főablak időzítője hívja ~30 ms-onként.
     void tick(float *peakL = nullptr, float *peakR = nullptr);
     void setDevices(const QStringList &names, const QString &current);
+    int index() const { return index_; }   // 0 = A, 1 = B, 2 = C
+    QString letter() const { return QString(QChar('A' + index_)); }
+    void setOutputName(const QString &name);
+    void setVtChip(const QString &text);
+    // KIÚSZIK (vagy SZÓL, ha a következő alatt teljes hangerővel szól tovább) felirat
+    void setLeaving(bool on, bool sounding = false)
+    {
+        if (on != leaving_ || sounding != sounding_) { leaving_ = on; sounding_ = sounding; refreshState(); }
+    }   // üres: nincs voice track
+    // A mix pont jelölése a hullámformán (frame; −1: nincs).
+    void setMixPoint(qint64 frame, const QString &label, const QColor &color);
+    // Az első hallható pont (a szám eleji csend vége); −1, amíg a hullámforma nincs kész.
+    qint64 leadInFrame() const { return leadIn_; }
 
 signals:
     void outputChosen(const QString &deviceName);
@@ -83,6 +96,11 @@ private:
     std::shared_ptr<std::atomic<bool>> scanCancel_;
     int scanGeneration_ = 0;
     qint64 mixOut_ = -1;
+    qint64 leadIn_ = -1;
+    int index_ = 0;
+    bool leaving_ = false, sounding_ = false;
+    QLabel *caption_ = nullptr, *vtChip_ = nullptr;
+    QString outputName_;
     bool fadeRequested_ = false;
     qint64 cue_ = 0;
     qint64 intro_ = 0;

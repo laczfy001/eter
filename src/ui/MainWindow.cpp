@@ -3,12 +3,14 @@
 #include "net/Remote.h"
 #include "Library.h"
 #include "PlayerWidget.h"
+#include "PlayerStrip.h"
 #include "MixEditorPage.h"
 #include "PlaylistEditorPage.h"
 #include "CartwallPanel.h"
 #include "ItemEditor.h"
 #include "TimedEventsPage.h"
 #include "MiniMix.h"
+#include <QFileInfo>
 #include <QScrollBar>
 #include "PlaylistTable.h"
 #include "SchedulerPage.h"
@@ -93,13 +95,17 @@ MainWindow::MainWindow(Database *db, const QString &backendOverride, QWidget *pa
     backend_ = backendOverride.isEmpty() ? s.value("audio/backend").toString() : backendOverride;
     routes_[Engine::Player1] = s.value("audio/player1").toString();
     routes_[Engine::Player2] = s.value("audio/player2").toString();
+    // A C lejátszó új: amíg nincs saját beállítása, a B kimenetén szól.
+    routes_[Engine::Player3] = s.value("audio/player3", routes_[Engine::Player2]).toString();
     routes_[Engine::Pfl] = s.value("audio/pfl").toString();
     cartRoute_ = s.value("audio/cartwall", QStringLiteral("@player1")).toString();
     fadeMs_ = std::clamp(db_->setting("default_fade_out_ms", "2500").toInt(), 100, 15000);
 
+    autoMix_ = db_->setting("mix_mode", "auto") != QLatin1String("editor");
     buildUi();
     buildMenus();
     startAudio();
+    setAutoMix(autoMix_);
     const double mixDb = db_->setting("auto_mix_threshold_db", "-24").toDouble();
     for (auto *p : players_) p->autoMixDb = mixDb;
 
@@ -247,6 +253,37 @@ void MainWindow::buildUi()
     connect(settingsTab, &QToolButton::clicked, this, &MainWindow::openSettings);
     tabs->addStretch(1);
 
+    // Átmenetek: automatikus mix vagy a Mix editor mentett beállításai
+    {
+        auto *mixLabel = new QLabel(TR("Átmenetek"));
+        mixLabel->setObjectName("small");
+        auto *mixBox = new QWidget;
+        mixBox->setObjectName("modeSwitch");
+        mixBox->setAttribute(Qt::WA_StyledBackground);
+        auto *xl = new QHBoxLayout(mixBox);
+        xl->setContentsMargins(2, 2, 2, 2);
+        xl->setSpacing(2);
+        auto mk = [&](const QString &text, const QString &tip) {
+            auto *b = new QToolButton;
+            b->setText(text);
+            b->setCheckable(true);
+            b->setFocusPolicy(Qt::NoFocus);
+            b->setToolTip(tip);
+            xl->addWidget(b);
+            return b;
+        };
+        mixAuto_ = mk(TR("Automatikus mix"),
+                      TR("A zenék közti átmeneteket a program a hullámforma alapján maga keveri. A nem zenei elemek "
+                         "(jingle, hírek, reklám) átmenetei a mentett beállítások szerint szólnak."));
+        mixEditor_ = mk(TR("Mix editor"), TR("Minden átmenet a Mix editorban mentett beállítások szerint szól"));
+        connect(mixAuto_, &QToolButton::clicked, this, [this] { setAutoMix(true); });
+        connect(mixEditor_, &QToolButton::clicked, this, [this] { setAutoMix(false); });
+        tabs->addWidget(mixLabel);
+        tabs->addSpacing(6);
+        tabs->addWidget(mixBox, 0, Qt::AlignVCenter);
+        tabs->addSpacing(16);
+    }
+
     // Üzemmód
     auto *modeLabel = new QLabel(TR("Üzemmód"));
     modeLabel->setObjectName("small");
@@ -376,10 +413,26 @@ QWidget *MainWindow::buildDeck()
     row->setContentsMargins(0, 0, 0, 0);
     row->setSpacing(8);
 
-    for (int i = 0; i < 2; ++i) {
-        auto *p = new PlayerWidget(&engine_, i == 0 ? Engine::Player1 : Engine::Player2);
+    // Egyszerre egy lejátszó látszik (az adásban lévő); alatta a sáv mutatja mindhárom állapotát.
+    auto *deckLeft = new QWidget;
+    auto *dl = new QVBoxLayout(deckLeft);
+    dl->setContentsMargins(0, 0, 0, 0);
+    dl->setSpacing(6);
+    playerStack_ = new QStackedWidget;
+    strip_ = new PlayerStrip;
+    dl->addWidget(playerStack_, 1);
+    dl->addWidget(strip_);
+    row->addWidget(deckLeft, 10);
+    connect(strip_, &PlayerStrip::tileClicked, this, [this](int i) {
+        pinnedPlayer_ = i;
+        pinnedOnAir_ = -2;
+        pinnedAt_ = QDateTime::currentMSecsSinceEpoch();
+        updatePlayerView();
+    });
+    for (int i = 0; i < kPlayers; ++i) {
+        auto *p = new PlayerWidget(&engine_, playerChannel(i));
         players_[i] = p;
-        row->addWidget(p, 10);
+        playerStack_->addWidget(p);
         connect(p, &PlayerWidget::finished, this, [this, i] { onPlayerFinished(i); });
         connect(p, &PlayerWidget::ejected, this, [this, i] { onPlayerEjected(i); });
         connect(p, &PlayerWidget::stateChanged, this, [this] { syncRowStates(); });
@@ -425,11 +478,12 @@ QWidget *MainWindow::buildDeck()
     nextBtn_->setFocusPolicy(Qt::NoFocus);
     nextBtn_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     nextBtn_->setToolTip(TR("Elindítja a készenlétben álló lejátszót, a szólót kiúsztatja"));
+    nextBtn_->setMinimumHeight(70);
     auto *stopBtn = new QPushButton(TR("Stop"));
     stopBtn->setProperty("danger", true);
     stopBtn->setProperty("tall", true);
     stopBtn->setFocusPolicy(Qt::NoFocus);
-    stopBtn->setToolTip(TR("Mindkét lejátszót azonnal megállítja"));
+    stopBtn->setToolTip(TR("Mindhárom lejátszót azonnal megállítja"));
     cl->addWidget(ctlCaption);
     cl->addWidget(nextBtn_, 1);
     cl->addWidget(stopBtn);
@@ -527,8 +581,11 @@ QWidget *MainWindow::buildPlaylistPanel()
         b->setToolTip(tip);
         return b;
     };
-    auto *to1 = mk(QStringLiteral("→ 1"), TR("A kijelölt sor betöltése az 1-es lejátszóba"));
-    auto *to2 = mk(QStringLiteral("→ 2"), TR("A kijelölt sor betöltése a 2-es lejátszóba"));
+    for (int i = 0; i < kPlayers; ++i) {
+        toPlayer_[i] = mk(QStringLiteral("→") + playerLetter(i), TR("A kijelölt sor betöltése a(z) %1 lejátszóba").arg(playerLetter(i)));
+        toPlayer_[i]->setStyleSheet(QStringLiteral("QPushButton { color: %1; font-weight: 600; padding: 0 8px; }").arg(playerColor(i).name()));
+        connect(toPlayer_[i], &QPushButton::clicked, this, [this, i] { loadRowInto(selectedRowId(), i); });
+    }
     auto *del = mk(TR("Törlés"), TR("A kijelölt sor törlése a playlistből (Delete)"));
     auto *clear = mk(TR("Lista ürítése"), TR("Minden, ami nem szól éppen, kikerül a playlistből"));
     // Mentett playlist beillesztése blokként
@@ -557,8 +614,7 @@ QWidget *MainWindow::buildPlaylistPanel()
     h->addWidget(makeViewSwitch());
     h->addStretch(1);
     h->addWidget(plBtn);
-    h->addWidget(to1);
-    h->addWidget(to2);
+    for (QPushButton *b : toPlayer_) h->addWidget(b);
     h->addWidget(del);
     h->addWidget(clear);
     v->addWidget(head);
@@ -614,6 +670,11 @@ QWidget *MainWindow::buildPlaylistPanel()
     listInfo_->setObjectName("small");
     auto *hint = new QLabel(TR("Elem hozzáadása: húzd ide a hangtárból · a sorok és a blokkok húzással átrendezhetők"));
     hint->setObjectName("small");
+    listHint_ = hint;
+    hint->setToolTip(hint->text());
+    hint->setMinimumWidth(40);
+    hint->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    hint->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     f->addWidget(listInfo_);
     missingBtn_ = new QPushButton;
     missingBtn_->setFocusPolicy(Qt::NoFocus);
@@ -623,14 +684,12 @@ QWidget *MainWindow::buildPlaylistPanel()
     missingBtn_->hide();
     connect(missingBtn_, &QPushButton::clicked, this, &MainWindow::showMissingFiles);
     f->addWidget(missingBtn_);
-    f->addStretch(1);
-    f->addWidget(hint);
+    f->addSpacing(12);
+    f->addWidget(hint, 1);
     v->addWidget(foot);
 
     connect(del, &QPushButton::clicked, this, &MainWindow::removeSelected);
     connect(clear, &QPushButton::clicked, this, &MainWindow::clearList);
-    connect(to1, &QPushButton::clicked, this, [this] { loadRowInto(selectedRowId(), 0); });
-    connect(to2, &QPushButton::clicked, this, [this] { loadRowInto(selectedRowId(), 1); });
     connect(table_, &PlaylistTable::deletePressed, this, &MainWindow::removeSelected);
     connect(table_, &PlaylistTable::spacePressed, this, &MainWindow::next);
     connect(table_, &PlaylistTable::rowMoved, this, &MainWindow::onViewRowMoved);
@@ -686,13 +745,19 @@ QWidget *MainWindow::buildPlaylistPanel()
         if (pos.x() >= table_->viewport()->width() - 34) return;           // a nyílra kattintás nem betöltés
         const int r = view_[v].row;
         int target = -1;
-        for (int i = 0; i < 2; ++i)
+        for (int i = 0; i < kPlayers; ++i)
             if (!players_[i]->isLoaded()) { target = i; break; }
-        if (target < 0)
-            for (int i = 0; i < 2; ++i)
-                if (!players_[i]->isPlaying()) { target = i; break; }
         if (target < 0) {
-            say(TR("Mindkét lejátszó szól, most nem tölthető be új elem."));
+            // Mind foglalt: a legkésőbbi várakozó elem helyére (a készenlétben álló marad).
+            int worst = -1;
+            for (int i = 0; i < kPlayers; ++i)
+                if (!players_[i]->isPlaying() && (target < 0 || indexOfRow(players_[i]->rowId) > worst)) {
+                    target = i;
+                    worst = indexOfRow(players_[i]->rowId);
+                }
+        }
+        if (target < 0) {
+            say(TR("Mindhárom lejátszó szól, most nem tölthető be új elem."));
             return;
         }
         loadRowInto(rows_[r].id, target);
@@ -839,7 +904,7 @@ void MainWindow::startAudio()
     audioStatus_->setText(TR("Hang: %1 · 48 kHz").arg(QString::fromStdString(engine_.backendName())));
 
     QStringList missing;
-    for (int ch = 0; ch < Engine::kRoutedChannels; ++ch) {
+    for (int ch : {int(Engine::Player1), int(Engine::Player2), int(Engine::Player3), int(Engine::Pfl)}) {
         if (!engine_.setRoute(static_cast<Engine::Channel>(ch), routes_[ch].toStdString(), &err)) {
             if (!routes_[ch].isEmpty()) missing << routes_[ch];
             routes_[ch].clear();
@@ -872,6 +937,11 @@ void MainWindow::refreshDeviceLists()
     for (const QString &n : names) pflOutput_->addItem(n, n);
     pflOutput_->setCurrentIndex(std::max(0, pflOutput_->findData(routes_[Engine::Pfl])));
     pflOutput_->blockSignals(false);
+    for (int i = 0; i < kPlayers; ++i)
+        if (players_[i]) {
+            const QString r = routes_[playerChannel(i)];
+            players_[i]->setOutputName(r.isEmpty() ? TR("alapértelmezett kimenet") : r);
+        }
     emit devicesChanged();
 }
 
@@ -882,8 +952,8 @@ bool MainWindow::channelBusy(int ch)
             if (engine_.source(static_cast<Engine::Channel>(c)).playing()) return true;
         return false;
     }
-    if (ch == 0) {
-        // Az 1-es lejátszó kimenetén szól a voice track és a ráfektetett elem is.
+    if (ch == Engine::Player1) {
+        // Az A lejátszó kimenetén szól a voice track és a ráfektetett elem is.
         for (Engine::Channel c : {Engine::Player1, Engine::Vt, Engine::Ovl1, Engine::Ovl2})
             if (engine_.source(c).playing()) return true;
         return false;
@@ -893,10 +963,11 @@ bool MainWindow::channelBusy(int ch)
 
 bool MainWindow::anythingPlaying()
 {
-    return channelBusy(0) || channelBusy(1) || channelBusy(2) || channelBusy(kCartRoute);
+    return channelBusy(Engine::Player1) || channelBusy(Engine::Player2) || channelBusy(Engine::Player3)
+           || channelBusy(Engine::Pfl) || channelBusy(kCartRoute);
 }
 
-// A cartwall kimenete: saját eszköz, vagy az 1-es lejátszóé.
+// A cartwall kimenete: saját eszköz, vagy az A lejátszóé.
 bool MainWindow::applyCartRoute(std::string *err)
 {
     const QString device = cartRoute_ == QLatin1String("@player1") ? routes_[Engine::Player1] : cartRoute_;
@@ -918,7 +989,7 @@ bool MainWindow::changeRoute(int ch, const QString &deviceName)
         if (ok) {
             QSettings().setValue("audio/cartwall", cartRoute_);
             say(TR("Cartwall kimenete: %1")
-                    .arg(deviceName == QLatin1String("@player1") ? TR("az 1-es lejátszóé")
+                    .arg(deviceName == QLatin1String("@player1") ? TR("az A lejátszóé")
                          : deviceName.isEmpty() ? TR("alapértelmezett") : deviceName), 4000);
         } else {
             say(QString::fromStdString(err), 10000);
@@ -931,16 +1002,19 @@ bool MainWindow::changeRoute(int ch, const QString &deviceName)
         refreshDeviceLists();
         return ok;
     }
-    // Ha a cartwall az 1-es lejátszó kimenetét követi, vele együtt vált; közben ne szóljon.
+    // Ha a cartwall az A lejátszó kimenetét követi, vele együtt vált; közben ne szóljon.
     if (ch == Engine::Player1 && cartRoute_ == QLatin1String("@player1") && channelBusy(kCartRoute)) {
-        say(TR("A cartwall éppen szól az 1-es lejátszó kimenetén, a kimenet most nem váltható."));
+        say(TR("A cartwall éppen szól az A lejátszó kimenetén, a kimenet most nem váltható."));
         refreshDeviceLists();
         return false;
     }
-    static const char *keys[] = {"audio/player1", "audio/player2", "audio/pfl"};
-    static const char *labels[] = {"Lejátszó 1", "Lejátszó 2", "Előhallgatás"};
+    if (ch != Engine::Player1 && ch != Engine::Player2 && ch != Engine::Player3 && ch != Engine::Pfl) return false;
+    const char *key = ch == Engine::Player1 ? "audio/player1" : ch == Engine::Player2 ? "audio/player2"
+                      : ch == Engine::Player3 ? "audio/player3" : "audio/pfl";
+    const QString label = ch == Engine::Player1 ? TR("Az A lejátszó") : ch == Engine::Player2 ? TR("A B lejátszó")
+                          : ch == Engine::Player3 ? TR("A C lejátszó") : TR("Az előhallgatás");
     if (channelBusy(ch)) {
-        say(TR("%1 éppen szól, a kimenete most nem váltható.").arg(i18n::text(labels[ch])));
+        say(TR("%1 éppen szól, a kimenete most nem váltható.").arg(label));
         refreshDeviceLists();
         return false;
     }
@@ -948,10 +1022,10 @@ bool MainWindow::changeRoute(int ch, const QString &deviceName)
     const bool ok = engine_.setRoute(static_cast<Engine::Channel>(ch), deviceName.toStdString(), &err);
     if (ok) {
         routes_[ch] = deviceName;
-        QSettings().setValue(keys[ch], deviceName);
+        QSettings().setValue(key, deviceName);
         if (ch == Engine::Player1 && cartRoute_ == QLatin1String("@player1")) applyCartRoute();
         say(TR("%1 kimenete: %2")
-                .arg(i18n::text(labels[ch]),
+                .arg(label,
                      deviceName.isEmpty() ? TR("alapértelmezett") : deviceName), 4000);
     } else {
         say(QString::fromStdString(err), 10000);
@@ -1004,18 +1078,18 @@ void MainWindow::tick()
                                          TR(" dB"));
 
     // Automata: a szóló elem mix pontjánál indul a következő.
+    for (int i = 0; i < kPlayers; ++i)
+        if (!players_[i]->isPlaying()) handedOver_[i] = -1;
+    // Három lejátszóval a kiúszó (vagy a következő alatt tovább szóló) elemek mellett is indulhat a következő.
     if (mode_ == Auto) {
-        int onAir = -1, playing = 0;
-        for (int i = 0; i < 2; ++i) {
-            if (!players_[i]->isPlaying()) continue;
-            ++playing;
-            if (!leaving(i)) onAir = i;
-        }
-        if (onAir >= 0 && playing == 1) {
+        const int onAir = onAirPlayer();
+        if (onAir >= 0) {
             PlayerWidget *p = players_[onAir];
             const int standby = standbyPlayer();
             const qint64 mix = planFor(onAir, standby).mixOutFrames;
-            if (mix >= 0 && p->position() >= mix && standby >= 0 && !standbyIsEarlyFixed()) {
+            // A szám legvégére eső mix pontnál is váltson (a lejátszás pozíciója nem mindig éri el a hosszt).
+            const qint64 reach = p->duration() > eter::kRate ? std::min(mix, p->duration() - eter::kRate / 10) : mix;
+            if (mix >= 0 && p->position() >= reach && standby >= 0 && !standbyIsEarlyFixed()) {
                 const qint64 leftMs = std::max<qint64>(0, p->duration() - p->position()) * 1000 / eter::kRate;
                 startStandby(onAir, static_cast<int>(std::clamp<qint64>(leftMs, 50, fadeMs_)));
             }
@@ -1040,7 +1114,8 @@ void MainWindow::tick()
         pflProgress_->setValue(static_cast<int>(1000.0 * pfl.position() / pfl.duration()));
     }
 
-    nextBtn_->setEnabled(players_[0]->isLoaded() || players_[1]->isLoaded());
+    nextBtn_->setEnabled(standbyPlayer() >= 0);
+    updatePlayerView();
     if (++clockDivider_ >= 6) {
         clockDivider_ = 0;
         updateClock();
@@ -1112,6 +1187,7 @@ void MainWindow::applyDuck()
         if (v.rowId >= 0) gain = std::min(gain, v.duckGain);
     engine_.source(Engine::Player1).setDuck(static_cast<float>(gain));
     engine_.source(Engine::Player2).setDuck(static_cast<float>(gain));
+    engine_.source(Engine::Player3).setDuck(static_cast<float>(gain));
 }
 
 bool MainWindow::startOverlay(Row &row)
@@ -1344,7 +1420,7 @@ void MainWindow::placeMini()
 
 void MainWindow::expandStandbyTransition()
 {
-    // A készenlétben álló sor; ha nincs (mindkét lejátszó szól), az első várakozó.
+    // A készenlétben álló sor; ha nincs (minden lejátszó foglalt), az első várakozó.
     for (const Row::State want : {Row::Cued, Row::Pending})
         for (const Row &r : rows_)
             if (r.state == want) {
@@ -1481,18 +1557,22 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     QString status;
     bool dim = false;
     switch (row.state) {
-    case Row::Playing:
-        bg = mixColor(panel, theme::amber, 0.42);
-        stripe = theme::amber;
-        status = TR("ADÁSBAN · %1").arg(row.player + 1);
-        statusColor = Qt::white;
+    case Row::Playing: {
+        const bool out = row.player >= 0 && leaving(row.player);
+        bg = mixColor(panel, theme::amber, out ? 0.20 : 0.42);
+        stripe = row.player >= 0 ? playerColor(row.player) : theme::amber;
+        status = rowPlayerStatus(row);
+        statusColor = out ? theme::amberSoft : QColor(Qt::white);
         break;
-    case Row::Cued:
-        bg = mixColor(panel, theme::blue, 0.30);
-        stripe = theme::blue;
-        status = TR("KÉSZENLÉT · %1").arg(row.player + 1);
-        statusColor = Qt::white;
+    }
+    case Row::Cued: {
+        const bool standby = standbyPlayer() == row.player;
+        bg = mixColor(panel, theme::blue, standby ? 0.30 : 0.14);
+        stripe = row.player >= 0 ? playerColor(row.player) : theme::blue;
+        status = rowPlayerStatus(row);
+        statusColor = standby ? QColor(Qt::white) : theme::blueSoft;
         break;
+    }
     case Row::Pending:
         if (row.fixedAt.isValid()) { status = TR("FIX %1").arg(row.fixedAt.toString("HH:mm:ss")); statusColor = theme::amberSoft; }
         break;
@@ -1625,16 +1705,20 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
             chips << (f.diffMs > 0 ? QStringLiteral("−") : QStringLiteral("+")) + mmss(std::llabs(f.diffMs));
             chipColors << (f.diffMs > 0 ? QColor("#e5484d") : theme::amber);
         }
-    if (vtFrom_.contains(row.id)) { chips << QStringLiteral("VT"); chipColors << QColor("#7fd6e8"); }
+    if (vtFrom_.contains(row.id)) { chips << QStringLiteral("VT"); chipColors << QColor("#f472b6"); }
+    const bool mixOff = mixOff_.contains(row.id);
     if (customFrom_.contains(row.id)) { chips << QStringLiteral("MIX"); chipColors << QColor("#9aa3af"); }
     if (row.overlay && !ovlActive && !dim) { chips << TR("RÁF"); chipColors << purple; }   // jelölve, de nincs mire ráfeküdnie
     p->setFont(monoSmall);
     for (int c = 0; c < chips.size(); ++c) {
         const int w = QFontMetrics(monoSmall).horizontalAdvance(chips[c]) + 12;
         const QRect box(right - w, r.center().y() - 8, w, 16);
-        p->fillRect(box, mixColor(panel, chipColors[c], 0.55));
-        p->setPen(Qt::white);
+        // Automatikus mixnél a két zene közti mentett mix nem érvényes: szürkén, áthúzva.
+        const bool off = mixOff && chips[c] == QLatin1String("MIX");
+        p->fillRect(box, off ? mixColor(panel, QColor("#4a5160"), 0.5) : mixColor(panel, chipColors[c], 0.55));
+        p->setPen(off ? QColor("#8a93a0") : QColor(Qt::white));
         p->drawText(box, Qt::AlignCenter, chips[c]);
+        if (off) p->drawLine(box.left() + 4, box.center().y(), box.right() - 4, box.center().y());
         right -= w + 4;
     }
     // 4. cím és előadó
@@ -1682,10 +1766,7 @@ void MainWindow::runTimedEvents()
         const int standby = standbyPlayer();
         if (standby >= 0 && players_[standby]->rowId == pendingStartRowId_) {
             pendingStartRowId_ = -1;
-            int onAir = -1;
-            for (int i = 0; i < 2; ++i)
-                if (players_[i]->isPlaying() && !leaving(i)) onAir = i;
-            startStandby(onAir, fadeMs_);
+            startStandby(onAirPlayer(), fadeMs_);
         } else if (!rowById(pendingStartRowId_) || now > pendingStartUntil_) {
             pendingStartRowId_ = -1;
             say(TR("Az időzített elem nem indulhatott el: egyik lejátszó sem szabadult fel időben."), 10000);
@@ -1779,14 +1860,34 @@ void MainWindow::updateClock()
     toHour_->setText(QStringLiteral("%1:%2").arg(left / 60).arg(left % 60, 2, 10, QLatin1Char('0')));
 }
 
-// A készenlétben álló lejátszó; ha mindkettő áll, a playlistben előrébb lévő.
+// A készenlétben álló lejátszó: a betöltött, álló lejátszók közül a playlistben legelöl lévő elemé.
 int MainWindow::standbyPlayer() const
 {
-    QVector<int> idle;
-    for (int i = 0; i < 2; ++i)
-        if (players_[i]->isLoaded() && !players_[i]->isPlaying()) idle << i;
-    if (idle.size() == 2) return indexOfRow(players_[0]->rowId) <= indexOfRow(players_[1]->rowId) ? 0 : 1;
-    return idle.size() == 1 ? idle[0] : -1;
+    int best = -1, bestIndex = 0;
+    for (int i = 0; i < kPlayers; ++i) {
+        if (!players_[i]->isLoaded() || players_[i]->isPlaying()) continue;
+        int idx = indexOfRow(players_[i]->rowId);
+        if (idx < 0) idx = 1 << 29;                       // kézzel, playlist nélkül betöltött
+        if (best < 0 || idx < bestIndex) {
+            best = i;
+            bestIndex = idx;
+        }
+    }
+    return best;
+}
+
+int MainWindow::onAirPlayer() const
+{
+    int best = -1, bestIndex = -1;
+    for (int i = 0; i < kPlayers; ++i) {
+        if (!players_[i]->isPlaying() || leaving(i)) continue;
+        const int idx = indexOfRow(players_[i]->rowId);
+        if (best < 0 || idx > bestIndex) {
+            best = i;
+            bestIndex = idx;
+        }
+    }
+    return best;
 }
 
 void MainWindow::startStandby(int fadeOutPlayer, int fadeMs)
@@ -1815,6 +1916,7 @@ void MainWindow::startStandby(int fadeOutPlayer, int fadeMs)
         }
     }
     PlayerWidget *out = players_[fadeOutPlayer];
+    handedOver_[fadeOutPlayer] = out->rowId;          // innentől kiúszó: tovább szólhat, de már nem ő van adásban
     const qint64 leftMs = std::max<qint64>(0, out->duration() - out->position()) * 1000 / eter::kRate;
     // Beállított végpont: a kimenő elem addig szól tovább, és ott úszik ki. Ha a váltás jóval a mix pont
     // előtt történik (kézi indítás, fix időpont), a kimenő elem azonnal kiúszik, mint eddig.
@@ -1842,16 +1944,25 @@ void MainWindow::startStandby(int fadeOutPlayer, int fadeMs)
     }
 }
 
+// Átadott, de nem halkuló elem (például a következő alatt végig szóló jingle).
+bool MainWindow::soundingOn(int player) const
+{
+    const PlayerWidget *p = players_[player];
+    return p->isPlaying() && !p->isFading() && handedOver_[player] >= 0 && handedOver_[player] == p->rowId
+           && !(outFade_[player].rowId >= 0 && outFade_[player].rowId == p->rowId);
+}
+
 bool MainWindow::leaving(int player) const
 {
     const PlayerWidget *p = players_[player];
-    return p->isFading() || (outFade_[player].rowId >= 0 && outFade_[player].rowId == p->rowId);
+    return p->isFading() || (outFade_[player].rowId >= 0 && outFade_[player].rowId == p->rowId)
+           || (handedOver_[player] >= 0 && handedOver_[player] == p->rowId);
 }
 
 // A beállított végpontjukig szóló kimenő elemek kiúsztatása; a 30 ms-os időzítő hívja.
 void MainWindow::runOutFades()
 {
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < kPlayers; ++i) {
         OutFade &f = outFade_[i];
         if (f.rowId < 0) continue;
         PlayerWidget *p = players_[i];
@@ -1895,14 +2006,9 @@ void MainWindow::runVoiceTrack()
     }
     // A mix pont előtt induló voice track: csak automata üzemmódban tudjuk előre, mikor jön a váltás.
     if (mode_ != Auto) return;
-    int onAir = -1, playing = 0;
-    for (int i = 0; i < 2; ++i) {
-        if (!players_[i]->isPlaying()) continue;
-        ++playing;
-        if (!players_[i]->isFading()) onAir = i;
-    }
+    const int onAir = onAirPlayer();
     const int standby = standbyPlayer();
-    if (onAir < 0 || playing != 1 || standby < 0) return;
+    if (onAir < 0 || standby < 0) return;
     const MixPlan plan = planFor(onAir, standby);
     const int toId = players_[standby]->rowId;
     if (!plan.vtItemId || plan.vtOffsetMs >= 0 || plan.mixOutFrames < 0 || toId == vtDoneTo_) return;
@@ -1923,6 +2029,8 @@ void MainWindow::startVoiceTrack(int itemId, double duckDb)
         return;
     }
     vt.play();
+    vtTitle_ = item.title;
+    vtDuckDbShown_ = duckDb;
     vtDuckGain_ = std::pow(10.0, duckDb / 20.0);
     vtPlaying_ = true;
     applyDuck();
@@ -1940,6 +2048,123 @@ void MainWindow::endVoiceTrack(const QString &reason)
     statusBar()->clearMessage();
 }
 
+// A főablak lejátszója: az adásban lévő (ennek híján a készenlétben álló) látszik; alatta a sáv.
+void MainWindow::updatePlayerView()
+{
+    if (!playerStack_ || !strip_) return;
+    const int onAir = onAirPlayer(), standby = standbyPlayer();
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (pinnedPlayer_ >= 0 && (nowMs - pinnedAt_ > 20000 || (onAir >= 0 && onAir != pinnedOnAir_ && pinnedOnAir_ != -2))) pinnedPlayer_ = -1;
+    if (pinnedPlayer_ >= 0 && pinnedOnAir_ == -2) pinnedOnAir_ = onAir;
+    int show = pinnedPlayer_;
+    if (show < 0) show = onAir;
+    if (show < 0) show = standby;
+    if (show < 0)
+        for (int i = 0; i < kPlayers; ++i)
+            if (players_[i]->isPlaying()) show = i;
+    if (show < 0) show = shownPlayer_;
+    if (show != shownPlayer_ || playerStack_->currentIndex() != show) {
+        shownPlayer_ = show;
+        playerStack_->setCurrentIndex(show);
+    }
+
+    // Mix pont a szóló elemen: hol indul a következő, és milyen beállítással.
+    for (int i = 0; i < kPlayers; ++i) {
+        PlayerWidget *p = players_[i];
+        p->setLeaving(p->isPlaying() && leaving(i), soundingOn(i));
+        if (i == onAir && standby >= 0) {
+            const MixPlan plan = planFor(onAir, standby);
+            const bool automatic = autoMixApplies(rowById(p->rowId), rowById(players_[standby]->rowId));
+            const QString label = automatic ? TR("AUTO MIX → %1").arg(playerLetter(standby))
+                                  : planTransition_.toEntryId ? TR("MENTETT MIX → %1").arg(playerLetter(standby))
+                                                              : TR("MIX → %1").arg(playerLetter(standby));
+            p->setMixPoint(plan.mixOutFrames, label, playerColor(standby));
+        } else {
+            p->setMixPoint(-1, {}, {});
+        }
+    }
+
+    // Voice track
+    QString vtLeft;
+    if (vtPlaying_) {
+        auto &vt = engine_.source(Engine::Vt);
+        vtLeft = QStringLiteral("−") + mmss(std::max<qint64>(0, vt.duration() - vt.position()) * 1000 / eter::kRate);
+    }
+    for (int i = 0; i < kPlayers; ++i)
+        players_[i]->setVtChip(vtPlaying_ && i == onAir ? TR("VT SZÓL · %1").arg(vtLeft) : QString());
+    strip_->setVoiceTrack(vtPlaying_ ? vtTitle_ : QString(),
+                          vtPlaying_ ? TR("SZÓL · zene %1 dB").arg(i18n::locale().toString(vtDuckDbShown_, 'f', 0).replace('-', QStringLiteral("−")))
+                                     : QString(),
+                          vtLeft);
+
+    QVector<PlayerStrip::Tile> tiles;
+    for (int i = 0; i < kPlayers; ++i) {
+        const PlayerWidget *p = players_[i];
+        PlayerStrip::Tile t;
+        t.letter = playerLetter(i);
+        t.color = playerColor(i);
+        t.shown = i == shownPlayer_;
+        const QString r = routes_[playerChannel(i)];
+        t.output = r.isEmpty() ? TR("alapért.") : r;
+        if (p->isLoaded()) {
+            const Row *row = rowById(p->rowId);
+            t.title = row ? (row->item.artist.isEmpty() ? row->item.title : row->item.title + QStringLiteral(" – ") + row->item.artist)
+                          : QFileInfo(p->path()).completeBaseName();
+            const qint64 dur = p->duration(), pos = p->position();
+            if (p->isPlaying()) {
+                t.state = !leaving(i) ? PlayerStrip::OnAir : soundingOn(i) ? PlayerStrip::Sounding : PlayerStrip::Leaving;
+                t.time = QStringLiteral("−") + mmss(std::max<qint64>(0, dur - pos) * 1000 / eter::kRate);
+            } else {
+                t.state = i == standby ? PlayerStrip::Ready : pos != p->cueFrame() ? PlayerStrip::Paused : PlayerStrip::Loaded;
+                if (dur > 0) t.time = mmss(std::max<qint64>(0, dur - p->cueFrame()) * 1000 / eter::kRate);
+            }
+        }
+        tiles << t;
+    }
+    strip_->setTiles(tiles);
+
+    const QString nextText = standby >= 0 ? TR("Következő\n%1 lejátszó · Szóköz").arg(playerLetter(standby)) : TR("Következő\nSzóköz");
+    if (nextBtn_->text() != nextText) nextBtn_->setText(nextText);
+}
+
+QString MainWindow::rowPlayerStatus(const Row &row) const
+{
+    if (row.player < 0) return row.state == Row::Playing ? TR("ADÁSBAN") : TR("KÉSZENLÉT");
+    const QString l = playerLetter(row.player);
+    if (row.state == Row::Playing)
+        return !leaving(row.player) ? TR("ADÁSBAN · %1").arg(l) : soundingOn(row.player) ? TR("SZÓL · %1").arg(l) : TR("KIÚSZIK · %1").arg(l);
+    return standbyPlayer() == row.player ? TR("KÉSZENLÉT · %1").arg(l) : TR("BETÖLTVE · %1").arg(l);
+}
+
+static bool isMusicKind(const QString &kind) { return kind.isEmpty() || kind == QLatin1String("music"); }
+
+bool MainWindow::autoMixApplies(const Row *from, const Row *to) const
+{
+    return autoMix_ && from && to && isMusicKind(from->item.kind) && isMusicKind(to->item.kind);
+}
+
+QColor MainWindow::playerColor(int i)
+{
+    static const QColor c[kPlayers] = {QColor("#f5a524"), QColor("#5cb0ff"), QColor("#3fd0b5")};
+    return c[std::clamp(i, 0, kPlayers - 1)];
+}
+
+void MainWindow::setAutoMix(bool on)
+{
+    const bool changed = on != autoMix_;
+    autoMix_ = on;
+    if (mixAuto_) mixAuto_->setChecked(on);
+    if (mixEditor_) mixEditor_->setChecked(!on);
+    if (db_->setting("mix_mode", "auto") != (on ? "auto" : "editor")) db_->setSetting("mix_mode", on ? "auto" : "editor");
+    if (mixPage_) mixPage_->setAutoMixActive(on);
+    if (!changed) return;
+    ++mixVersion_;
+    if (remote_ && remoteStateTimer_ && remote_->clientCount()) remoteStateTimer_->start();
+    say(on ? TR("Automatikus mix: a zenék közti átmeneteket a program keveri; a nem zenei elemeké a mentett beállítás szerint szól.")
+           : TR("Mix editor: minden átmenet a mentett beállítások szerint szól."), 8000);
+    refreshTable();
+}
+
 MainWindow::MixPlan MainWindow::planFor(int outPlayer, int inPlayer)
 {
     MixPlan plan;
@@ -1953,6 +2178,21 @@ MainWindow::MixPlan MainWindow::planFor(int outPlayer, int inPlayer)
         planVersion_ = mixVersion_;
         planTransition_ = (from > 0 && to > 0) ? db_->transition(to) : Transition();
         if (planTransition_.fromEntryId != from) planTransition_ = Transition();
+    }
+    // Automatikus mix: két zene között a hullámforma alapján, a mentett időzítéstől függetlenül.
+    // A mentett voice track megmarad. Ha bármelyik oldal nem zene, a mentett beállítás érvényes.
+    if (autoMixApplies(outRow, inRow)) {
+        plan.mixOutFrames = players_[outPlayer]->mixOutFrame();
+        if (inPlayer >= 0 && inRow->item.cueInMs <= 0) {
+            const qint64 lead = players_[inPlayer]->leadInFrame();
+            if (lead > 0) plan.cueInFrames = lead;           // a szám elején lévő csend kimarad
+        }
+        if (planTransition_.toEntryId) {
+            plan.vtItemId = planTransition_.vtItemId;
+            plan.vtOffsetMs = planTransition_.vtOffsetMs;
+            plan.vtDuckDb = planTransition_.vtDuckDb;
+        }
+        return plan;
     }
     if (planTransition_.toEntryId) {
         const Transition &t = planTransition_;
@@ -2021,7 +2261,7 @@ void MainWindow::onMixSaved(const QVector<int> &itemIds)
     for (Row &row : rows_)
         if (itemIds.contains(row.item.id)) row.item = db_->item(row.item.id);
     // A készenlétben álló lejátszó az új kezdőpontra áll.
-    for (int p = 0; p < 2; ++p) {
+    for (int p = 0; p < kPlayers; ++p) {
         if (!players_[p]->isLoaded()) continue;
         const Row *row = rowById(players_[p]->rowId);
         if (!row || !itemIds.contains(row->item.id)) continue;
@@ -2033,9 +2273,7 @@ void MainWindow::onMixSaved(const QVector<int> &itemIds)
 
 void MainWindow::next()
 {
-    int onAir = -1;
-    for (int i = 0; i < 2; ++i)
-        if (players_[i]->isPlaying() && !leaving(i)) onAir = i;
+    const int onAir = onAirPlayer();
     if (standbyPlayer() < 0) {
         say(TR("Nincs készenlétben álló lejátszó."));
         return;
@@ -2077,7 +2315,8 @@ void MainWindow::onPlayerFinished(int player)
     refreshTable();
 
     // Automata: ha a mix pontnál nem volt mit indítani, vagy a hullámforma még nem készült el.
-    if (mode_ == Auto && !players_[0]->isPlaying() && !players_[1]->isPlaying()) {
+    // (Ami még kiúszik vagy a következő alatt tovább szól, az nem tartja vissza.)
+    if (mode_ == Auto && onAirPlayer() < 0) {
         if (standbyIsEarlyFixed()) {
             waitingForFixed_ = true;         // a fix idejű elem nem indul a saját időpontja előtt
             say(TR("Várakozás a fix idejű elemre."), 0);
@@ -2291,8 +2530,8 @@ void MainWindow::playlistContextMenu(const QPoint &pos)
         menu.addAction(TR("Blokk felbontása (az elemek maradnak)"), this, [this, vr] { ungroup(vr.first, vr.count); });
         menu.addAction(TR("Blokk törlése a playlistből"), this, &MainWindow::removeSelected);
     } else {
-        menu.addAction(TR("Betöltés az 1-es lejátszóba"), this, [this] { loadRowInto(selectedRowId(), 0); });
-        menu.addAction(TR("Betöltés a 2-es lejátszóba"), this, [this] { loadRowInto(selectedRowId(), 1); });
+        for (int i = 0; i < kPlayers; ++i)
+            menu.addAction(TR("Betöltés a(z) %1 lejátszóba").arg(playerLetter(i)), this, [this, i] { loadRowInto(selectedRowId(), i); });
         menu.addAction(TR("Elem szerkesztése…"), this, [this, id = rows_[vr.row].item.id] { openItemEditor(id); });
         if (nextPlayableAfter(vr.row) >= 0)
             menu.addAction(rows_[vr.row].id == expandedRowId_ ? TR("Átmenet bezárása") : TR("Átmenet a következővel (lenyitás)"), this,
@@ -2420,7 +2659,7 @@ bool MainWindow::loadIntoPlayer(Row &row, int player)
 void MainWindow::reconcile()
 {
     QVector<int> idle;
-    for (int i = 0; i < 2; ++i)
+    for (int i = 0; i < kPlayers; ++i)
         if (!players_[i]->isPlaying()) idle << i;
 
     auto desired = [&] {
@@ -2452,9 +2691,20 @@ void MainWindow::reconcile()
             Row *r = rowById(id);
             if (r && r->state == Row::Pending) { candidate = r; break; }
         }
+        // A lejátszók körben követik egymást (A → B → C → A): a jelölt az előtte álló elem lejátszója utáni
+        // első szabad lejátszóba kerül.
+        int prevPlayer = -1;
+        if (candidate) {
+            for (int j = indexOfRow(candidate->id) - 1; j >= 0 && prevPlayer < 0; --j) {
+                const Row &r = rows_[j];
+                if ((r.state == Row::Playing || r.state == Row::Cued) && r.player >= 0) prevPlayer = r.player;
+            }
+        }
         int empty = -1;
-        for (int p : idle)
-            if (!players_[p]->isLoaded()) { empty = p; break; }
+        for (int k = 1; k <= kPlayers && empty < 0; ++k) {
+            const int p = ((prevPlayer < 0 ? -1 : prevPlayer) + k + kPlayers) % kPlayers;
+            if (idle.contains(p) && !players_[p]->isLoaded()) empty = p;
+        }
         if (!candidate || empty < 0) break;
         loadIntoPlayer(*candidate, empty);      // hiba esetén a sor „hibás" lesz, és a következő jön
     }
@@ -2542,7 +2792,7 @@ void MainWindow::loadRowInto(int rowId, int player)
     Row *found = rowById(rowId);
     if (!found) return;
     if (players_[player]->isPlaying()) {
-        say(TR("A %1-es lejátszó szól, most nem tölthető bele új elem.").arg(player + 1));
+        say(TR("A(z) %1 lejátszó szól, most nem tölthető bele új elem.").arg(playerLetter(player)));
         return;
     }
     if (found->state == Row::Playing) return;
@@ -2667,9 +2917,11 @@ void MainWindow::refreshTable()
     vtFrom_.clear();
     {
         const QHash<int, int> pairs = db_->transitionPairs();
+        mixOff_.clear();
         for (auto it = pairs.begin(); it != pairs.end(); ++it) {
             customFrom_.insert(it.value());
             if (db_->transition(it.key()).vtItemId) vtFrom_.insert(it.value());
+            if (autoMixApplies(rowById(it.value()), rowById(it.key()))) mixOff_.insert(it.value());
         }
     }
     qint64 pendingFrames = 0;
@@ -2771,12 +3023,12 @@ void MainWindow::refreshTable()
             }
             break;
         case Row::Cued:
-            status = TR("KÉSZENLÉT · %1").arg(row.player + 1);
+            status = rowPlayerStatus(row);
             fg = theme::blueSoft;
             bg = QColor("#14283d");
             break;
         case Row::Playing:
-            status = TR("ADÁSBAN · %1").arg(row.player + 1);
+            status = rowPlayerStatus(row);
             fg = theme::amberSoft;
             bg = QColor("#3a2c10");
             break;
@@ -2831,9 +3083,21 @@ void MainWindow::refreshTable()
     updateMini();
     if (remote_ && remoteStateTimer_ && remote_->clientCount()) remoteStateTimer_->start();
     table_->viewport()->update();
-    listInfo_->setText(rows_.isEmpty()
-                           ? TR("Üres lista")
-                           : TR("%1 várakozó elem · hátralévő: %2").arg(waiting).arg(formatMs(pendingFrames * 1000 / eter::kRate)));
+    QString info = rows_.isEmpty()
+                       ? TR("Üres lista")
+                       : TR("%1 várakozó elem · hátralévő: %2").arg(waiting).arg(formatMs(pendingFrames * 1000 / eter::kRate));
+    listInfo_->setText(info);
+    if (listHint_) {
+        // Automatikus mixnél a lábléc jobb oldala azt mutatja, hány mentett mix nem érvényes most.
+        const QString hintText = !autoMix_ ? TR("Elem hozzáadása: húzd ide a hangtárból · a sorok és a blokkok húzással átrendezhetők")
+                                 : mixOff_.isEmpty() ? TR("Automatikus mix")
+                                                     : TR("Automatikus mix · %1 mentett mix most nem érvényes").arg(mixOff_.size());
+        if (listHint_->text() != hintText) {
+            listHint_->setText(hintText);
+            listHint_->setToolTip(hintText);
+            listHint_->setStyleSheet(autoMix_ ? QStringLiteral("color: #ffd58a;") : QString());
+        }
+    }
     updateMissingUi();
     if (fileCheckTimer_ && !fileCheckTimer_->isActive()) fileCheckTimer_->start();
 }
@@ -3059,13 +3323,34 @@ void MainWindow::about()
     box->show();
 }
 
+QString MainWindow::playerViewDebug() const
+{
+    return QStringLiteral("látszik: %1 | %2 | gomb: %3").arg(playerLetter(shownPlayer_), strip_ ? strip_->debugText() : QString(),
+                                                             nextBtn_ ? QString(nextBtn_->text()).replace('\n', ' ') : QString());
+}
+
+QString MainWindow::rowStatusDebug() const
+{
+    QStringList parts;
+    for (const Row &r : rows_) {
+        if (r.state != Row::Playing && r.state != Row::Cued) continue;
+        QString chip;
+        if (mixOff_.contains(r.id)) chip = QStringLiteral(" [MIX áthúzva]");
+        else if (customFrom_.contains(r.id)) chip = QStringLiteral(" [MIX]");
+        if (vtFrom_.contains(r.id)) chip += QStringLiteral(" [VT]");
+        parts << QStringLiteral("%1: %2%3").arg(r.item.title, rowPlayerStatus(r), chip);
+    }
+    return parts.join(QStringLiteral(" · ")) + QStringLiteral(" || ") + (listInfo_ ? listInfo_->text() : QString())
+           + QStringLiteral(" | ") + (listHint_ ? listHint_->text() : QString());
+}
+
 QString MainWindow::debugState() const
 {
     static const char *names[] = {"pending", "cued", "playing", "played", "skipped", "failed"};
     QStringList parts;
     for (const Row &r : rows_)
         parts << QStringLiteral("%1=%2%3").arg(r.item.title, names[r.state], r.player >= 0 ? QString::number(r.player + 1) : QString());
-    for (int i = 0; i < 2; ++i)
+    for (int i = 0; i < kPlayers; ++i)
         parts << QStringLiteral("P%1:%2@%3").arg(i + 1).arg(!players_[i]->isLoaded() ? "empty" : players_[i]->isPlaying() ? "playing" : "ready")
                      .arg(players_[i]->position() / double(eter::kRate), 0, 'f', 1);
     return parts.join("  ");
@@ -3199,17 +3484,12 @@ void MainWindow::applySchedule()
     // 3. A fix elem indítása: kiúsztatja, ami szól. („Megvárja" beállításnál a következő váltáskor indul.)
     if (fixedId >= 0 && db_->setting("fixed_time_policy", "fade") == "fade") {
         const Row *fixed = rowById(fixedId);
-        int onAir = -1, playing = 0;
-        for (int i = 0; i < 2; ++i) {
-            if (!players_[i]->isPlaying()) continue;
-            ++playing;
-            if (!leaving(i)) onAir = i;
-        }
-        if (fixed && fixed->state == Row::Cued && onAir >= 0 && playing == 1 && standbyPlayer() == fixed->player)
+        const int onAir = onAirPlayer();
+        if (fixed && fixed->state == Row::Cued && onAir >= 0 && standbyPlayer() == fixed->player)
             startStandby(onAir, fadeMs_);
     }
     // Ha a fix elemre vártunk (előtte elfogyott a műsor), most indul.
-    if (fixedId >= 0 && waitingForFixed_ && !players_[0]->isPlaying() && !players_[1]->isPlaying()) {
+    if (fixedId >= 0 && waitingForFixed_ && onAirPlayer() < 0) {
         const Row *fixed = rowById(fixedId);
         if (fixed && fixed->state == Row::Cued && standbyPlayer() == fixed->player) {
             waitingForFixed_ = false;
@@ -3377,6 +3657,8 @@ QJsonObject MainWindow::remoteState() const
             o.insert("groupName", r.groupName);
         }
         if (rowMissing(r)) o.insert("missing", true);
+        if (r.state == Row::Playing && r.player >= 0 && leaving(r.player)) o.insert("leaving", true);
+        if (r.state == Row::Cued && r.player >= 0 && standbyPlayer() != r.player) o.insert("loaded", true);
         if (r.state == Row::Playing && r.player >= 0) {
             // A tartalékoknak: hol tart az elem (az átvételnél innen folytatja).
             o.insert("pos", players_[r.player]->position() * 1000 / eter::kRate);
@@ -3389,7 +3671,7 @@ QJsonObject MainWindow::remoteState() const
     QJsonArray trs;
     for (const Transition &t : const_cast<Database *>(db_)->transitionsFor(ids)) trs.push_back(remote::transitionToJson(t));
     return QJsonObject{{"t", "state"}, {"now", eter::now().toString(Qt::ISODate)}, {"mode", mode_ == Auto ? "auto" : "assist"},
-                       {"rows", rows}, {"transitions", trs}};
+                       {"mix", autoMix_ ? "auto" : "editor"}, {"rows", rows}, {"transitions", trs}};
 }
 
 QString MainWindow::applyRemoteOp(const QJsonObject &m, remote::Connection *c, QJsonObject *reply)
@@ -3549,9 +3831,7 @@ QString MainWindow::loggerStatus() const
 void MainWindow::updateCountdown()
 {
     if (!countdown_) return;
-    int onAir = -1;
-    for (int i = 0; i < 2; ++i)
-        if (players_[i]->isPlaying() && !leaving(i)) onAir = i;
+    const int onAir = onAirPlayer();
     if (onAir < 0) {
         countdown_->showCount(0, 0, {});
         return;
@@ -3580,7 +3860,7 @@ void MainWindow::updateCountdown()
     const Row *row = rowById(p->rowId);
     QString title = row ? row->item.title : QString();
     if (row && !row->item.artist.isEmpty()) title += QStringLiteral(" – ") + row->item.artist;
-    countdown_->showCount(secs, frac == 0 ? 1.0 : frac, TR("%1. LEJÁTSZÓ · %2").arg(QString::number(onAir + 1), title));
+    countdown_->showCount(secs, frac == 0 ? 1.0 : frac, TR("%1 LEJÁTSZÓ · %2").arg(playerLetter(onAir), title));
 }
 
 QString MainWindow::countdownText() const

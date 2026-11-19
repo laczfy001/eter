@@ -13,6 +13,8 @@ public:
     void setPlayedColor(const QColor &c) { played_ = c; update(); }
     void setLoading(bool on) { loading_ = on; update(); }
     void setMarker(double fraction);            // intro vége; negatív = nincs
+    // A mix pont (ahol a következő elem indul) felirattal; negatív = nincs.
+    void setMixMarker(double fraction, const QString &label, const QColor &color);
     QSize sizeHint() const override { return {300, 44}; }
 
 signals:
@@ -28,6 +30,9 @@ private:
     double progress_ = 0.0;
     bool loading_ = false;
     double marker_ = -1.0;
+    double mixMarker_ = -1.0;
+    QString mixLabel_;
+    QColor mixColor_;
     QColor played_;
 };
 

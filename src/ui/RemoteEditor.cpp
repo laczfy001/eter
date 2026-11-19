@@ -537,6 +537,8 @@ void RemoteEditorWindow::applyState(const QJsonObject &m)
         }
         r.state = o.value("state").toString();
         r.player = o.value("player").toInt(-1);
+        r.leaving = o.value("leaving").toBool();
+        r.loaded = o.value("loaded").toBool();
         r.start = o.value("start").toString();
         r.missing = o.value("missing").toBool();
         rows.push_back(r);
@@ -550,7 +552,10 @@ void RemoteEditorWindow::applyState(const QJsonObject &m)
     rows_ = rows;
     const QDateTime now = QDateTime::fromString(m.value("now").toString(), Qt::ISODate);
     nowLabel_->setText(TR("playout ideje: %1 · %2").arg(now.toString("HH:mm:ss"),
-                                                        m.value("mode").toString() == QLatin1String("auto") ? TR("automata") : TR("asszisztált")));
+                                                        m.value("mode").toString() == QLatin1String("auto") ? TR("automata") : TR("asszisztált"))
+                           + (m.value("mix").toString() == QLatin1String("auto") ? TR(" · Automatikus mix")
+                              : m.contains("mix") ? TR(" · Mix editor") : QString()));
+    mix_->setAutoMixActive(m.value("mix").toString() == QLatin1String("auto"));
     rebuildTable();
     rebuildPairs();
     emit stateApplied();
@@ -595,7 +600,9 @@ void RemoteEditorWindow::rebuildTable()
         const bool ovl = overlayActive(i);
         QString status = TR(kStateText(r.state));
         if (r.state == QLatin1String("playing") || r.state == QLatin1String("cued")) {
-            if (r.player >= 0) status += QStringLiteral(" · %1").arg(r.player + 1);
+            if (r.leaving) status = TR("KIÚSZIK");
+            else if (r.loaded) status = TR("BETÖLTVE");
+            if (r.player >= 0) status += QStringLiteral(" · %1").arg(QChar('A' + r.player));
         }
         if (ovl) status = r.state == QLatin1String("playing") ? TR("RÁFEKTETVE · SZÓL") : TR("RÁFEKTETVE");
         if (r.missing) status = TR("HIÁNYZÓ FÁJL");

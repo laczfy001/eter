@@ -84,7 +84,31 @@ void WaveformWidget::paintEvent(QPaintEvent *)
         p.fillRect(QRect(mx, 0, 1, h), theme::blue);
         p.fillRect(QRect(mx, 0, 5, 5), theme::blue);
     }
+    if (mixMarker_ > 0.0 && mixMarker_ < 1.0) {
+        const int mx = static_cast<int>(mixMarker_ * w);
+        p.fillRect(QRect(mx, 0, 2, h), mixColor_);
+        if (!mixLabel_.isEmpty()) {
+            QFont f = font();
+            f.setPixelSize(10);
+            f.setWeight(QFont::Bold);
+            p.setFont(f);
+            const int tw = QFontMetrics(f).horizontalAdvance(mixLabel_) + 8;
+            const QRect box(std::max(0, mx - tw - 2), 1, tw, 14);
+            p.fillRect(box, theme::bg);
+            p.setPen(mixColor_);
+            p.drawText(box, Qt::AlignCenter, mixLabel_);
+        }
+    }
     p.fillRect(QRect(std::clamp(playedX - 1, 0, w - 2), 0, 2, h), Qt::white);
+}
+
+void WaveformWidget::setMixMarker(double fraction, const QString &label, const QColor &color)
+{
+    if (qFuzzyCompare(fraction + 2.0, mixMarker_ + 2.0) && label == mixLabel_ && color == mixColor_) return;
+    mixMarker_ = fraction;
+    mixLabel_ = label;
+    mixColor_ = color;
+    update();
 }
 
 void WaveformWidget::mousePressEvent(QMouseEvent *e)

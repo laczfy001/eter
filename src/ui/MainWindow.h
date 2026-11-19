@@ -3,6 +3,7 @@
 #include "db/Database.h"
 #include "sched/Scheduler.h"
 
+#include <QColor>
 #include <QDateTime>
 #include <QMainWindow>
 #include <QPointer>
@@ -52,9 +53,19 @@ public:
     // A Beállítások ablak is ezeket használja.
     eter::Engine *engine() { return &engine_; }
     QStringList deviceNames();
-    // ch: 0–2 a lejátszók és az előhallgatás, 3 a cartwall. A cartwallnál a "@player1" azt jelenti,
-    // hogy az 1-es lejátszó kimenetét követi.
+    // ch: az Engine csatornái (Player1, Player2, Player3, Pfl), illetve kCartRoute a cartwall.
+    // A cartwallnál a "@player1" azt jelenti, hogy az A lejátszó kimenetét követi.
     static constexpr int kCartRoute = 3;
+    static constexpr int kPlayers = 3;
+    static eter::Engine::Channel playerChannel(int i)
+    {
+        return i == 0 ? eter::Engine::Player1 : i == 1 ? eter::Engine::Player2 : eter::Engine::Player3;
+    }
+    static QString playerLetter(int i) { return QString(QChar('A' + i)); }
+    static QColor playerColor(int i);
+    // Átmenetek: automatikus mix (zenék között) vagy a Mix editorban mentett beállítások.
+    bool autoMix() const { return autoMix_; }
+    void setAutoMix(bool on);
     QString routeOf(int ch) const { return ch == kCartRoute ? cartRoute_ : routes_[ch]; }
     QString backendSetting() const { return backend_; }
     bool channelBusy(int ch);
@@ -87,6 +98,8 @@ public:
     void moveRow(int from, int to, bool outsideBlock = false);   // outsideBlock: a blokk fejléce elé ejtve
     LibraryPanel *library() { return library_; }
     QString debugState() const;         // fejlesztői ellenőrzéshez
+    QString playerViewDebug() const;    // a látható lejátszó, a sáv és a Következő gomb (fejlesztéshez)
+    QString rowStatusDebug() const;     // a sorok állapotfelirata (fejlesztéshez)
 
 public slots:
     void next();
@@ -163,13 +176,18 @@ private:
     // A kimenő elem időzített vége: a mix pont után tovább szól, és a beállított végpontján úszik ki.
     struct OutFade { int rowId = -1; qint64 startFrame = 0; qint64 endFrame = 0; int fadeMs = 0;
                      eter::FadeCurve curve = eter::FadeCurve::Quadratic; };
-    OutFade outFade_[2];
-    bool leaving(int player) const;       // kiúszik, vagy már elindult utána a következő
+    OutFade outFade_[kPlayers];
+    int handedOver_[kPlayers] = {-1, -1, -1};   // ennek a sornak már elindult a következője (tovább szólhat)
+    bool leaving(int player) const;
+    bool soundingOn(int player) const;   // átadva, de teljes hangerővel szól tovább       // kiúszik, vagy már elindult utána a következő
     void runOutFades();
     void runVoiceTrack();
     void startVoiceTrack(int itemId, double duckDb);
     void endVoiceTrack(const QString &reason);
     MixPlan planFor(int outPlayer, int inPlayer);
+    QString rowPlayerStatus(const Row &row) const;   // „ADÁSBAN · B”, „KIÚSZIK · A”, „KÉSZENLÉT · C”
+    bool autoMixApplies(const Row *from, const Row *to) const;   // automatikus mix érvényes erre a párra
+    QSet<int> mixOff_;                    // ezekből a sorokból a mentett mix most nem érvényes (automatikus mix)
     void updateMixPairs();
     void onMixSaved(const QVector<int> &itemIds);
 
@@ -203,6 +221,7 @@ private:
     void clearList();
     void startStandby(int fadeOutPlayer, int fadeMs);
     int standbyPlayer() const;
+    int onAirPlayer() const;              // az adásban lévő (nem kiúszó) lejátszó; több közül a későbbi elem
     bool standbyIsEarlyFixed();
     void togglePfl();
     void stopPfl();
@@ -217,12 +236,24 @@ private:
     Mode mode_ = Assist;
     int fadeMs_ = 2500;
 
-    PlayerWidget *players_[2] = {nullptr, nullptr};
+    PlayerWidget *players_[kPlayers] = {nullptr, nullptr, nullptr};
+    QStackedWidget *playerStack_ = nullptr;   // a főablakban egyszerre egy lejátszó látszik
+    class PlayerStrip *strip_ = nullptr;      // az A/B/C állapota és a voice track
+    int shownPlayer_ = 0;
+    int pinnedPlayer_ = -1, pinnedOnAir_ = -2;               // a sávon kiválasztott lejátszó (egy ideig az látszik)
+    qint64 pinnedAt_ = 0;
+    void updatePlayerView();
+    QPushButton *toPlayer_[kPlayers] = {nullptr, nullptr, nullptr};
+    bool autoMix_ = true;
+    QToolButton *mixAuto_ = nullptr, *mixEditor_ = nullptr;
+    int vtItemShown_ = 0;
+    QString vtTitle_;
+    double vtDuckDbShown_ = 0;
     QVector<Row> rows_;
 
     PlaylistTable *table_ = nullptr;
     LibraryPanel *library_ = nullptr;
-    QLabel *listInfo_ = nullptr;
+    QLabel *listInfo_ = nullptr, *listHint_ = nullptr;
     QLabel *clock_ = nullptr, *date_ = nullptr, *toHour_ = nullptr, *masterDb_ = nullptr;
     MeterWidget *master_ = nullptr;
     QPushButton *nextBtn_ = nullptr, *pflBtn_ = nullptr;

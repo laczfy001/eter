@@ -122,11 +122,11 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
     grid->setHorizontalSpacing(10);
     grid->setVerticalSpacing(8);
     grid->setColumnStretch(2, 1);
-    const QString names[4] = {TR("Lejátszó 1"), TR("Lejátszó 2"),
-                              TR("Előhallgatás (PFL)"), TR("Cartwall")};
-    const char *badges[4] = {"badge1", "badge2", "badgeP", "badgeP"};
-    const QString letters[4] = {QStringLiteral("1"), QStringLiteral("2"), QStringLiteral("P"), QStringLiteral("C")};
-    for (int ch = 0; ch < 4; ++ch) {
+    const QString names[kRows] = {TR("A lejátszó"), TR("B lejátszó"), TR("C lejátszó"),
+                                  TR("Előhallgatás (PFL)"), TR("Cartwall")};
+    const char *badges[kRows] = {"badge1", "badge2", "badge3", "badgeP", "badgeP"};
+    const QString letters[kRows] = {QStringLiteral("A"), QStringLiteral("B"), QStringLiteral("C"), QStringLiteral("P"), QStringLiteral("W")};
+    for (int ch = 0; ch < kRows; ++ch) {
         auto *badge = new QLabel(letters[ch]);
         badge->setObjectName(badges[ch]);
         badge->setAlignment(Qt::AlignCenter);
@@ -146,17 +146,18 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
         grid->addWidget(state_[ch], ch, 4);
 
         connect(device_[ch], &QComboBox::activated, this, [this, ch](int index) {
-            main_->changeRoute(ch, device_[ch]->itemData(index).toString());
+            main_->changeRoute(channelOf(ch), device_[ch]->itemData(index).toString());
         });
         connect(test_[ch], &QPushButton::clicked, this, [this, ch] {
-            main_->engine()->testTone(ch == MainWindow::kCartRoute ? eter::Engine::Cart1 : static_cast<eter::Engine::Channel>(ch));
+            const int c = channelOf(ch);
+            main_->engine()->testTone(c == MainWindow::kCartRoute ? eter::Engine::Cart1 : static_cast<eter::Engine::Channel>(c));
         });
     }
     root->addLayout(grid);
 
-    auto *note = new QLabel(TR("Minden csatorna kimenete szabadon választható. Ha több csatorna ugyanarra a kimenetre "
-        "van állítva, a program összekeveri őket, és együtt szólnak azon. A cartwall alapból "
-        "az 1-es lejátszó kimenetét követi."));
+    auto *note = new QLabel(TR("Mindegyik lejátszó külön hangkártyára tehető, például ha a keverőpulton saját fadert kapnak. "
+        "Ha több csatorna ugyanoda szól, a program belül keveri össze őket. A voice track és a ráfektetett elemek az A "
+        "lejátszó kimenetén szólnak; a cartwall alapból szintén azt követi."));
     note->setObjectName("small");
     note->setWordWrap(true);
     root->addWidget(note);
@@ -480,8 +481,8 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
     connect(timer, &QTimer::timeout, this, [this] {
         const bool any = main_->anythingPlaying();
         backend_->setEnabled(!any);
-        for (int ch = 0; ch < 4; ++ch) {
-            const bool busy = main_->channelBusy(ch);
+        for (int ch = 0; ch < kRows; ++ch) {
+            const bool busy = main_->channelBusy(channelOf(ch));
             device_[ch]->setEnabled(!busy);
             state_[ch]->setText(busy ? TR("szól – zárolva") : QString());
         }
@@ -495,17 +496,24 @@ void SettingsDialog::reload()
 {
     backend_->setCurrentIndex(std::max(0, backend_->findData(main_->backendSetting())));
     const QStringList names = main_->deviceNames();
-    for (int ch = 0; ch < 4; ++ch) {
+    for (int ch = 0; ch < kRows; ++ch) {
         device_[ch]->blockSignals(true);
         device_[ch]->clear();
-        if (ch == MainWindow::kCartRoute)
-            device_[ch]->addItem(TR("Az 1-es lejátszó kimenetén (adás)"), QStringLiteral("@player1"));
+        if (channelOf(ch) == MainWindow::kCartRoute)
+            device_[ch]->addItem(TR("Az A lejátszó kimenetén (adás)"), QStringLiteral("@player1"));
         device_[ch]->addItem(TR("Alapértelmezett kimenet"), QString());
         for (const QString &n : names) device_[ch]->addItem(n, n);
-        device_[ch]->setCurrentIndex(std::max(0, device_[ch]->findData(main_->routeOf(ch))));
+        device_[ch]->setCurrentIndex(std::max(0, device_[ch]->findData(main_->routeOf(channelOf(ch)))));
         device_[ch]->blockSignals(false);
     }
     count_->setText(TR("%1 kimenet észlelve · %2")
                         .arg(names.size())
                         .arg(QString::fromStdString(main_->engine()->backendName())));
+}
+
+int SettingsDialog::channelOf(int row)
+{
+    static const int ch[kRows] = {eter::Engine::Player1, eter::Engine::Player2, eter::Engine::Player3, eter::Engine::Pfl,
+                                  MainWindow::kCartRoute};
+    return ch[row];
 }

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.19.0
+- Three players: A, B and C. The main window shows one big player, always the one on air (otherwise the one on
+  standby), with its letter and output. A strip under it shows all three players (ON AIR / FADING / PLAYING /
+  STANDBY / LOADED, title, time, output) and a pink VT tile while a voice track plays; clicking a tile shows that
+  player for a while. Next shows which player starts next. The playlist rows say "ON AIR · B", "FADING · A",
+  "STANDBY · C"; the playlist buttons are →A →B →C. The players take turns A → B → C.
+- With three players a song, a jingle and the next song can sound at the same time: when the next song starts under a
+  jingle while the previous song is still fading, each plays on its own player (before, the third item could not
+  start until one of the two players was free). A non-music item that plays on under the next one shows "PLAYING".
+  This works in automatic and in assisted mode.
+- Automatic mix / Mix editor switch in the top bar. *Automatic mix*: transitions between two songs are mixed from the
+  waveform (mix point where the song falls below the threshold, silence at the start of the next song is skipped); the
+  saved Mix editor timing of those transitions is not used, but their voice track is. Transitions where either side
+  is not music keep their saved settings. In the playlist such saved MIX marks are grey and struck through, the
+  footer counts them, the waveform shows "AUTO MIX → B" (or "SAVED MIX → B") at the mix point, and the Mix editor
+  shows a notice. *Mix editor*: every transition follows its saved settings, as before. Remote editors see the mode.
+- The automatic mix point of quietly mastered songs (peak below the threshold) is now measured relative to the song's
+  own peak, so it no longer falls at the very start of the song.
+- Settings → outputs: player C gets its own output (until set, it follows player B's). Voice tracks and overlaid items
+  play on player A's output.
+- The play log can now hold player 3 (database schema 10; upgraded automatically).
+
 ## 0.18.0
 - Scheduler: every item can have an energy (1 very calm … 5 very upbeat), a tempo (BPM) and dayparts (night, morning,
   daytime, afternoon, evening; the start hours can be set). New rules: at most N slow songs in a row, at most this big

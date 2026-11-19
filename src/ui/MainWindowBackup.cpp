@@ -8,6 +8,7 @@
 #include "Theme.h"
 
 #include <QApplication>
+#include <algorithm>
 #include <QFile>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -49,7 +50,7 @@ void MainWindow::sendSnapshot()
 QString MainWindow::applyHandback(const QJsonObject &m)
 {
     // A tartalék visszaadja az adást: ami ott már lement, itt is lement; a szóló elem innen folytatódik.
-    if (players_[0]->isPlaying() || players_[1]->isPlaying())
+    if (std::any_of(std::begin(players_), std::end(players_), [](PlayerWidget *p) { return p->isPlaying(); }))
         return TR("A fő playouton már szól valami – előbb állítsd le ott, vagy vedd át kézzel.");
     QSet<int> played;
     for (const QJsonValue &v : m.value("played").toArray()) played.insert(v.toInt());

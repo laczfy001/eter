@@ -256,6 +256,14 @@ int64_t autoMixOut(const std::vector<float> &peaks, int64_t totalFrames, double 
     const float threshold = static_cast<float>(std::pow(10.0, thresholdDb / 20.0));
     int last = static_cast<int>(peaks.size()) - 1;
     while (last > 0 && peaks[last] < threshold) --last;
+    if (last < static_cast<int>(peaks.size()) / 2) {
+        // Halkan keverve felvett szám: a küszöb a szám saját csúcsához képest értendő, különben a mix pont
+        // a szám elejére esne.
+        const float peak = *std::max_element(peaks.begin(), peaks.end());
+        const float relative = peak * threshold;
+        last = static_cast<int>(peaks.size()) - 1;
+        while (last > 0 && peaks[last] < relative) --last;
+    }
     return std::min<int64_t>(totalFrames, static_cast<int64_t>(last + 1) * totalFrames / static_cast<int64_t>(peaks.size()));
 }
 

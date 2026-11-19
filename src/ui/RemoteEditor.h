@@ -72,6 +72,7 @@ private:
         Entry entry;
         QString state;                                 // pending, cued, playing, played, skipped, failed
         int player = -1;
+        bool leaving = false, loaded = false;
         QString start;
         bool missing = false;                          // a fájl a playout gépen nem érhető el
         int voice = -1;                                // szóló ráfektetett elem csatornája

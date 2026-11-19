@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(eter VERSION 0.18.0 LANGUAGES C CXX)
+project(eter VERSION 0.19.0 LANGUAGES C CXX)
 if(WIN32)
     enable_language(RC)
 endif()
@@ -38,6 +38,7 @@ add_executable(eter
     src/ui/Theme.cpp
     src/ui/Widgets.cpp
     src/ui/PlayerWidget.cpp
+    src/ui/PlayerStrip.cpp
     src/db/Database.cpp
     src/ui/MainWindow.cpp
     src/ui/Library.cpp

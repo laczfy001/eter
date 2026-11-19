@@ -53,7 +53,7 @@ struct Engine::OutDev {
 
 static bool isProgramChannel(int c)
 {
-    return c == Engine::Player1 || c == Engine::Player2 || c == Engine::Vt || c == Engine::Ovl1 || c == Engine::Ovl2
+    return c == Engine::Player1 || c == Engine::Player2 || c == Engine::Player3 || c == Engine::Vt || c == Engine::Ovl1 || c == Engine::Ovl2
            || (c >= Engine::Cart1 && c <= Engine::CartLast);
 }
 
@@ -364,7 +364,7 @@ void Engine::setProgramTap(bool on)
 int Engine::readProgram(float *dst, int maxFrames)
 {
     if (!tapOn_ || maxFrames <= 0) return 0;
-    // Az 1-es lejátszó kimenete az óra: ennyit olvasunk; a többi adást vivő kimenet ugyanennyit tesz hozzá.
+    // Az A lejátszó kimenete az óra: ennyit olvasunk; a többi adást vivő kimenet ugyanennyit tesz hozzá.
     OutDev *master = nullptr;
     if (routed_[Player1]) {
         auto it = outs_.find(routes_[Player1]);

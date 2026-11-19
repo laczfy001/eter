@@ -29,14 +29,19 @@ PlayerWidget::PlayerWidget(Engine *engine, Engine::Channel channel, QWidget *par
 {
     setObjectName("panel");
     setAcceptDrops(true);
-    const int number = ch_ == Engine::Player1 ? 1 : 2;
+    index_ = ch_ == Engine::Player1 ? 0 : ch_ == Engine::Player2 ? 1 : 2;
+    static const QColor colors[3] = {QColor("#f5a524"), QColor("#5cb0ff"), QColor("#3fd0b5")};
 
-    auto *badge = new QLabel(QString::number(number));
-    badge->setObjectName(number == 1 ? "badge1" : "badge2");
-    auto *caption = new QLabel(TR("LEJÁTSZÓ %1").arg(number));
-    caption->setObjectName("caption");
+    auto *badge = new QLabel(letter());
+    badge->setObjectName(index_ == 0 ? "badge1" : index_ == 1 ? "badge2" : "badge3");
+    caption_ = new QLabel(TR("%1 LEJÁTSZÓ").arg(letter()));
+    caption_->setObjectName("caption");
     pill_ = new QLabel;
     pill_->setObjectName("pill");
+    vtChip_ = new QLabel;
+    vtChip_->setObjectName("vtChip");
+    vtChip_->setToolTip(TR("Voice track szól az átmenet fölött"));
+    vtChip_->hide();
     auto *outLabel = new QLabel(TR("Kimenet"));
     outLabel->setObjectName("small");
     output_ = new QComboBox;
@@ -49,8 +54,9 @@ PlayerWidget::PlayerWidget(Engine *engine, Engine::Channel channel, QWidget *par
     auto *head = new QHBoxLayout;
     head->setSpacing(8);
     head->addWidget(badge);
-    head->addWidget(caption);
     head->addWidget(pill_);
+    head->addWidget(caption_);
+    head->addWidget(vtChip_);
     head->addStretch(1);
     // A kimenet a Beállításokban választható; itt nem jelenik meg.
     outLabel->setParent(this);
@@ -68,7 +74,7 @@ PlayerWidget::PlayerWidget(Engine *engine, Engine::Channel channel, QWidget *par
     artist_->setTextFormat(Qt::PlainText);
     artist_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     wave_ = new WaveformWidget;
-    wave_->setPlayedColor(number == 1 ? theme::amber : theme::blue);
+    wave_->setPlayedColor(colors[index_]);
 
     auto *left = new QVBoxLayout;
     left->setSpacing(2);
@@ -201,10 +207,12 @@ void PlayerWidget::startScan(const QString &path)
             wave_->setPeaks(v);
             src_->setDuration(total);     // a teljes végigolvasás pontos hosszt ad
             // Automatikus mix pont: az utolsó hely, ahol a jel még a küszöb fölött van.
-            const float threshold = static_cast<float>(std::pow(10.0, autoMixDb / 20.0));
-            int last = v.size() - 1;
-            while (last > 0 && v[last] < threshold) --last;
-            mixOut_ = std::min<qint64>(total, static_cast<qint64>(last + 1) * total / v.size());
+            mixOut_ = eter::autoMixOut(std::vector<float>(v.begin(), v.end()), total, autoMixDb);
+            // A szám eleji csend: az első pont, ahol a jel −45 dB fölé ér.
+            const float quiet = static_cast<float>(std::pow(10.0, -45.0 / 20.0));
+            int first = 0;
+            while (first < v.size() - 1 && v[first] < quiet) ++first;
+            leadIn_ = first > 0 ? std::min<qint64>(total / 4, static_cast<qint64>(first) * total / v.size()) : 0;
             emit scanned(total);
         }, Qt::QueuedConnection);
     });
@@ -214,6 +222,7 @@ bool PlayerWidget::loadFile(const QString &path, QString *err)
 {
     cancelScan();
     mixOut_ = -1;
+    leadIn_ = -1;
     cue_ = 0;
     intro_ = 0;
     fadeRequested_ = false;
@@ -241,7 +250,10 @@ void PlayerWidget::eject()
     src_->unload();
     rowId = -1;
     mixOut_ = -1;
+    leadIn_ = -1;
     wave_->clear();
+    wave_->setMixMarker(-1, {}, {});
+    setVtChip({});
     title_->clear();
     title_->setToolTip({});
     artist_->clear();
@@ -302,11 +314,13 @@ void PlayerWidget::refreshState()
     const bool loaded = src_->loaded();
     const bool playing = src_->playing();
     const bool atStart = src_->position() == cue_;
-    QString state = !loaded ? "empty" : playing ? "onair" : atStart ? "ready" : "paused";
+    QString state = !loaded ? "empty" : playing ? (leaving_ ? (sounding_ ? "sounding" : "leaving") : "onair") : atStart ? "ready" : "paused";
     if (state != lastState_) {
         lastState_ = state;
         pill_->setText(state == "empty" ? TR("ÜRES")
                        : state == "onair" ? TR("ADÁSBAN")
+                       : state == "leaving" ? TR("KIÚSZIK")
+                       : state == "sounding" ? TR("SZÓL")
                        : state == "ready" ? TR("KÉSZENLÉT") : TR("SZÜNET"));
         pill_->setProperty("state", state);
         repolish(pill_);
@@ -386,6 +400,29 @@ void PlayerWidget::tick(float *peakL, float *peakR)
         remain_->setText(theme::formatTime(pos));
         elapsed_->setText(TR("ismeretlen hossz"));
     }
+}
+
+void PlayerWidget::setOutputName(const QString &name)
+{
+    if (name == outputName_) return;
+    outputName_ = name;
+    caption_->setText(name.isEmpty() ? TR("%1 LEJÁTSZÓ").arg(letter()) : TR("%1 LEJÁTSZÓ · %2").arg(letter(), name));
+}
+
+void PlayerWidget::setVtChip(const QString &text)
+{
+    if (text.isEmpty()) {
+        vtChip_->hide();
+        return;
+    }
+    vtChip_->setText(text);
+    vtChip_->show();
+}
+
+void PlayerWidget::setMixPoint(qint64 frame, const QString &label, const QColor &color)
+{
+    const qint64 dur = src_->duration();
+    wave_->setMixMarker(frame > 0 && dur > 0 ? double(frame) / double(dur) : -1.0, label, color);
 }
 
 void PlayerWidget::setDevices(const QStringList &names, const QString &current)

@@ -259,7 +259,7 @@ CREATE TABLE play_log (
     kind       TEXT NOT NULL,
     title      TEXT NOT NULL,
     artist     TEXT NOT NULL DEFAULT '',
-    player     INTEGER NOT NULL CHECK (player IN (1,2)),
+    player     INTEGER NOT NULL CHECK (player IN (1,2,3)),
     mode       TEXT NOT NULL CHECK (mode IN ('auto','assist','manual')),
     end_reason TEXT CHECK (end_reason IN ('finished','mixed','faded','stopped','error'))
 ) STRICT;
@@ -281,6 +281,6 @@ INSERT INTO settings (key, value) VALUES
 
 -- Kategóriákat a felhasználó hoz létre, ezért nincs előre feltöltött lista.
 
-PRAGMA user_version = 9;
+PRAGMA user_version = 10;
 
 COMMIT;

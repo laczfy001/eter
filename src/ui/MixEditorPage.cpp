@@ -837,6 +837,14 @@ MixEditorPage::MixEditorPage(Database *db, eter::Engine *engine, QWidget *parent
     h->addWidget(zoomLabel);
     h->addWidget(zoomIn);
     tv->addWidget(head);
+    autoBanner_ = new QLabel(TR("Automatikus mix van bekapcsolva: a két zene közti átmeneteket a program keveri, az itt mentett "
+                                "beállításuk most nem érvényes (a voice track igen). A nem zenei elemek (jingle, hírek, reklám) "
+                                "átmenetei a mentett beállítás szerint szólnak. A felső sáv „Mix editor” gombjával válthatsz."));
+    autoBanner_->setWordWrap(true);
+    autoBanner_->setStyleSheet(QStringLiteral("QLabel { background: #2a2414; color: #ffd58a; border: 1px solid #5a4313;"
+                                              " border-radius: 4px; padding: 6px 10px; }"));
+    autoBanner_->hide();
+    tv->addWidget(autoBanner_);
     timeline_ = new MixTimeline;
     tv->addWidget(timeline_, 1);
     hscroll_ = new QScrollBar(Qt::Horizontal);
@@ -2317,4 +2325,9 @@ QVector<float> MixEditorPage::quickWave(const Item &item, qint64 *durMs)
     const Wave w = waves_.value(item.id);
     if (durMs) *durMs = w.ready ? w.durMs : item.durationMs;
     return w.ready ? w.peaks : QVector<float>();
+}
+
+void MixEditorPage::setAutoMixActive(bool on)
+{
+    if (autoBanner_) autoBanner_->setVisible(on);
 }

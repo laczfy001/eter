@@ -77,11 +77,15 @@ QLabel#intro[live="true"] { font-size: 15px; font-weight: 600; color: #121418; b
 QLabel#mono { font-family: "IBM Plex Mono"; color: #c9ced6; }
 QLabel#badge1 { font-family: "IBM Plex Mono"; font-weight: 600; background: #f5a524; color: #121418; border-radius: 3px; padding: 1px 7px; }
 QLabel#badge2 { font-family: "IBM Plex Mono"; font-weight: 600; background: #5cb0ff; color: #121418; border-radius: 3px; padding: 1px 7px; }
+QLabel#badge3 { font-family: "IBM Plex Mono"; font-weight: 600; background: #3fd0b5; color: #121418; border-radius: 3px; padding: 1px 7px; }
+QLabel#vtChip { font-family: "IBM Plex Mono"; font-size: 11px; font-weight: 700; background: #f472b6; color: #1a0b14; border-radius: 9px; padding: 1px 9px; }
 QLabel#badgeP { font-family: "IBM Plex Mono"; font-weight: 600; background: #3a4150; color: #e8eaed; border-radius: 3px; padding: 1px 7px; }
 
 QLabel#pill { font-size: 11px; font-weight: 600; letter-spacing: 1px; border-radius: 9px; padding: 1px 9px; border: 1px solid #454b57; color: #9aa3af; }
 QLabel#pill[state="ready"] { border: 1px solid #5cb0ff; color: #bfe0ff; }
 QLabel#pill[state="paused"] { border: 1px solid #f5a524; color: #ffd58a; }
+QLabel#pill[state="leaving"] { border: 1px solid #f5a524; color: #ffc65c; }
+QLabel#pill[state="sounding"] { border: 1px solid #8ec8ff; color: #8ec8ff; }
 QLabel#pill[state="onair"] { border: 1px solid #f5a524; background: #f5a524; color: #121418; }
 
 QPushButton { background: #23272e; border: 1px solid #30353e; border-radius: 4px; padding: 0 12px; min-height: 28px; color: #e8eaed; }

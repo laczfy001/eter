@@ -375,8 +375,9 @@ int main(int argc, char **argv)
     QCommandLineOption mixTestOpt("mixtest", QStringLiteral("Mix forgatókönyv (fejlesztéshez)."));
     QCommandLineOption recTestOpt("rectest", QStringLiteral("Felvétel forgatókönyv (fejlesztéshez)."));
     QCommandLineOption schedTestOpt("schedtest", QStringLiteral("Ütemező forgatókönyv (fejlesztéshez)."));
+    QCommandLineOption threeTestOpt("threetest", QStringLiteral("Három lejátszó: zene → jingle → zene, automatikus mix (fejlesztéshez)."));
     QCommandLineOption fakeTimeOpt("fake-time", QStringLiteral("A program órája ettől az időponttól indul (fejlesztéshez)."), "ÓÓ:pp:mm");
-    parser.addOptions({backendOpt, dbOpt, selfTestOpt, shotOpt, iconOpt, uiTestOpt, importTestOpt, schedTestOpt, fakeTimeOpt, mixTestOpt, recTestOpt, plTestOpt, cartTestOpt, editTestOpt, nextTestOpt, eventTestOpt, lookTestOpt, overlayTestOpt, editorOpt, serveTestOpt, countTestOpt, clickTestOpt, fileTestOpt, fixTestOpt, loggerTestOpt, bpmOpt, flowTestOpt, backupOpt});
+    parser.addOptions({backendOpt, dbOpt, selfTestOpt, shotOpt, iconOpt, uiTestOpt, importTestOpt, schedTestOpt, fakeTimeOpt, mixTestOpt, recTestOpt, plTestOpt, cartTestOpt, editTestOpt, nextTestOpt, eventTestOpt, lookTestOpt, overlayTestOpt, editorOpt, serveTestOpt, countTestOpt, clickTestOpt, fileTestOpt, fixTestOpt, loggerTestOpt, bpmOpt, flowTestOpt, backupOpt, threeTestOpt});
     parser.addPositionalArgument("fájlok", QStringLiteral("Induláskor importálandó hangfájlok vagy mappák."), "[fájlok…]");
     parser.process(app);
 
@@ -596,6 +597,15 @@ int main(int argc, char **argv)
                               TR("Az adatbázis nem nyitható meg:\n%1\n\n%2").arg(dbPath, dbErr));
         return 1;
     }
+    // A fejlesztői forgatókönyvek a Mix editor mentett átmeneteivel dolgoznak; az automatikus mixet az
+    // ETER_MIX=auto kapcsolja be nekik (a valódi indításnál az adatbázis beállítása számít).
+    {
+        bool testRun = false;
+        for (int i = 1; i < argc; ++i)
+            if (QByteArray(argv[i]).startsWith("--") && QByteArray(argv[i]).contains("test")) testRun = true;
+        if (testRun && db.setting("mix_mode").isEmpty())
+            db.setSetting("mix_mode", qEnvironmentVariable("ETER_MIX", "editor"));
+    }
     MainWindow window(&db, parser.value(backendOpt));
     window.show();
     if (qEnvironmentVariableIsSet("ETER_WATCH_STATE")) {
@@ -609,7 +619,7 @@ int main(int argc, char **argv)
         QTimer::singleShot(qEnvironmentVariableIntValue("ETER_WATCH_STATE") * 1000, [] { QApplication::exit(0); });
     }
     const QStringList files = parser.positionalArguments();
-    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt)) window.library()->importPaths(files);
+    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt) && !parser.isSet(threeTestOpt)) window.library()->importPaths(files);
 
     if (parser.isSet(importTestOpt)) {
         // Az importáló ablak teljes útja: mappa, kategóriaválasztás, beolvasás.
@@ -1258,15 +1268,16 @@ int main(int argc, char **argv)
             if (!st->t0) return;
             const double t = (QDateTime::currentMSecsSinceEpoch() - st->t0) / 1000.0;
             const bool p1 = e->source(eter::Engine::Player1).playing(), p2 = e->source(eter::Engine::Player2).playing();
+            const bool p3 = e->source(eter::Engine::Player3).playing();
             const bool o1 = e->source(eter::Engine::Ovl1).playing(), o2 = e->source(eter::Engine::Ovl2).playing();
-            const int n = int(p1) + int(p2) + int(o1) + int(o2);
+            const int n = int(p1) + int(p2) + int(p3) + int(o1) + int(o2);
             st->maxTogether = std::max(st->maxTogether, n);
             if ((o1 || o2) && st->ovlStart < 0) st->ovlStart = t;
             if (st->ovlStart >= 0 && !o1 && !o2 && st->ovlEnd < 0) st->ovlEnd = t;
-            if (p2 && st->cStart < 0) st->cStart = t;
+            if ((p2 || p3) && st->cStart < 0) st->cStart = t;
             static int k = 0;
             if (++k % 10 == 0)
-                std::printf("  %5.2f s  P1 %d  P2 %d  RÁF %d%d  (%d szól)  %s\n", t, p1, p2, o1, o2, n, qPrintable(window.debugState()));
+                std::printf("  %5.2f s  P1 %d  P2 %d  P3 %d  RÁF %d%d  (%d szól)  %s\n", t, p1, p2, p3, o1, o2, n, qPrintable(window.debugState()));
         });
         sampler->start(50);
         QTimer::singleShot(300 + 12500, &window, [st, &db] {
@@ -1749,6 +1760,117 @@ int main(int argc, char **argv)
                                          qPrintable(u.value(2).toString()), qPrintable(u.value(3).toString()), u.value(4).toInt());
             Q_UNUSED(db);
             std::fflush(stdout);
+            QApplication::exit(0);
+        });
+    }
+    if (parser.isSet(threeTestOpt)) {
+        // Fájlok: zene1 jingle zene2 zene3 [vt]. Zene1 → jingle: a zene1 a mix pont után még 3 mp-ig kiúszik; a jingle
+        // 2 mp után átad a zene2-nek (nem zene: teljes hangerővel szól tovább). Így egy ideig mindhárom lejátszó szól.
+        // Zene2 → zene3: mentett mix 2 mp-nél és voice track; automatikus mixnél (ETER_MIX=auto) a mentett időzítés nem
+        // érvényes, a voice track igen. ETER_THREE_MODE=assist: kézi indítás (Következő) a mix pontoknál.
+        const bool assist = qEnvironmentVariable("ETER_THREE_MODE") == QLatin1String("assist");
+        const int cat = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        const int jcat = db.addCategory(QStringLiteral("Szignál"), "jingle", "#f2c94c");
+        const int vcat = db.addCategory(QStringLiteral("Felvezetés"), "voicetrack", "#f472b6");
+        QVector<int> ids;
+        int vtItem = 0;
+        for (int i = 0; i < files.size(); ++i) {
+            eter::Decoder dec;
+            if (!dec.open(files[i].toStdString())) continue;
+            Item it;
+            it.categoryId = i == 1 ? jcat : i == 4 ? vcat : cat;
+            it.path = QFileInfo(files[i]).absoluteFilePath();
+            it.title = QFileInfo(files[i]).completeBaseName();
+            it.artist = i == 1 ? QString() : QStringLiteral("Előadó %1").arg(i + 1);
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            const int id = db.addItem(it);
+            if (i == 4) vtItem = id; else ids << id;
+        }
+        db.notifyItemsChanged();
+        window.appendItems(ids);
+        const QVector<Entry> en = db.pendingEntries();
+        if (en.size() < 4) { std::printf("kevés fájl\n"); return 1; }
+        Transition t1;
+        t1.fromEntryId = en[0].id;
+        t1.toEntryId = en[1].id;
+        t1.mixOutMs = 5000;
+        t1.outEndMs = 8000;
+        t1.fadeOutMs = 3000;
+        db.saveTransition(t1);
+        Transition t2;
+        t2.fromEntryId = en[1].id;
+        t2.toEntryId = en[2].id;
+        t2.mixOutMs = 2000;
+        t2.fadeOutMs = 0;                                 // a jingle a saját végéig szól
+        db.saveTransition(t2);
+        Transition t3;
+        t3.fromEntryId = en[2].id;
+        t3.toEntryId = en[3].id;
+        t3.mixOutMs = 2000;
+        t3.fadeOutMs = 1000;
+        t3.vtItemId = vtItem;
+        t3.vtOffsetMs = 0;
+        t3.vtDuckDb = -9;
+        db.saveTransition(t3);
+        emit window.mixPage()->mixSaved({});
+        std::printf("átmenetek: %s · mód: %s\n", window.autoMix() ? "automatikus mix" : "Mix editor", assist ? "asszisztált" : "automata");
+        window.setMode(assist ? MainWindow::Assist : MainWindow::Auto);
+        auto *e = window.engine();
+        struct Stat { int maxPlayers = 0; double threeAt = -1, vtAt = -1; qint64 t0 = 0; bool shot = false; QString threeView; };
+        auto st = std::make_shared<Stat>();
+        QTimer::singleShot(250, &window, [&window] {
+            std::printf("indulás előtt   %s\n   %s\n   sorok: %s\n", qPrintable(window.debugState()), qPrintable(window.playerViewDebug()),
+                        qPrintable(window.rowStatusDebug()));
+            window.grab().save("three_pending.png");
+        });
+        QTimer::singleShot(300, &window, [&window, st] {
+            st->t0 = QDateTime::currentMSecsSinceEpoch();
+            window.next();
+        });
+        QTimer::singleShot(300 + 2000, &window, [&window] {
+            window.grab().save("three_playing.png");
+            std::printf("  2 mp: %s\n", qPrintable(window.playerViewDebug()));
+        });
+        if (assist) {
+            QTimer::singleShot(300 + 5000, &window, [&window] { std::printf("  kézi Következő (jingle)\n"); window.next(); });
+            QTimer::singleShot(300 + 7000, &window, [&window] { std::printf("  kézi Következő (zene2)\n"); window.next(); });
+        }
+        auto *sampler = new QTimer(&window);
+        QObject::connect(sampler, &QTimer::timeout, &window, [e, st, &window] {
+            if (!st->t0) return;
+            const double t = (QDateTime::currentMSecsSinceEpoch() - st->t0) / 1000.0;
+            int n = 0;
+            for (auto ch : {eter::Engine::Player1, eter::Engine::Player2, eter::Engine::Player3}) n += e->source(ch).playing();
+            st->maxPlayers = std::max(st->maxPlayers, n);
+            if (n == 3 && st->threeAt < 0) {
+                st->threeAt = t;
+                st->threeView = window.playerViewDebug();
+            }
+            if (n == 3 && !st->shot && t > st->threeAt + 0.3) {
+                st->shot = true;
+                window.grab().save("three_live.png");
+                std::printf("  három egyszerre: %s\n   %s\n   sorok: %s\n", qPrintable(window.debugState()), qPrintable(window.playerViewDebug()),
+                            qPrintable(window.rowStatusDebug()));
+            }
+            if (e->source(eter::Engine::Vt).playing() && st->vtAt < 0) {
+                st->vtAt = t;
+                QTimer::singleShot(400, &window, [&window] {
+                    window.grab().save("three_vt.png");
+                    std::printf("  voice track szól: %s\n   %s\n", qPrintable(window.debugState()), qPrintable(window.playerViewDebug()));
+                });
+            }
+            static int k = 0;
+            if (++k % 10 == 0) std::printf("  %5.2f s  (%d lejátszó szól)  %s\n", t, n, qPrintable(window.debugState()));
+        });
+        sampler->start(50);
+        const int endMs = qEnvironmentVariableIntValue("ETER_THREE_SECS") > 0 ? qEnvironmentVariableIntValue("ETER_THREE_SECS") * 1000 : 24000;
+        QTimer::singleShot(300 + endMs, &window, [st, &db] {
+            std::printf("legtöbb egyszerre szóló lejátszó: %d · először: %.2f s (%s)\n", st->maxPlayers, st->threeAt, qPrintable(st->threeView));
+            std::printf("voice track indul: %.2f s\n", st->vtAt);
+            QSqlQuery q("SELECT title, player, end_reason FROM play_log ORDER BY id");
+            while (q.next())
+                std::printf("  napló: %-8s lejátszó %d · %s\n", qPrintable(q.value(0).toString()), q.value(1).toInt(), qPrintable(q.value(2).toString()));
+            Q_UNUSED(db);
             QApplication::exit(0);
         });
     }

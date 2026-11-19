@@ -95,7 +95,7 @@ bool Database::open(const QString &path, QString *err)
     int v = version;
     if (v == 0) {
         if (!createSchema(err)) return false;
-        v = 9;
+        v = 10;
     }
     if (v == 1) {
         // 2. séma: az automatikusan megtalált mix pont eltárolása az ütemező pontosabb tervezéséhez.
@@ -200,6 +200,37 @@ bool Database::open(const QString &path, QString *err)
         q.exec("ALTER TABLE clock_slots ADD COLUMN energy_max INTEGER NOT NULL DEFAULT 0");
         q.exec("PRAGMA user_version = 9");
         v = 9;
+    }
+    if (v == 9) {
+        // 10. séma: három lejátszó (A, B, C) – a naplóban a lejátszó száma 1–3 lehet. Az ellenőrzés csak a tábla
+        // újraépítésével bővíthető.
+        q.exec("PRAGMA foreign_keys = OFF");
+        bool ok = q.exec("BEGIN");
+        ok = ok && q.exec("CREATE TABLE play_log_new ("
+                          "id INTEGER PRIMARY KEY, started_at INTEGER NOT NULL, ended_at INTEGER, "
+                          "item_id INTEGER REFERENCES items(id) ON DELETE SET NULL, "
+                          "entry_id INTEGER REFERENCES playlist_entries(id) ON DELETE SET NULL, "
+                          "kind TEXT NOT NULL, title TEXT NOT NULL, artist TEXT NOT NULL DEFAULT '', "
+                          "player INTEGER NOT NULL CHECK (player IN (1,2,3)), "
+                          "mode TEXT NOT NULL CHECK (mode IN ('auto','assist','manual')), "
+                          "end_reason TEXT CHECK (end_reason IN ('finished','mixed','faded','stopped','error'))) STRICT");
+        ok = ok && q.exec("INSERT INTO play_log_new SELECT id, started_at, ended_at, item_id, entry_id, kind, title, artist, "
+                          "player, mode, end_reason FROM play_log");
+        ok = ok && q.exec("DROP TABLE play_log");
+        ok = ok && q.exec("ALTER TABLE play_log_new RENAME TO play_log");
+        ok = ok && q.exec("CREATE INDEX idx_log_started ON play_log(started_at)");
+        ok = ok && q.exec("CREATE INDEX idx_log_item ON play_log(item_id, started_at)");
+        ok = ok && q.exec("PRAGMA user_version = 10");
+        if (ok) ok = q.exec("COMMIT");
+        if (!ok) {
+            const QString text = q.lastError().text();
+            q.exec("ROLLBACK");
+            q.exec("PRAGMA foreign_keys = ON");
+            if (err) *err = TR("Az adatbázis frissítése nem sikerült: %1").arg(text);
+            return false;
+        }
+        q.exec("PRAGMA foreign_keys = ON");
+        v = 10;
     }
     housekeeping();
     return true;
