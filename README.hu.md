@@ -1,7 +1,8 @@
 # Éter
 
-Rádiós adáslebonyolító Linuxra és Windowsra: három lejátszó (A, B, C), cartwall, hangtár, ütemező, mix editor,
-távoli playlist-szerkesztés, adásrögzítés és tartalék playout egyetlen asztali alkalmazásban.
+Rádiós adáslebonyolító Linuxra és Windowsra: három lejátszó (A, B, C) automatikus vagy kézzel beállított keveréssel,
+cartwall, hangtár, ütemező, mix editor, távoli playlist-szerkesztés, adásrögzítés, „most szól” kiírás Icecasthoz és
+tartalék playout egyetlen asztali alkalmazásban.
 
 *English: [README.md](README.md)*
 
@@ -23,6 +24,11 @@ távoli playlist-szerkesztés, adásrögzítés és tartalék playout egyetlen a
   a program keveri a hullámforma alapján (a következő dal eleji csendje kimarad); ahol bármelyik oldal nem zene
   (jingle, hírek, reklám), ott a Mix editorban mentett beállítás érvényes, és a mentett voice track is megszólal.
   *Mix editor* állásban minden átmenet a mentett beállítás szerint szól.
+- **Most szól**: az adásban lévő elem címét minden váltáskor szövegfájlba írja, sablon szerint (`%artist% - %title%`,
+  továbbá `%category%`, `%duration%`, `%next_artist%`, `%next_title%`, `%time%`). Ebből olvashatja a stream kódoló
+  (butt, Liquidsoap, Mixxx, OBS…), egy weboldal vagy egy képernyőfelirat. Jingle és más nem zenei elem alatt
+  maradhat az előző zene címe, de kiírható a saját címe vagy egy állandó szöveg is. Ha kell, az Éter közvetlenül az
+  Icecast szerver metaadatát is frissíti (admin/metadata). Beállítások → Most szól.
 - **Playlist** tervezett adásidővel és óraelválasztókkal. Minden sor mutatja a kezdést, a típusikont,
   a hosszt, a címet és az előadót, valamint az egyedi mix (MIX), a voice track (VT) és a fix időpont (FIX)
   jelzését. A nem zenei elemeket a kategóriájuk színe tölti ki; az adásban és a készenlétben lévő elem
@@ -105,6 +111,10 @@ fut, mindkettő adásba kerülhet: a tartalék a lefagyó vagy áramszünet miat
 ### Egyéb
 
 - Angol és magyar felület (Beállítások → Nyelv).
+- **Adatbázis exportálása és importálása** (Beállítások → Adatbázis): a teljes adatbázis (hangtár, playlistek,
+  ütemező, mixek, cartwall, beállítások – a hangfájlok nélkül) konzisztens másolata mentéshez vagy másik gépre
+  költöztetéshez. Az import ellenőrzi a fájlt, előbb biztonsági mentést készít a mostaniról, majd az importálttal
+  indítja újra az Étert.
 - Egy adatbázissal egyszerre csak egy példány futhat: a második ugyanazt a playlistet játszaná egyszerre.
 
 | Mix editor ráfektetett elemmel | Ütemező |
@@ -139,7 +149,11 @@ A windowsos változat jóval kevesebb tesztelést kapott, mint a linuxos.
 ### Mindkettő
 
 A hangfájlokat a program nem másolja és nem módosítja, a hangtár csak hivatkozik rájuk. A korábbi verziók
-adatbázisát az első indításkor automatikusan frissíti.
+adatbázisát az első indításkor automatikusan frissíti. Az adatbázis mentéséhez vagy másik gépre költöztetéséhez
+a Beállítások → Adatbázis (exportálás, importálás) való.
+
+A Beállítások → Általános és hang lapon mindegyik lejátszóhoz (A, B, C), az előhallgatáshoz és a cartwallhoz külön
+hangkártya választható; a Beállítások → Most szól lapon a címfájl és az Icecast-frissítés állítható be.
 
 Hasznos kapcsolók: `--editor` (távoli szerkesztő), `--backup` (tartalék playout), `--backend NÉV` (Linuxon `pulseaudio`, `alsa`, `jack`;
 Windowson `wasapi`, `dsound`), `--db FÁJL` (másik adatbázis), `--selftest FÁJL` (a hangmotor ellenőrzése egy
@@ -179,7 +193,7 @@ legyen, amelyben nincs szóköz és ékezetes betű, például `C:\eter`.
 
 ### Kiadások
 
-Ha egy `v0.15.0` formájú címkét (tag) töltesz fel, a `.github/workflows/build.yml` munkafolyamat
+Ha egy `v0.21.0` formájú címkét (tag) töltesz fel, a `.github/workflows/build.yml` munkafolyamat
 megépíti az AppImage-et és a windowsos zipet, és egy kiadáshoz (release) csatolja őket.
 
 ## A forrás felépítése
@@ -189,6 +203,7 @@ megépíti az AppImage-et és a windowsos zipet, és egy kiadáshoz (release) cs
 - `src/ui` – főablak, lejátszók, hangtár, ütemező, mix editor és mini mix editor, playlist szerkesztő,
   cartwall, időzítések, távoli szerkesztő
 - `src/net` – a távoli szerkesztés protokollja (soronkénti JSON TCP-n, HMAC-belépés), szerver és kliens
+- `src/core` – hiányzó fájlok ellenőrzése, „most szól” kiírás (címfájl, Icecast-frissítés)
 - `src/db` – SQLite réteg és adatbázis-frissítések; `schema.sql` – az adatbázis sémája
 - `src/sched` – playlist-generálás
 - `packaging` – asztali bejegyzés, windowsos erőforrások, az AppImage-ben használt libproxy-helyettesítő

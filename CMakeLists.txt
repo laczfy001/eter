@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(eter VERSION 0.19.0 LANGUAGES C CXX)
+project(eter VERSION 0.21.0 LANGUAGES C CXX)
 if(WIN32)
     enable_language(RC)
 endif()
@@ -55,10 +55,12 @@ add_executable(eter
     src/net/Remote.cpp
     src/ui/RemoteEditor.cpp
     src/core/FileCheck.cpp
+    src/core/NowPlaying.cpp
     src/ui/MainWindowFiles.cpp
     src/ui/MainWindowTiming.cpp
     src/ui/MainWindowUpload.cpp
     src/ui/MainWindowBackup.cpp
+    src/ui/MainWindowDatabase.cpp
     src/ui/BackupWindow.cpp
     src/audio/ProgramLogger.cpp
     src/audio/Analysis.cpp

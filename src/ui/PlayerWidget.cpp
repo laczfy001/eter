@@ -402,6 +402,12 @@ void PlayerWidget::tick(float *peakL, float *peakR)
     }
 }
 
+void PlayerWidget::setMeta(const QString &title, const QString &artist)
+{
+    if (!title.isEmpty()) title_->setText(title);
+    artist_->setText(artist);
+}
+
 void PlayerWidget::setOutputName(const QString &name)
 {
     if (name == outputName_) return;

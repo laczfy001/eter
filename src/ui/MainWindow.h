@@ -388,6 +388,9 @@ public:
 private:
     // Adásrögzítés (logger)
     std::unique_ptr<ProgramLogger> logger_;
+    class NowPlaying *nowPlaying_ = nullptr;
+    qint64 nowIdleSince_ = 0;              // mióta nem szól semmi (a rövid szünetek nem számítanak)
+    void updateNowPlaying();
     QLabel *loggerStatus_ = nullptr;
     std::vector<float> tapBuf_;
     void pumpLogger();
@@ -395,6 +398,21 @@ public:
     void configureLogger();                            // a beállítások szerint indítja vagy leállítja
     QString loggerStatus() const;
     ProgramLogger *logger() const { return logger_.get(); }
+    // „Most szól” kiírás (fájl, Icecast): a beállítások mentése után újraolvassa őket.
+    void configureNowPlaying();
+    // Adatbázis exportálása (konzisztens másolat) és importálása (ellenőrzés, biztonsági mentés, újraindítás).
+    bool exportDatabase(QWidget *parent);
+    void importDatabase(QWidget *parent);
+    QString databaseSummary() const;
+    Database *database() const { return db_; }
+    // A program indulásakor: ha importálásra váró fájl van, az lép az adatbázis helyére. Üres: rendben (vagy nem volt).
+    static QString applyPendingImport(const QString &dbPath);
+    // A párbeszédablakok nélküli lépések (a tesztek is ezeket hívják).
+    bool exportDatabaseTo(const QString &target, QString *err = nullptr);
+    bool stageDatabaseImport(const QString &source, QString *err = nullptr, QString *backupPath = nullptr);
+    void relaunch(const QStringList &args);
+    QString nowPlayingStatus() const;
+    class NowPlaying *nowPlaying() const { return nowPlaying_; }
 private:
     remote::Server *remote_ = nullptr;
     // Feltöltések a szerkesztőkből: azonosító → a készülő fájl

@@ -6,9 +6,11 @@
 #include "net/Remote.h"
 #include "MainWindow.h"
 #include "audio/ProgramLogger.h"
+#include "core/NowPlaying.h"
 
 #include <QDesktopServices>
 #include <QDir>
+#include <QFileInfo>
 #include <QFileDialog>
 #include <QTabWidget>
 #include <QMessageBox>
@@ -251,6 +253,220 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
         connect(t, &QTimer::timeout, this, [this, status] { status->setText(TR("Állapot: %1").arg(main_->loggerStatus())); });
         t->start(1000);
         status->setText(TR("Állapot: %1").arg(main_->loggerStatus()));
+    }
+
+    root = newPage(TR("Most szól"));
+    {
+        // „Most szól”: a szóló elem címe fájlba és/vagy közvetlenül az Icecast szerverre.
+        const NowPlaying::Config cur = NowPlaying::loadConfig();
+        auto *cap = new QLabel(TR("MOST SZÓL – FÁJLBA ÍRÁS"));
+        cap->setObjectName("caption");
+        root->addWidget(cap);
+        auto *about = new QLabel(TR("Az adásban lévő elem címét egy szövegfájlba írja minden váltáskor. A stream kódoló "
+                                    "(például butt, Liquidsoap, Mixxx, OBS) ebből a fájlból tudja az Icecast vagy Shoutcast "
+                                    "szerverre küldeni a címet, és weboldal vagy képernyőfelirat is olvashatja."));
+        about->setObjectName("small");
+        about->setWordWrap(true);
+        root->addWidget(about);
+        auto *fileOn = new QCheckBox(TR("Kiírás fájlba"));
+        fileOn->setObjectName("nowFileOn");
+        fileOn->setChecked(cur.fileEnabled);
+        root->addWidget(fileOn);
+        auto *g = new QGridLayout;
+        g->setHorizontalSpacing(10);
+        g->setVerticalSpacing(8);
+        g->setColumnStretch(1, 1);
+        auto *path = new QLineEdit(QDir::toNativeSeparators(cur.path));
+        path->setObjectName("nowPath");
+        path->setPlaceholderText(QDir::toNativeSeparators(NowPlaying::defaultPath()));
+        auto *browse = new QPushButton(TR("Tallózás…"));
+        g->addWidget(new QLabel(TR("Fájl")), 0, 0);
+        g->addWidget(path, 0, 1);
+        g->addWidget(browse, 0, 2);
+        auto *format = new QLineEdit(cur.format);
+        format->setObjectName("nowFormat");
+        g->addWidget(new QLabel(TR("Formátum")), 1, 0);
+        g->addWidget(format, 1, 1, 1, 2);
+        auto *fields = new QLabel(TR("Mezők: %artist% előadó · %title% cím · %category% kategória · %duration% hossz · "
+                                     "%next_artist%, %next_title% a következő elem · %time% idő · \\n új sor. "
+                                     "Ha egy mező üres, a mellette álló elválasztó (például „ - ”) elmarad."));
+        fields->setObjectName("small");
+        fields->setWordWrap(true);
+        fields->setTextFormat(Qt::PlainText);
+        g->addWidget(fields, 2, 1, 1, 2);
+        auto *preview = new QLabel;
+        preview->setObjectName("small");
+        preview->setTextFormat(Qt::PlainText);
+        g->addWidget(new QLabel(TR("Előnézet")), 3, 0);
+        g->addWidget(preview, 3, 1, 1, 2);
+        auto *nonMusic = new QComboBox;
+        nonMusic->setObjectName("nowNonMusic");
+        nonMusic->addItem(TR("az előző zene címe marad"), int(NowPlaying::KeepLast));
+        nonMusic->addItem(TR("a saját címe (például a jingle neve)"), int(NowPlaying::OwnTitle));
+        nonMusic->addItem(TR("ez a szöveg:"), int(NowPlaying::FixedText));
+        nonMusic->setCurrentIndex(std::max(0, nonMusic->findData(int(cur.nonMusic))));
+        auto *nonMusicText = new QLineEdit(cur.nonMusicText);
+        nonMusicText->setPlaceholderText(TR("például a rádió neve"));
+        auto *nmRow = new QHBoxLayout;
+        nmRow->addWidget(nonMusic);
+        nmRow->addWidget(nonMusicText, 1);
+        g->addWidget(new QLabel(TR("Nem zenei elemnél")), 4, 0);
+        g->addLayout(nmRow, 4, 1, 1, 2);
+        auto *idle = new QLineEdit(cur.idleText);
+        idle->setPlaceholderText(TR("üres fájl"));
+        g->addWidget(new QLabel(TR("Ha semmi sem szól")), 5, 0);
+        g->addWidget(idle, 5, 1, 1, 2);
+        auto *bom = new QCheckBox(TR("UTF-8 BOM a fájl elején (csak ha az olvasó program ékezethibásan mutatja a címet)"));
+        bom->setChecked(cur.bom);
+        g->addWidget(bom, 6, 1, 1, 2);
+        root->addLayout(g);
+
+        auto *iceCap = new QLabel(TR("ICECAST – KÖZVETLEN FRISSÍTÉS"));
+        iceCap->setObjectName("caption");
+        root->addWidget(iceCap);
+        auto *iceAbout = new QLabel(TR("Ha a kódoló nem tud fájlból címet olvasni, a program maga is elküldheti a címet az "
+                                       "Icecast szervernek (admin/metadata). A felhasználó az Icecast admin felhasználója, vagy "
+                                       "„source” a mount saját jelszavával. A jelszó ezen a gépen, a program beállításai között "
+                                       "tárolódik."));
+        iceAbout->setObjectName("small");
+        iceAbout->setWordWrap(true);
+        root->addWidget(iceAbout);
+        auto *iceOn = new QCheckBox(TR("Cím küldése az Icecast szervernek"));
+        iceOn->setObjectName("nowIceOn");
+        iceOn->setChecked(cur.icecastEnabled);
+        root->addWidget(iceOn);
+        auto *ig = new QGridLayout;
+        ig->setHorizontalSpacing(10);
+        ig->setVerticalSpacing(8);
+        ig->setColumnStretch(1, 1);
+        ig->setColumnStretch(3, 1);
+        auto *iceUrl = new QLineEdit(cur.icecastUrl);
+        iceUrl->setPlaceholderText(QStringLiteral("http://localhost:8000"));
+        auto *iceMount = new QLineEdit(cur.icecastMount);
+        iceMount->setPlaceholderText(QStringLiteral("/stream"));
+        auto *iceUser = new QLineEdit(cur.icecastUser);
+        auto *icePass = new QLineEdit(cur.icecastPassword);
+        icePass->setEchoMode(QLineEdit::Password);
+        ig->addWidget(new QLabel(TR("Szerver")), 0, 0);
+        ig->addWidget(iceUrl, 0, 1);
+        ig->addWidget(new QLabel(TR("Mount")), 0, 2);
+        ig->addWidget(iceMount, 0, 3);
+        ig->addWidget(new QLabel(TR("Felhasználó")), 1, 0);
+        ig->addWidget(iceUser, 1, 1);
+        ig->addWidget(new QLabel(TR("Jelszó")), 1, 2);
+        ig->addWidget(icePass, 1, 3);
+        root->addLayout(ig);
+
+        auto *applyRow = new QHBoxLayout;
+        auto *apply = new QPushButton(TR("Alkalmazás"));
+        apply->setObjectName("nowApply");
+        applyRow->addWidget(apply);
+        applyRow->addStretch(1);
+        root->addLayout(applyRow);
+        auto *status = new QLabel;
+        status->setObjectName("small");
+        status->setWordWrap(true);
+        status->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        root->addWidget(status);
+        root->addStretch(1);
+
+        auto refresh = [=] {
+            nonMusicText->setEnabled(nonMusic->currentData().toInt() == NowPlaying::FixedText);
+            for (QWidget *w : std::initializer_list<QWidget *>{path, browse, format, nonMusic, idle, bom})
+                w->setEnabled(fileOn->isChecked() || iceOn->isChecked());
+            for (QWidget *w : std::initializer_list<QWidget *>{iceUrl, iceMount, iceUser, icePass}) w->setEnabled(iceOn->isChecked());
+            NowPlaying::Track t, n;
+            t.itemId = 1;
+            t.title = TR("Hajnali vonat");
+            t.artist = TR("Kormorán Híd");
+            t.category = TR("Zene");
+            t.durationMs = 241000;
+            n.title = TR("Lassú folyó");
+            n.artist = TR("Holdkomp");
+            preview->setText(NowPlaying::render(format->text(), t, n).replace(QLatin1Char('\n'), QStringLiteral(" ⏎ ")));
+        };
+        refresh();
+        connect(format, &QLineEdit::textChanged, this, refresh);
+        connect(nonMusic, &QComboBox::currentIndexChanged, this, refresh);
+        connect(fileOn, &QCheckBox::toggled, this, refresh);
+        connect(iceOn, &QCheckBox::toggled, this, refresh);
+        connect(browse, &QPushButton::clicked, this, [this, path] {
+            const QString start = path->text().isEmpty() ? NowPlaying::defaultPath() : path->text();
+            const QString f = QFileDialog::getSaveFileName(this, TR("A „Most szól” fájl"), start, TR("Szövegfájl (*.txt);;Minden fájl (*)"),
+                                                           nullptr, QFileDialog::DontConfirmOverwrite);
+            if (!f.isEmpty()) path->setText(QDir::toNativeSeparators(f));
+        });
+        connect(apply, &QPushButton::clicked, this, [=, this] {
+            NowPlaying::Config c;
+            c.fileEnabled = fileOn->isChecked();
+            c.path = QDir::fromNativeSeparators(path->text().trimmed());
+            c.format = format->text().isEmpty() ? NowPlaying::Config().format : format->text();
+            c.bom = bom->isChecked();
+            c.nonMusic = static_cast<NowPlaying::NonMusic>(nonMusic->currentData().toInt());
+            c.nonMusicText = nonMusicText->text();
+            c.idleText = idle->text();
+            c.icecastEnabled = iceOn->isChecked();
+            c.icecastUrl = iceUrl->text().trimmed();
+            c.icecastMount = iceMount->text().trimmed();
+            c.icecastUser = iceUser->text().trimmed();
+            c.icecastPassword = icePass->text();
+            NowPlaying::saveConfig(c);
+            main_->configureNowPlaying();
+            status->setText(TR("Állapot: %1").arg(main_->nowPlayingStatus()));
+        });
+        auto *t = new QTimer(this);
+        connect(t, &QTimer::timeout, this, [this, status] { status->setText(TR("Állapot: %1").arg(main_->nowPlayingStatus())); });
+        t->start(1000);
+        status->setText(TR("Állapot: %1").arg(main_->nowPlayingStatus()));
+    }
+
+    root = newPage(TR("Adatbázis"));
+    {
+        // Az adatbázis (hangtár, playlistek, ütemező, mixek, beállítások) exportálása és importálása.
+        auto *cap = new QLabel(TR("ADATBÁZIS"));
+        cap->setObjectName("caption");
+        root->addWidget(cap);
+        auto *about = new QLabel(TR("Az Éter mindent egy SQLite adatbázisban tárol: a hangtárat (a fájlok hivatkozásait és "
+                                    "adatait), a kategóriákat, a playlisteket, az ütemezőt, a mentett mixeket, a cartwallt és a "
+                                    "beállításokat. A hangfájlok nincsenek benne. Az exporttal ebből készíthetsz mentést, vagy "
+                                    "átviheted egy másik gépre; az importtal visszatöltheted."));
+        about->setObjectName("small");
+        about->setWordWrap(true);
+        root->addWidget(about);
+        auto *summary = new QLabel(main_->databaseSummary());
+        summary->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        summary->setWordWrap(true);
+        root->addWidget(summary);
+        auto *row = new QHBoxLayout;
+        auto *exportBtn = new QPushButton(TR("Exportálás…"));
+        exportBtn->setObjectName("dbExport");
+        exportBtn->setToolTip(TR("Az adatbázis másolatát menti egy fájlba. Adás közben is használható."));
+        auto *importBtn = new QPushButton(TR("Importálás…"));
+        importBtn->setObjectName("dbImport");
+        importBtn->setToolTip(TR("Egy exportált adatbázisra cseréli a mostanit (előtte biztonsági mentés készül), majd újraindul."));
+        auto *openBtn = new QPushButton(TR("Mappa megnyitása"));
+        row->addWidget(exportBtn);
+        row->addWidget(importBtn);
+        row->addWidget(openBtn);
+        row->addStretch(1);
+        root->addLayout(row);
+        auto *notes = new QLabel(TR("Importálás: a program ellenőrzi, hogy a fájl az Éter ép adatbázisa-e, a mostaniról biztonsági "
+                                    "mentést készít a „biztonsagi-mentesek” mappába, majd újraindul az importált adatbázissal. "
+                                    "Régebbi verzióból származó adatbázist magától frissít; újabb verzióét nem fogadja el. "
+                                    "Importálni csak akkor lehet, ha semmi sem szól.\n"
+                                    "Ha a hangfájlok a másik gépen máshol vannak, a Hiányzó fájlok ellenőrzésével köthetők újra össze."));
+        notes->setObjectName("small");
+        notes->setWordWrap(true);
+        root->addWidget(notes);
+        root->addStretch(1);
+        connect(exportBtn, &QPushButton::clicked, this, [this, summary] {
+            main_->exportDatabase(this);
+            summary->setText(main_->databaseSummary());
+        });
+        connect(importBtn, &QPushButton::clicked, this, [this] { main_->importDatabase(this); });
+        connect(openBtn, &QPushButton::clicked, this, [this] {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(main_->database()->path()).absolutePath()));
+        });
     }
 
     root = newPage(TR("Hálózat"));

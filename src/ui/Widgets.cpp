@@ -93,7 +93,8 @@ void WaveformWidget::paintEvent(QPaintEvent *)
             f.setWeight(QFont::Bold);
             p.setFont(f);
             const int tw = QFontMetrics(f).horizontalAdvance(mixLabel_) + 8;
-            const QRect box(std::max(0, mx - tw - 2), 1, tw, 14);
+            // A jel bal oldalára; ha ott nem fér el, a jobb oldalára.
+            const QRect box(mx - tw - 2 >= 0 ? mx - tw - 2 : std::min(mx + 4, w - tw), 1, tw, 14);
             p.fillRect(box, theme::bg);
             p.setPen(mixColor_);
             p.drawText(box, Qt::AlignCenter, mixLabel_);

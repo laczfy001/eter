@@ -144,6 +144,7 @@ public:
     explicit Database(QObject *parent = nullptr);
     ~Database() override;
 
+    static constexpr int kSchemaVersion = 10;   // a legújabb séma (PRAGMA user_version)
     bool open(const QString &path, QString *err = nullptr);
     QString path() const { return path_; }
 

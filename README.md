@@ -1,7 +1,8 @@
 # Éter
 
-Radio playout and automation for Linux and Windows: three players (A, B, C), a cartwall, a music library,
-a scheduler, a mix editor, remote playlist editing, a program logger and a backup playout in one desktop application.
+Radio playout and automation for Linux and Windows: three players (A, B, C) with automatic or hand-made mixing,
+a cartwall, a music library, a scheduler, a mix editor, remote playlist editing, a program logger, now playing output
+for Icecast and a backup playout in one desktop application.
 
 *Magyar leírás: [README.hu.md](README.hu.md)*
 
@@ -23,6 +24,11 @@ a scheduler, a mix editor, remote playlist editing, a program logger and a backu
   mixed by the program from the waveform (silence at the start of the next song is skipped); transitions where
   either side is not music (jingles, news, ads) still follow their saved Mix editor settings, and saved voice
   tracks still play. With *Mix editor* every transition follows its saved settings.
+- **Now playing**: the title of the item on air is written to a text file at every change, from a template
+  (`%artist% - %title%`, also `%category%`, `%duration%`, `%next_artist%`, `%next_title%`, `%time%`), for a stream
+  encoder (butt, Liquidsoap, Mixxx, OBS…), a website or an on-screen caption. For jingles and other non-music items
+  the previous song's title can stay, or their own title or a fixed text can be shown. Optionally Éter updates the
+  Icecast server's metadata directly (admin/metadata). Settings → Now playing.
 - **Playlist** with planned air times and hour separators. Each row shows the start time, a type icon,
   the length, title and artist, and marks for custom mixes (MIX), voice tracks (VT) and fixed times (FIX).
   Non-music items are filled with their category colour; the item on air and the one on standby stand out,
@@ -105,6 +111,9 @@ keep running, both could be on air: the backup is meant for a main computer that
 ### Other
 
 - English and Hungarian interface (Settings → Language).
+- **Database export and import** (Settings → Database): a consistent copy of the whole database (library, playlists,
+  scheduler, mixes, cartwall, settings – not the audio files) for backups or moving to another computer. Import checks
+  the file, backs up the current database first and restarts Éter with the imported one.
 - Only one copy can run with the same database: a second copy would play the same playlist at the same time.
 
 | Mix editor with an overlaid item | Scheduler |
@@ -139,7 +148,11 @@ The Windows build has been tested far less than the Linux one.
 ### Both
 
 Audio files are never copied or modified; the library only refers to them. Databases from older versions
-are upgraded automatically on first start.
+are upgraded automatically on first start. To back up the database or move it to another computer, use
+Settings → Database (export, import).
+
+Settings → General and audio chooses a sound card for each player (A, B, C), the preview and the cartwall; Settings → Now playing
+sets up the title file and the Icecast update.
 
 Useful options: `--editor` (remote editor), `--backup` (backup playout), `--backend NAME` (`pulseaudio`, `alsa`, `jack` on Linux;
 `wasapi`, `dsound` on Windows), `--db FILE` (use another database), `--selftest FILE` (check the audio
@@ -179,7 +192,7 @@ accented letters, for example `C:\eter`.
 
 ### Releases
 
-Pushing a tag such as `v0.15.0` makes the GitHub workflow in `.github/workflows/build.yml`
+Pushing a tag such as `v0.21.0` makes the GitHub workflow in `.github/workflows/build.yml`
 build the AppImage and the Windows zip and attach them to a release.
 
 ## Source layout
@@ -189,6 +202,7 @@ build the AppImage and the Windows zip and attach them to a release.
 - `src/ui` – main window, players, library, scheduler, mix editor and mini mix editor, playlist editor,
   cartwall, timed events, remote editor
 - `src/net` – remote editing protocol (JSON lines over TCP, HMAC login), server and client
+- `src/core` – missing file check, now playing output (title file, Icecast update)
 - `src/db` – SQLite layer and migrations; `schema.sql` – the database schema
 - `src/sched` – playlist generation
 - `packaging` – desktop entry, Windows resources, the libproxy stand-in used in the AppImage

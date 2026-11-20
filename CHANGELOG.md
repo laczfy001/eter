@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.21.0
+- Settings → Database: export and import the SQLite database (library, categories, playlists, scheduler, saved mixes,
+  cartwall, settings; not the audio files).
+  - Export makes a consistent copy with SQLite `VACUUM INTO`, so it also works while on air.
+  - Import checks that the file is an intact Éter database (SQLite header, quick check, tables, schema version), shows
+    what is in it, backs up the current database to the `biztonsagi-mentesek` folder next to it, then restarts Éter; the
+    imported file takes the old one's place at startup. A database from an older version is upgraded as usual; one from
+    a newer version is refused. Import is refused while something is playing.
+  - The restarted instance waits for the previous one to exit (the single-instance lock).
+- The players show the title and artist from the library (as the playlist does), not the file's own tags.
+- The mix point label on the waveform moves to the right of the mark when it would not fit on the left.
+- README: updated for three players, automatic mix, now playing and database export/import; new On air screenshot.
+
+## 0.20.0
+- Now playing (Settings → Now playing): the title of the item on air is written to a text file at every change, for
+  stream encoders (butt, Liquidsoap, Mixxx, OBS…), websites or on-screen captions. The file is replaced in one step,
+  so readers never see a half-written line; if a reader locks it (Windows), it is overwritten in place.
+  - Template with `%artist%`, `%title%`, `%category%`, `%duration%`, `%next_artist%`, `%next_title%`, `%time%` and `\n`;
+    a separator next to an empty field is left out (a jingle with no artist is written as just its title).
+  - Non-music items (jingles, news, ads, voice tracks): keep the previous song's title (default), show their own
+    title, or a fixed text such as the station name.
+  - Text when nothing has played for 3 seconds (default: empty file); it is also written when Éter is closed. The file
+    is not touched until the first item plays, so a backup machine does not overwrite it.
+  - Optional UTF-8 BOM for programs that need it.
+  - Optional direct Icecast update: Éter sends the title to the server (admin/metadata, mode=updinfo, UTF-8) with the
+    admin user or "source" and the mount password. The status line shows the last update or the error.
+
 ## 0.19.0
 - Three players: A, B and C. The main window shows one big player, always the one on air (otherwise the one on
   standby), with its letter and output. A strip under it shows all three players (ON AIR / FADING / PLAYING /

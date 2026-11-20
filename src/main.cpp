@@ -1,3 +1,4 @@
+#include "core/NowPlaying.h"
 #include "audio/Engine.h"
 #include "db/Database.h"
 #include "ui/Library.h"
@@ -49,6 +50,7 @@
 #include <QRegularExpression>
 #include "net/Remote.h"
 #include <QTabWidget>
+#include <QProcess>
 #include <QRandomGenerator>
 #include <QElapsedTimer>
 #include "audio/Analysis.h"
@@ -375,9 +377,10 @@ int main(int argc, char **argv)
     QCommandLineOption mixTestOpt("mixtest", QStringLiteral("Mix forgatókönyv (fejlesztéshez)."));
     QCommandLineOption recTestOpt("rectest", QStringLiteral("Felvétel forgatókönyv (fejlesztéshez)."));
     QCommandLineOption schedTestOpt("schedtest", QStringLiteral("Ütemező forgatókönyv (fejlesztéshez)."));
+    QCommandLineOption dbTestOpt("dbtest", QStringLiteral("Adatbázis export és import (fejlesztéshez)."));
     QCommandLineOption threeTestOpt("threetest", QStringLiteral("Három lejátszó: zene → jingle → zene, automatikus mix (fejlesztéshez)."));
     QCommandLineOption fakeTimeOpt("fake-time", QStringLiteral("A program órája ettől az időponttól indul (fejlesztéshez)."), "ÓÓ:pp:mm");
-    parser.addOptions({backendOpt, dbOpt, selfTestOpt, shotOpt, iconOpt, uiTestOpt, importTestOpt, schedTestOpt, fakeTimeOpt, mixTestOpt, recTestOpt, plTestOpt, cartTestOpt, editTestOpt, nextTestOpt, eventTestOpt, lookTestOpt, overlayTestOpt, editorOpt, serveTestOpt, countTestOpt, clickTestOpt, fileTestOpt, fixTestOpt, loggerTestOpt, bpmOpt, flowTestOpt, backupOpt, threeTestOpt});
+    parser.addOptions({backendOpt, dbOpt, selfTestOpt, shotOpt, iconOpt, uiTestOpt, importTestOpt, schedTestOpt, fakeTimeOpt, mixTestOpt, recTestOpt, plTestOpt, cartTestOpt, editTestOpt, nextTestOpt, eventTestOpt, lookTestOpt, overlayTestOpt, editorOpt, serveTestOpt, countTestOpt, clickTestOpt, fileTestOpt, fixTestOpt, loggerTestOpt, bpmOpt, flowTestOpt, backupOpt, threeTestOpt, dbTestOpt});
     parser.addPositionalArgument("fájlok", QStringLiteral("Induláskor importálandó hangfájlok vagy mappák."), "[fájlok…]");
     parser.process(app);
 
@@ -582,7 +585,8 @@ int main(int argc, char **argv)
     QDir().mkpath(QFileInfo(dbPath).absolutePath());
     QLockFile instanceLock(dbPath + QStringLiteral(".lock"));
     instanceLock.setStaleLockTime(0);                 // csak egy ténylegesen futó folyamat zárol (összeomlás után nem ragad be)
-    if (!instanceLock.tryLock(200)) {
+    // Újraindításkor (például adatbázis-import után) megvárja, amíg az előző példány kilép.
+    if (!instanceLock.tryLock(qEnvironmentVariableIsSet("ETER_RELAUNCH") ? 20000 : 200)) {
         qint64 pid = 0;
         QString host, app;
         instanceLock.getLockInfo(&pid, &host, &app);
@@ -591,6 +595,14 @@ int main(int argc, char **argv)
                              TR("Az Éter már fut ezzel az adatbázissal (folyamat: %1).\n\nKét példány ugyanazt a playlistet "
                                 "játszaná egyszerre, ezért ez a példány nem indul el.").arg(pid));
         return 1;
+    }
+    {
+        const bool pending = QFile::exists(dbPath + QStringLiteral(".import"));
+        const QString importErr = MainWindow::applyPendingImport(dbPath);
+        if (!importErr.isEmpty())
+            QMessageBox::warning(nullptr, QStringLiteral("Éter"), TR("Az adatbázis importálása nem sikerült: %1\n\nA program a korábbi adatbázissal indul.").arg(importErr));
+        else if (pending)
+            std::fprintf(stderr, "Importált adatbázis a helyén: %s\n", qPrintable(dbPath));
     }
     if (!db.open(dbPath, &dbErr)) {
         QMessageBox::critical(nullptr, QStringLiteral("Éter"),
@@ -619,7 +631,7 @@ int main(int argc, char **argv)
         QTimer::singleShot(qEnvironmentVariableIntValue("ETER_WATCH_STATE") * 1000, [] { QApplication::exit(0); });
     }
     const QStringList files = parser.positionalArguments();
-    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt) && !parser.isSet(threeTestOpt)) window.library()->importPaths(files);
+    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt) && !parser.isSet(threeTestOpt) && !parser.isSet(dbTestOpt)) window.library()->importPaths(files);
 
     if (parser.isSet(importTestOpt)) {
         // Az importáló ablak teljes útja: mappa, kategóriaválasztás, beolvasás.
@@ -1763,6 +1775,82 @@ int main(int argc, char **argv)
             QApplication::exit(0);
         });
     }
+    if (parser.isSet(dbTestOpt)) {
+        // Adatbázis export és import: export → módosítás → hibás fájlok elutasítása → import előkészítése →
+        // újraindulás (ETER_DBTEST_RELAUNCH: az új példány argumentumai). Az eredményt a hívó ellenőrzi.
+        const int cat = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        QVector<int> ids;
+        for (const QString &f : files) {
+            Item it;
+            it.categoryId = cat;
+            it.path = QFileInfo(f).absoluteFilePath();
+            it.title = QFileInfo(f).completeBaseName();
+            ids << db.addItem(it);
+        }
+        db.notifyItemsChanged();
+        window.appendItems(ids);
+        auto count = [] {
+            QSqlQuery q("SELECT COUNT(*) FROM items");
+            return q.next() ? q.value(0).toInt() : -1;
+        };
+        const QString dir = qEnvironmentVariable("ETER_DBTEST_DIR", QDir::tempPath());
+        const QString exp = dir + QStringLiteral("/export 'próba'.sqlite");
+        QString err;
+        const bool ok = window.exportDatabaseTo(exp, &err);
+        std::printf("export: %s · %lld bájt · elemek: %d %s\n", ok ? "ok" : "HIBA", (long long)QFileInfo(exp).size(), count(), qPrintable(err));
+        std::printf("összegzés: %s\n", qPrintable(window.databaseSummary().replace('\n', " | ")));
+        Item extra;
+        extra.categoryId = cat;
+        extra.path = QStringLiteral("/nincs/ilyen.mp3");
+        extra.title = QStringLiteral("csak a régiben");
+        db.addItem(extra);
+        std::printf("módosítás után elemek: %d\n", count());
+        // Hibás fájlok
+        QFile bad(dir + QStringLiteral("/nem-adatbazis.sqlite"));
+        bad.open(QIODevice::WriteOnly);
+        bad.write("ez csak szöveg");
+        bad.close();
+        QString e1, e2;
+        const bool r1 = window.stageDatabaseImport(bad.fileName(), &e1);
+        std::printf("szövegfájl importja: %s (%s)\n", r1 ? "ELFOGADVA" : "elutasítva", qPrintable(e1.replace('\n', ' ')));
+        const QString newer = dir + QStringLiteral("/ujabb.sqlite");
+        QFile::copy(exp, newer);
+        {
+            QSqlDatabase n = QSqlDatabase::addDatabase("QSQLITE", "newer");
+            n.setDatabaseName(newer);
+            n.open();
+            QSqlQuery(n).exec(QStringLiteral("PRAGMA user_version = 99"));
+            n.close();
+        }
+        QSqlDatabase::removeDatabase("newer");
+        const bool r2 = window.stageDatabaseImport(newer, &e2);
+        std::printf("újabb séma importja: %s (%s)\n", r2 ? "ELFOGADVA" : "elutasítva", qPrintable(e2.replace('\n', ' ')));
+        const QString older = qEnvironmentVariable("ETER_DBTEST_OLD");
+        if (!older.isEmpty()) {
+            QString e4;
+            const bool r4 = window.stageDatabaseImport(older, &e4);
+            std::printf("régi (0.18-as) adatbázis importja: %s %s\n", r4 ? "elfogadva" : "ELUTASÍTVA", qPrintable(e4));
+            QFile::remove(db.path() + ".import");
+        }
+        QString backup, e3;
+        const bool staged = window.stageDatabaseImport(exp, &e3, &backup);
+        std::printf("import előkészítve: %s · biztonsági mentés: %s (%lld bájt) %s\n", staged ? "ok" : "HIBA",
+                    qPrintable(QFileInfo(backup).fileName()), (long long)QFileInfo(backup).size(), qPrintable(e3));
+        std::printf("várakozó fájl: %s\n", QFile::exists(db.path() + ".import") ? "van" : "NINCS");
+        std::fflush(stdout);
+        const QString again = qEnvironmentVariable("ETER_DBTEST_RELAUNCH");
+        QTimer::singleShot(500, &window, [&window, again] {
+            if (again.isEmpty()) QApplication::exit(0);
+            else window.relaunch(QProcess::splitCommand(again));
+        });
+        if (qEnvironmentVariableIsSet("ETER_DBTEST_MODAL"))
+            QTimer::singleShot(0, &window, [&window] {
+                // Mint a valóságban: az újraindítás a nyitott (modális) Beállítások ablakból indul.
+                SettingsDialog dlg(&window);
+                dlg.exec();
+                std::printf("a Beállítások ablak bezárult\n");
+            });
+    }
     if (parser.isSet(threeTestOpt)) {
         // Fájlok: zene1 jingle zene2 zene3 [vt]. Zene1 → jingle: a zene1 a mix pont után még 3 mp-ig kiúszik; a jingle
         // 2 mp után átad a zene2-nek (nem zene: teljes hangerővel szól tovább). Így egy ideig mindhárom lejátszó szól.
@@ -1814,6 +1902,42 @@ int main(int argc, char **argv)
         db.saveTransition(t3);
         emit window.mixPage()->mixSaved({});
         std::printf("átmenetek: %s · mód: %s\n", window.autoMix() ? "automatikus mix" : "Mix editor", assist ? "asszisztált" : "automata");
+        if (qEnvironmentVariableIsSet("ETER_NOW_FILE")) {
+            // „Most szól” kiírás: minden változásnál a fájl tartalma (és ha van, az Icecast-próbaszerver).
+            NowPlaying::Config nc;
+            nc.fileEnabled = true;
+            nc.path = qEnvironmentVariable("ETER_NOW_FILE");
+            nc.format = qEnvironmentVariable("ETER_NOW_FORMAT", QStringLiteral("%artist% - %title%"));
+            const QString nm = qEnvironmentVariable("ETER_NOW_NONMUSIC");
+            nc.nonMusic = nm == QLatin1String("own") ? NowPlaying::OwnTitle : nm == QLatin1String("text") ? NowPlaying::FixedText : NowPlaying::KeepLast;
+            nc.nonMusicText = QStringLiteral("Éter Rádió");
+            nc.idleText = QStringLiteral("Éter Rádió – szünet");
+            nc.icecastEnabled = qEnvironmentVariableIsSet("ETER_NOW_ICECAST");
+            nc.icecastUrl = qEnvironmentVariable("ETER_NOW_ICECAST");
+            nc.icecastMount = QStringLiteral("/élő+adás");
+            nc.icecastUser = QStringLiteral("source");
+            nc.icecastPassword = QStringLiteral("hackme");
+            NowPlaying::saveConfig(nc);
+            window.configureNowPlaying();
+            if (qEnvironmentVariableIsSet("ETER_NOW_SHOT"))
+                QTimer::singleShot(4000, &window, [&window] {
+                    auto *dlg = new SettingsDialog(&window);
+                    dlg->resize(820, 860);
+                    dlg->show();
+                    if (auto *tabs = dlg->findChild<QTabWidget *>("settingsTabs"))
+                        for (int i = 0; i < tabs->count(); ++i)
+                            if (tabs->tabText(i) == qEnvironmentVariable("ETER_SHOT_TAB", TR("Most szól"))) tabs->setCurrentIndex(i);
+                    QTimer::singleShot(1500, dlg, [dlg] {
+                        dlg->grab().save(qEnvironmentVariable("ETER_NOW_SHOT"));
+                        dlg->close();
+                    });
+                });
+            QObject::connect(window.nowPlaying(), &NowPlaying::changed, &window, [nc](const QString &text) {
+                QFile f(nc.path);
+                f.open(QIODevice::ReadOnly);
+                std::printf("  MOST SZÓL: „%s” (fájlban: „%s”)\n", qPrintable(text), f.readAll().constData());
+            });
+        }
         window.setMode(assist ? MainWindow::Assist : MainWindow::Auto);
         auto *e = window.engine();
         struct Stat { int maxPlayers = 0; double threeAt = -1, vtAt = -1; qint64 t0 = 0; bool shot = false; QString threeView; };

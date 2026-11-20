@@ -53,6 +53,8 @@ public:
     int index() const { return index_; }   // 0 = A, 1 = B, 2 = C
     QString letter() const { return QString(QChar('A' + index_)); }
     void setOutputName(const QString &name);
+    // A hangtárban megadott cím és előadó (a fájl saját címkéi helyett).
+    void setMeta(const QString &title, const QString &artist);
     void setVtChip(const QString &text);
     // KIÚSZIK (vagy SZÓL, ha a következő alatt teljes hangerővel szól tovább) felirat
     void setLeaving(bool on, bool sounding = false)

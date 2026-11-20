@@ -4,6 +4,7 @@
 #include "Library.h"
 #include "PlayerWidget.h"
 #include "PlayerStrip.h"
+#include "core/NowPlaying.h"
 #include "MixEditorPage.h"
 #include "PlaylistEditorPage.h"
 #include "CartwallPanel.h"
@@ -11,6 +12,7 @@
 #include "TimedEventsPage.h"
 #include "MiniMix.h"
 #include <QFileInfo>
+#include <algorithm>
 #include <QScrollBar>
 #include "PlaylistTable.h"
 #include "SchedulerPage.h"
@@ -159,6 +161,8 @@ MainWindow::MainWindow(Database *db, const QString &backendOverride, QWidget *pa
     requestFileCheck();
 
     logger_ = std::make_unique<ProgramLogger>();
+    nowPlaying_ = new NowPlaying(this);
+    nowPlaying_->configure(NowPlaying::loadConfig());
     configureLogger();
 
     // Tartalék playoutoknak: a változások után fél perccel, és tíz percenként mindenképp új adatbázis-másolat.
@@ -208,6 +212,7 @@ void MainWindow::closeEvent(QCloseEvent *e)
     }
     for (Row &row : rows_)
         if (row.logId) db_->logEnd(row.logId, "stopped");
+    if (nowPlaying_) nowPlaying_->writeIdle();
     QSettings().setValue("window/geometry", saveGeometry());
     e->accept();
 }
@@ -1116,6 +1121,7 @@ void MainWindow::tick()
 
     nextBtn_->setEnabled(standbyPlayer() >= 0);
     updatePlayerView();
+    updateNowPlaying();
     if (++clockDivider_ >= 6) {
         clockDivider_ = 0;
         updateClock();
@@ -2165,6 +2171,55 @@ void MainWindow::setAutoMix(bool on)
     refreshTable();
 }
 
+// „Most szól”: az adásban lévő (nem kiúszó) elem és a készenlétben álló. Ha csak kiúszó elem szól, marad az előző;
+// ha 3 mp-ig semmi sem szól, a szünet szövege kerül ki.
+void MainWindow::updateNowPlaying()
+{
+    if (!nowPlaying_) return;
+    const NowPlaying::Config &c = nowPlaying_->config();
+    if (!c.fileEnabled && !c.icecastEnabled) return;
+    auto trackOf = [this](int player) {
+        NowPlaying::Track t;
+        if (player < 0) return t;
+        const PlayerWidget *p = players_[player];
+        if (!p->isLoaded()) return t;
+        if (const Row *row = rowById(p->rowId)) {
+            t.itemId = row->item.id;
+            t.title = row->item.title;
+            t.artist = row->item.artist;
+            t.category = row->item.categoryName;
+            t.durationMs = row->item.durationMs;
+            t.music = isMusicKind(row->item.kind);
+        } else {
+            t.title = QFileInfo(p->path()).completeBaseName();
+        }
+        return t;
+    };
+    const int onAir = onAirPlayer();
+    const NowPlaying::Track next = trackOf(standbyPlayer());
+    if (onAir >= 0) {
+        nowIdleSince_ = 0;
+        nowPlaying_->setTracks(trackOf(onAir), next);
+        return;
+    }
+    const bool anything = std::any_of(std::begin(players_), std::end(players_), [](PlayerWidget *p) { return p->isPlaying(); });
+    if (anything) return;                                  // csak kiúszó elem szól: marad az előző cím
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (!nowIdleSince_) nowIdleSince_ = now;
+    if (now - nowIdleSince_ >= 3000) nowPlaying_->setTracks({}, next);
+}
+
+void MainWindow::configureNowPlaying()
+{
+    nowPlaying_->configure(NowPlaying::loadConfig());
+    updateNowPlaying();
+}
+
+QString MainWindow::nowPlayingStatus() const
+{
+    return nowPlaying_ ? nowPlaying_->status() : QString();
+}
+
 MainWindow::MixPlan MainWindow::planFor(int outPlayer, int inPlayer)
 {
     MixPlan plan;
@@ -2648,6 +2703,7 @@ bool MainWindow::loadIntoPlayer(Row &row, int player)
         return false;
     }
     players_[player]->rowId = row.id;
+    players_[player]->setMeta(row.item.title, row.item.artist);
     if (row.item.cueInMs > 0) players_[player]->cueTo(row.item.cueInMs * eter::kRate / 1000);
     players_[player]->setIntro(row.item.introMs * eter::kRate / 1000);
     row.state = Row::Cued;
