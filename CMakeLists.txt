@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(eter VERSION 0.22.0 LANGUAGES C CXX)
+project(eter VERSION 0.22.2 LANGUAGES C CXX)
 if(WIN32)
     enable_language(RC)
 endif()
@@ -56,6 +56,7 @@ add_executable(eter
     src/ui/RemoteEditor.cpp
     src/core/FileCheck.cpp
     src/core/NowPlaying.cpp
+    src/core/CrashReport.cpp
     src/ui/MainWindowFiles.cpp
     src/ui/MainWindowTiming.cpp
     src/ui/MainWindowUpload.cpp
@@ -91,7 +92,8 @@ if(WIN32)
     target_sources(eter PRIVATE "${CMAKE_BINARY_DIR}/eter.rc")
     target_link_libraries(eter PRIVATE bcrypt ole32 winmm)   # a statikus FFmpeg és a miniaudio rendszerkönyvtárai
 else()
-    target_link_options(eter PRIVATE -Wl,-Bsymbolic)
+    # -rdynamic: összeomláskor a hívási láncban a függvények neve is látszik (core/CrashReport).
+    target_link_options(eter PRIVATE -Wl,-Bsymbolic -rdynamic)
 endif()
 
 install(TARGETS eter RUNTIME DESTINATION bin)

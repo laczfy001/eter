@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.22.2
+- Fixed a random crash ("free(): invalid pointer") while reading audio files, most often right after putting a newly
+  imported item in the playlist (when its waveform was being read). The decoder started its channel layout from
+  uninitialised memory; depending on what was left there, FFmpeg tried to free an invalid pointer. Present since the
+  first versions, on Linux and Windows alike.
+
+## 0.22.1
+- Crash report: if Éter crashes, the call stack is written to the terminal and appended to `crash.log` in the
+  program's data folder (Linux: `~/.local/share/Eter/Eter/crash.log`, Windows: `%APPDATA%\Eter\Eter\crash.log`),
+  so the cause can be found. On Linux the function names are included.
+
 ## 0.22.0
 - Volume curve for items: in the Mix editor (Volume curve button) and in the item editor, points can be put on the
   waveform and dragged – up and down for the level (0 … −40 dB), sideways for the time; right-click or double-click

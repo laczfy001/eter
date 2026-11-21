@@ -98,7 +98,9 @@ bool Decoder::open(const std::string &path, std::string *err)
 void Decoder::convert()
 {
     if (!swr_) {
-        AVChannelLayout in;
+        // Nullázva kell kezdeni: az av_channel_layout_copy előbb felszabadítja a célt, és memóriaszemétnél
+        // érvénytelen mutatót adna a free()-nek (ez okozta a véletlenszerű „free(): invalid pointer” leállást).
+        AVChannelLayout in{};
         if (frame_->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC || frame_->ch_layout.nb_channels == 0)
             av_channel_layout_default(&in, std::max(1, frame_->ch_layout.nb_channels));
         else

@@ -1,4 +1,5 @@
 #include "core/NowPlaying.h"
+#include "core/CrashReport.h"
 #include "core/VolumeEnvelope.h"
 #include "audio/Engine.h"
 #include "db/Database.h"
@@ -335,6 +336,12 @@ int main(int argc, char **argv)
     if (!headless) QApplication::setApplicationDisplayName(QStringLiteral("Éter"));
     QApplication::setApplicationVersion(ETER_VERSION);
     if (!headless) QApplication::setDesktopFileName("eter");
+    // Összeomláskor a hívási lánc a terminálra és a crash.log-ba kerül (hibakereséshez).
+    {
+        QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        if (dir.isEmpty()) dir = QDir::homePath();
+        crash::install(QDir(dir).filePath(QStringLiteral("crash.log")));
+    }
 
     // A felület nyelve: alapból angol, a Beállításokban váltható (újraindítás után érvényes).
     // A fejlesztői forgatókönyvek a magyar feliratokra hivatkoznak, ezért azok magyarul futnak.
@@ -378,11 +385,12 @@ int main(int argc, char **argv)
     QCommandLineOption mixTestOpt("mixtest", QStringLiteral("Mix forgatókönyv (fejlesztéshez)."));
     QCommandLineOption recTestOpt("rectest", QStringLiteral("Felvétel forgatókönyv (fejlesztéshez)."));
     QCommandLineOption schedTestOpt("schedtest", QStringLiteral("Ütemező forgatókönyv (fejlesztéshez)."));
+    QCommandLineOption freshTestOpt("freshtest", QStringLiteral("Frissen importált elem a playlistbe adás közben (fejlesztéshez)."));
     QCommandLineOption envTestOpt("envtest", QStringLiteral("Hangerőgörbe a Mix editorban és az elemszerkesztőben (fejlesztéshez)."));
     QCommandLineOption dbTestOpt("dbtest", QStringLiteral("Adatbázis export és import (fejlesztéshez)."));
     QCommandLineOption threeTestOpt("threetest", QStringLiteral("Három lejátszó: zene → jingle → zene, automatikus mix (fejlesztéshez)."));
     QCommandLineOption fakeTimeOpt("fake-time", QStringLiteral("A program órája ettől az időponttól indul (fejlesztéshez)."), "ÓÓ:pp:mm");
-    parser.addOptions({backendOpt, dbOpt, selfTestOpt, shotOpt, iconOpt, uiTestOpt, importTestOpt, schedTestOpt, fakeTimeOpt, mixTestOpt, recTestOpt, plTestOpt, cartTestOpt, editTestOpt, nextTestOpt, eventTestOpt, lookTestOpt, overlayTestOpt, editorOpt, serveTestOpt, countTestOpt, clickTestOpt, fileTestOpt, fixTestOpt, loggerTestOpt, bpmOpt, flowTestOpt, backupOpt, threeTestOpt, dbTestOpt, envTestOpt});
+    parser.addOptions({backendOpt, dbOpt, selfTestOpt, shotOpt, iconOpt, uiTestOpt, importTestOpt, schedTestOpt, fakeTimeOpt, mixTestOpt, recTestOpt, plTestOpt, cartTestOpt, editTestOpt, nextTestOpt, eventTestOpt, lookTestOpt, overlayTestOpt, editorOpt, serveTestOpt, countTestOpt, clickTestOpt, fileTestOpt, fixTestOpt, loggerTestOpt, bpmOpt, flowTestOpt, backupOpt, threeTestOpt, dbTestOpt, envTestOpt, freshTestOpt});
     parser.addPositionalArgument("fájlok", QStringLiteral("Induláskor importálandó hangfájlok vagy mappák."), "[fájlok…]");
     parser.process(app);
 
@@ -633,7 +641,7 @@ int main(int argc, char **argv)
         QTimer::singleShot(qEnvironmentVariableIntValue("ETER_WATCH_STATE") * 1000, [] { QApplication::exit(0); });
     }
     const QStringList files = parser.positionalArguments();
-    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt) && !parser.isSet(threeTestOpt) && !parser.isSet(dbTestOpt) && !parser.isSet(envTestOpt)) window.library()->importPaths(files);
+    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt) && !parser.isSet(threeTestOpt) && !parser.isSet(dbTestOpt) && !parser.isSet(envTestOpt) && !parser.isSet(freshTestOpt)) window.library()->importPaths(files);
 
     if (parser.isSet(importTestOpt)) {
         // Az importáló ablak teljes útja: mappa, kategóriaválasztás, beolvasás.
@@ -1776,6 +1784,73 @@ int main(int argc, char **argv)
             std::fflush(stdout);
             QApplication::exit(0);
         });
+    }
+    if (parser.isSet(freshTestOpt)) {
+        // Frissen importált fájl kézzel a playlistbe, adás közben (hibakereséshez). Fájlok: az első zene (előre a
+        // hangtárban, ez szól), a többit az importáló ablakon át a „Hírek” kategóriába hozza be, és a szóló elem után
+        // szúrja be (ETER_IMP_HOW: append = a playlist végére, player = a C lejátszóra ejtve, alapból a szóló után).
+        const int cat = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        const int news = db.addCategory(QStringLiteral("Hírek"), "news", "#ff8f85");
+        Item first;
+        first.categoryId = cat;
+        first.path = QFileInfo(files[0]).absoluteFilePath();
+        first.title = QStringLiteral("Zene");
+        {
+            eter::Decoder dec;
+            if (dec.open(files[0].toStdString())) first.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+        }
+        QVector<int> pre{db.addItem(first)};
+        // ETER_IMP_PRE=n: az első n fájl előre a hangtárban és a playlistben (zene), a többi importálva.
+        const int npre = std::max(1, qEnvironmentVariableIntValue("ETER_IMP_PRE"));
+        for (int i = 1; i < npre && i < files.size(); ++i) {
+            Item it = first;
+            it.path = QFileInfo(files[i]).absoluteFilePath();
+            it.title = QFileInfo(files[i]).completeBaseName();
+            eter::Decoder dec;
+            if (dec.open(files[i].toStdString())) it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            pre << db.addItem(it);
+        }
+        db.notifyItemsChanged();
+        window.appendItems(pre);
+        window.setMode(qEnvironmentVariable("ETER_IMP_MODE") == QLatin1String("assist") ? MainWindow::Assist : MainWindow::Auto);
+        if (!qEnvironmentVariableIsSet("ETER_IMP_IDLE")) QTimer::singleShot(300, &window, [&window] { window.next(); });
+        const QStringList rest = files.mid(std::max(1, qEnvironmentVariableIntValue("ETER_IMP_PRE")));
+        const QString how = qEnvironmentVariable("ETER_IMP_HOW");
+        QTimer::singleShot(1500, &window, [&window, rest, news, how] {
+            if (qEnvironmentVariableIsSet("ETER_IMP_TAB"))
+                for (QToolButton *b : window.findChildren<QToolButton *>())
+                    if (b->text() == qEnvironmentVariable("ETER_IMP_TAB")) b->click();
+            window.library()->importPaths(rest, [&window, how](const QVector<int> &ids) {
+                std::printf("importálva: %d elem · %s\n", int(ids.size()), qPrintable(window.debugState()));
+                std::fflush(stdout);
+                if (how == QLatin1String("none")) return;     // kézzel (például xdotool-lal) húzza be
+                if (how == QLatin1String("append")) window.appendItems(ids);
+                else if (how == QLatin1String("player")) {
+                    window.appendItems(ids);
+                } else window.appendItems(ids, qEnvironmentVariableIsSet("ETER_IMP_AT") ? qEnvironmentVariableIntValue("ETER_IMP_AT") : 1);
+                std::printf("beszúrva: %s\n", qPrintable(window.debugState()));
+                std::fflush(stdout);
+            });
+            QTimer::singleShot(300, &window, [news] {
+                for (QWidget *w : QApplication::topLevelWidgets()) {
+                    auto *dlg = qobject_cast<ImportDialog *>(w);
+                    if (!dlg) continue;
+                    auto *combo = dlg->findChild<QComboBox *>();
+                    combo->setCurrentIndex(combo->findData(news));
+                    for (QPushButton *b : dlg->findChildren<QPushButton *>())
+                        if (b->isEnabled() && b->text() == TR("Importálás")) b->click();
+                }
+            });
+        });
+        auto *sampler = new QTimer(&window);
+        QObject::connect(sampler, &QTimer::timeout, &window, [&window] {
+            static int k = 0;
+            std::printf("  %4.1f s  %s\n", ++k * 0.5, qPrintable(window.debugState()));
+            std::fflush(stdout);
+        });
+        sampler->start(500);
+        QTimer::singleShot(qEnvironmentVariableIntValue("ETER_IMP_SECS") > 0 ? qEnvironmentVariableIntValue("ETER_IMP_SECS") * 1000 : 30000,
+                           &window, [] { QApplication::exit(0); });
     }
     if (parser.isSet(envTestOpt)) {
         // Hangerőgörbe: (1) a Mix editorban egérrel két pont a hírek szignálon (eleje 0 dB, a többi −12 dB), mentés;
