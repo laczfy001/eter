@@ -119,8 +119,63 @@ MixTimeline::MixTimeline(QWidget *parent) : QWidget(parent)
     setClips({Clip(), Clip()});
 }
 
+void MixTimeline::setEnvelope(int k, const env::Envelope &e)
+{
+    if (k < 0 || k >= env_.size()) return;
+    env_[k] = e;
+    update();
+}
+
+void MixTimeline::setEnvelopeMode(bool on)
+{
+    envMode_ = on;
+    envClip_ = envPoint_ = -1;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    update();
+}
+
+double MixTimeline::envY(int k, double db) const
+{
+    const QRectF lane = laneRect(k);
+    const double top = lane.top() + 30, bottom = lane.bottom() - 8;
+    // dB-skála: 0 dB felül, a görbe alja (−40 dB) alul – így a gyakori −3…−15 dB-es szintek jól állíthatók.
+    return top + std::clamp(-db / -env::kMinDb, 0.0, 1.0) * (bottom - top);
+}
+
+double MixTimeline::dbAtY(int k, double y) const
+{
+    const QRectF lane = laneRect(k);
+    const double top = lane.top() + 30, bottom = lane.bottom() - 8;
+    return std::round(std::clamp((y - top) / std::max(1.0, bottom - top), 0.0, 1.0) * env::kMinDb * 2) / 2;
+}
+
+int MixTimeline::laneAt(const QPointF &pos) const
+{
+    for (int k = 0; k < clips_.size(); ++k)
+        if (laneRect(k).adjusted(0, 26, 0, 0).contains(pos)) return k;
+    return -1;
+}
+
+bool MixTimeline::envPointAt(const QPointF &pos, int *k, int *i) const
+{
+    double best = 10.0;
+    bool found = false;
+    for (int c = 0; c < clips_.size(); ++c)
+        for (int p = 0; p < env_[c].size(); ++p) {
+            const double d = std::hypot(envX(c, env_[c][p].ms) - pos.x(), envY(c, env_[c][p].db) - pos.y());
+            if (d < best) {
+                best = d;
+                *k = c;
+                *i = p;
+                found = true;
+            }
+        }
+    return found;
+}
+
 void MixTimeline::setClips(const QVector<Clip> &clips)
 {
+    env_.resize(clips.size());
     clips_ = clips;
     while (clips_.size() < 2) clips_.push_back(Clip());
     if (clips_.size() > 3) clips_.resize(3);
@@ -490,6 +545,44 @@ void MixTimeline::paintEvent(QPaintEvent *)
         p.drawPath(path);
     }
 
+    // Hangerőgörbék: szerkesztő módban mindig, egyébként ha nem egyenesek.
+    static const QColor kEnv("#f7f7f7");
+    for (int k = 0; k < n; ++k) {
+        const env::Envelope &e = env_[k];
+        const bool flat = env::isFlat(e);
+        if (!envMode_ && flat) continue;
+        const QRectF lane = laneRect(k);
+        const double x0 = k == 0 ? 0 : std::max(0.0, xOf(clipStart(k)));
+        const double x1 = k < tr_.size() ? std::min<double>(w, xOf(clipEnd(k))) : w;
+        if (x1 <= x0) continue;
+        p.save();
+        p.setClipRect(QRectF(x0, lane.top(), x1 - x0, lane.height()));
+        QPainterPath path;
+        path.moveTo(x0, envY(k, env::dbAt(e, itemMsAt(k, x0))));
+        for (const env::Point &pt : e) path.lineTo(envX(k, pt.ms), envY(k, pt.db));
+        path.lineTo(x1, envY(k, env::dbAt(e, itemMsAt(k, x1))));
+        p.setPen(QPen(envMode_ ? kEnv : QColor(247, 247, 247, 150), envMode_ ? 2 : 1.5, envMode_ ? Qt::SolidLine : Qt::DashLine));
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(path);
+        for (int i = 0; i < e.size(); ++i) {
+            const QPointF c(envX(k, e[i].ms), envY(k, e[i].db));
+            const bool hot = envMode_ && k == envClip_ && i == envPoint_;
+            p.setPen(QPen(theme::bg, 1.5));
+            p.setBrush(hot ? theme::amber : kEnv);
+            p.drawEllipse(c, envMode_ ? 5.5 : 3.5, envMode_ ? 5.5 : 3.5);
+            if (hot || (envMode_ && e.size() <= 12)) {
+                const QString t = std::abs(e[i].db) < 0.05 ? QStringLiteral("0 dB")
+                                                           : QStringLiteral("%1 dB").arg(i18n::locale().toString(e[i].db, 'f', 1)).replace('-', QStringLiteral("−"));
+                QFont f = font();
+                f.setPixelSize(11);
+                p.setFont(f);
+                p.setPen(hot ? theme::amber : kEnv);
+                p.drawText(QPointF(c.x() + 8, c.y() - 7), t);
+            }
+        }
+        p.restore();
+    }
+
     // Az elemek széle: itt fogható meg az elem eleje és vége
     auto edge = [&](double x, const QRectF &lane, const QColor &c, bool left) {
         p.setPen(Qt::NoPen);
@@ -637,6 +730,40 @@ MixTimeline::Hit MixTimeline::hitTest(const QPointF &pos) const
 
 void MixTimeline::mousePressEvent(QMouseEvent *e)
 {
+    if (envMode_) {
+        // Görbeszerkesztés: pont megfogása, jobb gombbal törlése; üres helyre kattintva új pont a görbén.
+        const QPointF pos = e->position();
+        int k = -1, i = -1;
+        const bool onPoint = envPointAt(pos, &k, &i);
+        if (e->button() == Qt::RightButton) {
+            if (onPoint) {
+                env_[k].remove(i);
+                envClip_ = envPoint_ = -1;
+                update();
+                emit envelopeEdited(k);
+            }
+            return;
+        }
+        if (e->button() != Qt::LeftButton) return;
+        if (!onPoint) {
+            k = laneAt(pos);
+            if (k < 0 || env_[k].size() >= env::kMaxPoints) return;
+            const qint64 ms = std::max<qint64>(0, itemMsAt(k, pos.x()));
+            env::Point pt{round100(ms), env::dbAt(env_[k], ms)};
+            env_[k].append(pt);
+            env::normalize(env_[k]);
+            for (i = 0; i < env_[k].size(); ++i)
+                if (env_[k][i].ms == pt.ms) break;
+            emit envelopeEdited(k);
+        }
+        envClip_ = k;
+        envPoint_ = i;
+        pressPos_ = pos;
+        pressed_ = true;
+        moved_ = false;
+        update();
+        return;
+    }
     if (e->button() != Qt::LeftButton) return;
     const QPointF pos = e->position();
     pressPos_ = pos;
@@ -663,6 +790,25 @@ void MixTimeline::mousePressEvent(QMouseEvent *e)
 void MixTimeline::mouseMoveEvent(QMouseEvent *e)
 {
     const QPointF pos = e->position();
+    if (envMode_) {
+        if (envClip_ < 0 || !pressed_) {
+            int k, i;
+            setCursor(envPointAt(pos, &k, &i) ? Qt::SizeAllCursor : laneAt(pos) >= 0 ? Qt::CrossCursor : Qt::ArrowCursor);
+            return;
+        }
+        if (!moved_ && (pos - pressPos_).manhattanLength() <= 3) return;
+        moved_ = true;
+        env::Envelope &e = env_[envClip_];
+        if (envPoint_ < 0 || envPoint_ >= e.size()) return;
+        // Időben a szomszédos pontok között marad, a szint dB-ben fél decibelenként.
+        const qint64 lo = envPoint_ > 0 ? e[envPoint_ - 1].ms + 100 : 0;
+        const qint64 hi = envPoint_ + 1 < e.size() ? e[envPoint_ + 1].ms - 100 : std::numeric_limits<qint64>::max();
+        e[envPoint_].ms = std::clamp<qint64>(round100(itemMsAt(envClip_, pos.x())), lo, std::max(lo, hi));
+        e[envPoint_].db = dbAtY(envClip_, pos.y());
+        update();
+        emit envelopeEdited(envClip_);
+        return;
+    }
     if (drag_.h == None) {
         // Kurzor: jelzi, mi fogható meg.
         const Hit h = hitTest(pos);
@@ -743,8 +889,27 @@ void MixTimeline::mouseMoveEvent(QMouseEvent *e)
     emit paramsEdited(j);
 }
 
+void MixTimeline::mouseDoubleClickEvent(QMouseEvent *e)
+{
+    // Dupla kattintás egy ponton: törlés.
+    if (!envMode_) return QWidget::mouseDoubleClickEvent(e);
+    int k, i;
+    if (envPointAt(e->position(), &k, &i)) {
+        env_[k].remove(i);
+        envClip_ = envPoint_ = -1;
+        pressed_ = false;
+        update();
+        emit envelopeEdited(k);
+    }
+}
+
 void MixTimeline::mouseReleaseEvent(QMouseEvent *e)
 {
+    if (envMode_) {
+        pressed_ = moved_ = false;
+        update();
+        return;
+    }
     const bool drop = moved_ && (drag_.h == Block || drag_.h == MixPoint) && drag_.j == 1 && overlayPending();
     const bool click = pressed_ && !moved_ && e->button() == Qt::LeftButton && !clips_.isEmpty();
     drag_ = Hit();
@@ -829,7 +994,12 @@ MixEditorPage::MixEditorPage(Database *db, eter::Engine *engine, QWidget *parent
     h->addWidget(prev);
     h->addWidget(nextBtn);
     h->addWidget(title_, 1);
+    envBtn_ = new QPushButton(TR("Hangerőgörbe"));
+    envBtn_->setCheckable(true);
+    envBtn_->setToolTip(TR("Az elemek hangerejének szerkesztése a hullámformán: pontok letétele és húzása. A görbe az elemhez "
+                           "tartozik, bárhol szól, így szól."));
     h->addWidget(triple_);
+    h->addWidget(envBtn_);
     h->addWidget(previewBtn_);
     h->addWidget(loop_);
     h->addSpacing(4);
@@ -845,6 +1015,14 @@ MixEditorPage::MixEditorPage(Database *db, eter::Engine *engine, QWidget *parent
                                               " border-radius: 4px; padding: 6px 10px; }"));
     autoBanner_->hide();
     tv->addWidget(autoBanner_);
+    envHint_ = new QLabel(TR("Hangerőgörbe: kattints egy elem sávjára, és a görbén új pont jelenik meg · húzd a pontot: "
+                             "fel-le a szint (0 … −40 dB), oldalra az idő · jobb gomb vagy dupla kattintás: a pont törlése · "
+                             "a görbe a Mentéssel kerül az elemhez."));
+    envHint_->setWordWrap(true);
+    envHint_->setStyleSheet(QStringLiteral("QLabel { background: #262626; color: #f2f2f2; border: 1px solid #4a4a4a;"
+                                           " border-radius: 4px; padding: 6px 10px; }"));
+    envHint_->hide();
+    tv->addWidget(envHint_);
     timeline_ = new MixTimeline;
     tv->addWidget(timeline_, 1);
     hscroll_ = new QScrollBar(Qt::Horizontal);
@@ -1120,6 +1298,19 @@ MixEditorPage::MixEditorPage(Database *db, eter::Engine *engine, QWidget *parent
         syncScrollBar();
     });
     connect(timeline_, &MixTimeline::activeChanged, this, [this](int) { showParams(); });
+    connect(timeline_, &MixTimeline::envelopeEdited, this, [this](int k) {
+        if (k < 0 || k >= 3) return;
+        envDirty_[k] = true;
+        // Előhallgatás közben azonnal hallható.
+        if (phase_ != 0 && k < pv_.n) engine_->source(kClipCh[k]).setEnvelope(env::toSource(timeline_->envelope(k), eter::kRate));
+        showParams();
+    });
+    connect(envBtn_, &QPushButton::toggled, this, [this](bool on) {
+        envBtn_->setProperty("active", on);
+        repolish(envBtn_);
+        envHint_->setVisible(on);
+        timeline_->setEnvelopeMode(on);
+    });
     connect(timeline_, &MixTimeline::viewChanged, this, &MixEditorPage::syncScrollBar);
     connect(timeline_, &MixTimeline::viewChanged, this, updateZoom);
     connect(hscroll_, &QScrollBar::valueChanged, this, [this](int v) {
@@ -1317,6 +1508,11 @@ void MixEditorPage::loadCurrent()
         if (pairs_[i + j].ovlEntry) heading += TR("   ·   ráfektetve: %1").arg(pairs_[i + j].ovlItem.title);
     title_->setText(heading);
     timeline_->setClips(clips);
+    shownItems_ = items;
+    for (int k = 0; k < items.size(); ++k) {
+        timeline_->setEnvelope(k, env::fromString(items[k].volumeEnv));
+        envDirty_[k] = false;
+    }
     for (int j = 0; j < shown(); ++j) timeline_->setParams(j, resolve(pairs_[i + j], &kind_[j]), false);
     // Hármas nézetben akkora ablak kell, hogy mindkét átmenet látsszon.
     if (three) {
@@ -1546,6 +1742,16 @@ void MixEditorPage::save()
     QVector<int> which;
     for (int j = 0; j < n; ++j)
         if (dirty_[j]) which << j;
+    QVector<int> envChanged;
+    const bool envOnly = which.isEmpty() && (envDirty_[0] || envDirty_[1] || envDirty_[2]);
+    saveEnvelopes(envChanged);
+    if (envOnly) {
+        // Csak a hangerőgörbe változott: az átmenet maradjon, ami volt (automatikus vagy egyedi).
+        emit message(TR("Hangerőgörbe mentve (az elemhez: bárhol szól, így szól)."));
+        emit mixSaved(envChanged);
+        refreshTable();
+        return;
+    }
     if (which.isEmpty()) which << timeline_->active();
     if (scopeItems_->isChecked()) {
         for (int j : which) {
@@ -1555,7 +1761,7 @@ void MixEditorPage::save()
             }
         }
     }
-    QVector<int> changed;
+    QVector<int> changed = envChanged;
     struct Ovl { int entry; qint64 offset; double duck; };
     QVector<Ovl> overlays;
     for (int j : which) {
@@ -1579,6 +1785,27 @@ void MixEditorPage::save()
         showParams();
         refreshTable();
     }
+}
+
+// A módosított hangerőgörbék mentése az elemekhez.
+bool MixEditorPage::saveEnvelopes(QVector<int> &changedItems)
+{
+    bool any = false;
+    for (int k = 0; k < shownItems_.size() && k < 3; ++k) {
+        if (!envDirty_[k]) continue;
+        const QString text = env::toString(timeline_->envelope(k));
+        db_->setItemVolumeEnvelope(shownItems_[k].id, text);
+        shownItems_[k].volumeEnv = text;
+        // A párokban tárolt elemek is frissüljenek (ugyanaz az elem több átmenetben is szerepelhet).
+        for (MixPair &pr : pairs_) {
+            if (pr.from.id == shownItems_[k].id) pr.from.volumeEnv = text;
+            if (pr.to.id == shownItems_[k].id) pr.to.volumeEnv = text;
+        }
+        changedItems << shownItems_[k].id;
+        envDirty_[k] = false;
+        any = true;
+    }
+    return any;
 }
 
 void MixEditorPage::resetToAuto()
@@ -1965,6 +2192,7 @@ void MixEditorPage::startPreview(bool forRecording, qint64 atMs)
             emit message(QString::fromStdString(err));
             return;
         }
+        engine_->source(kClipCh[k]).setEnvelope(env::toSource(timeline_->envelope(k), eter::kRate));
     }
     const int a = timeline_->active();
     for (int j = 0; j < nTr; ++j) {
@@ -1973,6 +2201,7 @@ void MixEditorPage::startPreview(bool forRecording, qint64 atMs)
         if (pv_.tr[j].vtItemId) {
             const Item it = db_->item(pv_.tr[j].vtItemId);
             if (it.id && engine_->source(kVtCh[j]).load(it.path.toStdString(), &err)) {
+                engine_->source(kVtCh[j]).setEnvelope(env::toSource(env::fromString(it.volumeEnv), eter::kRate));
                 const Wave w = waves_.value(it.id);
                 pv_.vtDur[j] = w.ready ? w.durMs : it.durationMs;
             }
@@ -1980,6 +2209,7 @@ void MixEditorPage::startPreview(bool forRecording, qint64 atMs)
         if (pv_.tr[j].ovlItemId) {
             const Item it = db_->item(pv_.tr[j].ovlItemId);
             if (it.id && engine_->source(kOvlCh[j]).load(it.path.toStdString(), &err)) {
+                engine_->source(kOvlCh[j]).setEnvelope(env::toSource(env::fromString(it.volumeEnv), eter::kRate));
                 if (it.cueInMs > 0) engine_->source(kOvlCh[j]).seek(it.cueInMs * eter::kRate / 1000);
                 const Wave w = waves_.value(it.id);
                 pv_.ovlDur[j] = std::max<qint64>(1, w.ready ? w.durMs : it.durationMs);

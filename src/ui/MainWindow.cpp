@@ -5,6 +5,7 @@
 #include "PlayerWidget.h"
 #include "PlayerStrip.h"
 #include "core/NowPlaying.h"
+#include "core/VolumeEnvelope.h"
 #include "MixEditorPage.h"
 #include "PlaylistEditorPage.h"
 #include "CartwallPanel.h"
@@ -1211,6 +1212,7 @@ bool MainWindow::startOverlay(Row &row)
         refreshTable();
         return false;
     }
+    src.setEnvelope(env::toSource(env::fromString(row.item.volumeEnv), eter::kRate));
     if (row.item.cueInMs > 0) src.seek(row.item.cueInMs * eter::kRate / 1000);
     src.play();
     OverlayVoice &v = ovl_[voice];
@@ -2034,6 +2036,7 @@ void MainWindow::startVoiceTrack(int itemId, double duckDb)
         say(TR("A voice track nem tölthető be: %1").arg(QString::fromStdString(err)), 9000);
         return;
     }
+    vt.setEnvelope(env::toSource(env::fromString(item.volumeEnv), eter::kRate));
     vt.play();
     vtTitle_ = item.title;
     vtDuckDbShown_ = duckDb;
@@ -2321,6 +2324,8 @@ void MainWindow::onMixSaved(const QVector<int> &itemIds)
         const Row *row = rowById(players_[p]->rowId);
         if (!row || !itemIds.contains(row->item.id)) continue;
         players_[p]->setIntro(row->item.introMs * eter::kRate / 1000);
+        // A hangerőgörbe akár szólás közben is frissülhet (a Mix editorban vagy az elemszerkesztőben mentve).
+        engine_.source(playerChannel(p)).setEnvelope(env::toSource(env::fromString(row->item.volumeEnv), eter::kRate));
         if (!players_[p]->isPlaying()) players_[p]->cueTo(row->item.cueInMs * eter::kRate / 1000);
     }
     refreshTable();
@@ -2704,6 +2709,7 @@ bool MainWindow::loadIntoPlayer(Row &row, int player)
     }
     players_[player]->rowId = row.id;
     players_[player]->setMeta(row.item.title, row.item.artist);
+    engine_.source(playerChannel(player)).setEnvelope(env::toSource(env::fromString(row.item.volumeEnv), eter::kRate));
     if (row.item.cueInMs > 0) players_[player]->cueTo(row.item.cueInMs * eter::kRate / 1000);
     players_[player]->setIntro(row.item.introMs * eter::kRate / 1000);
     row.state = Row::Cued;
@@ -3314,6 +3320,7 @@ void MainWindow::togglePfl()
         say(QString::fromStdString(err), 8000);
         return;
     }
+    pfl.setEnvelope(env::toSource(env::fromString(item.volumeEnv), eter::kRate));
     pflActive_ = true;
     pfl.play();
     pflTitle_->setText(item.artist.isEmpty() ? item.title : item.title + QStringLiteral(" – ") + item.artist);
@@ -3772,13 +3779,15 @@ QString MainWindow::applyRemoteOp(const QJsonObject &m, remote::Connection *c, Q
         onMixSaved({rowById(to)->item.id});
         what = TR("átmenet automatikusra");
     } else if (op == QLatin1String("setItemIntro") || op == QLatin1String("setItemCueIn") || op == QLatin1String("setItemMixDefaults")
-               || op == QLatin1String("clearItemMixDefaults")) {
+               || op == QLatin1String("clearItemMixDefaults") || op == QLatin1String("setItemEnvelope")) {
         const int itemId = m.value("item").toInt();
         const Item it = db_->item(itemId);
         if (!it.id) return TR("Az elem már nincs a hangtárban.");
         if (op == QLatin1String("setItemIntro")) db_->setItemIntro(itemId, m.value("ms").toInteger());
         else if (op == QLatin1String("setItemCueIn")) db_->setItemCueIn(itemId, m.value("ms").toInteger());
         else if (op == QLatin1String("clearItemMixDefaults")) db_->clearItemMixDefaults(itemId);
+        else if (op == QLatin1String("setItemEnvelope"))
+            db_->setItemVolumeEnvelope(itemId, env::toString(env::fromString(m.value("env").toString())));
         else db_->setItemMixDefaults(itemId, m.value("mix").toInteger(), m.value("fadeOut").toInteger(), m.value("curve").toString(),
                                      m.value("cueOut").toInteger());
         onMixSaved({itemId});

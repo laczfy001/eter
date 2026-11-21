@@ -36,8 +36,8 @@ static bool run(QSqlQuery &q)
     "i.id, i.category_id, c.name, c.kind, c.color, i.title, i.artist, i.file_path, i.duration_ms, " \
     "COALESCE(i.last_played_at, 0), COALESCE(i.mix_out_ms, i.auto_mix_out_ms, 0), COALESCE(i.mix_out_ms, 0), " \
     "i.cue_in_ms, COALESCE(i.fade_out_ms, -1), COALESCE(i.fade_curve, ''), COALESCE(i.intro_ms, 0), " \
-    "COALESCE(i.cue_out_ms, 0), i.energy, i.bpm, i.dayparts"
-static const int kItemColumns = 20;
+    "COALESCE(i.cue_out_ms, 0), i.energy, i.bpm, i.dayparts, i.volume_env"
+static const int kItemColumns = 21;
 static const char *kItemSelect = "SELECT " ETER_ITEM_COLS " FROM items i JOIN categories c ON c.id = i.category_id ";
 
 static Item readItem(const QSqlQuery &q, int o = 0)
@@ -63,6 +63,7 @@ static Item readItem(const QSqlQuery &q, int o = 0)
     it.energy = q.value(o + 17).toInt();
     it.bpm = q.value(o + 18).toDouble();
     it.dayparts = q.value(o + 19).toInt();
+    it.volumeEnv = q.value(o + 20).toString();
     return it;
 }
 
@@ -95,7 +96,7 @@ bool Database::open(const QString &path, QString *err)
     int v = version;
     if (v == 0) {
         if (!createSchema(err)) return false;
-        v = 10;
+        v = 11;
     }
     if (v == 1) {
         // 2. séma: az automatikusan megtalált mix pont eltárolása az ütemező pontosabb tervezéséhez.
@@ -231,6 +232,14 @@ bool Database::open(const QString &path, QString *err)
         }
         q.exec("PRAGMA foreign_keys = ON");
         v = 10;
+    }
+    if (v == 10) {
+        // 11. séma: az elemek hangerőgörbéje (Mix editor, elemszerkesztő).
+        if (!q.exec("ALTER TABLE items ADD COLUMN volume_env TEXT NOT NULL DEFAULT ''") || !q.exec("PRAGMA user_version = 11")) {
+            if (err) *err = TR("Az adatbázis frissítése nem sikerült: %1").arg(q.lastError().text());
+            return false;
+        }
+        v = 11;
     }
     housekeeping();
     return true;
@@ -1316,6 +1325,16 @@ void Database::setItemCueIn(int itemId, qint64 cueInMs)
     run(q);
 }
 
+void Database::setItemVolumeEnvelope(int itemId, const QString &envelope)
+{
+    if (remoteHook) remoteHook("setItemEnvelope", QJsonObject{{"item", itemId}, {"env", envelope}});
+    QSqlQuery q;
+    q.prepare("UPDATE items SET volume_env = ? WHERE id = ?");
+    q.addBindValue(envelope.isEmpty() ? QStringLiteral("") : envelope);   // üres, nem NULL
+    q.addBindValue(itemId);
+    run(q);
+}
+
 void Database::setItemIntro(int itemId, qint64 introMs)
 {
     if (remoteHook) remoteHook("setItemIntro", QJsonObject{{"item", itemId}, {"ms", introMs}});
@@ -1390,8 +1409,8 @@ bool Database::mirrorLibrary(const QVector<Category> &categories, const QVector<
         ok = ins.exec();
     }
     ok = ok && ins.prepare("INSERT INTO items (id, category_id, title, artist, file_path, duration_ms, last_played_at, cue_in_ms, "
-                           "intro_ms, mix_out_ms, cue_out_ms, fade_out_ms, fade_curve, auto_mix_out_ms, energy, bpm, dayparts) "
-                           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                           "intro_ms, mix_out_ms, cue_out_ms, fade_out_ms, fade_curve, auto_mix_out_ms, energy, bpm, dayparts, volume_env) "
+                           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     QSet<QString> paths;
     for (const Item &it : items) {
         if (!ok) break;
@@ -1415,6 +1434,7 @@ bool Database::mirrorLibrary(const QVector<Category> &categories, const QVector<
         ins.addBindValue(std::clamp(it.energy, 0, 5));
         ins.addBindValue(it.bpm);
         ins.addBindValue(it.dayparts);
+        ins.addBindValue(it.volumeEnv.isEmpty() ? QStringLiteral("") : it.volumeEnv);
         ok = ins.exec();
     }
     if (!ok) {

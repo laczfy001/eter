@@ -22,7 +22,7 @@ QJsonObject itemToJson(const Item &it)
     return QJsonObject{{"id", it.id}, {"cat", it.categoryId}, {"title", it.title}, {"artist", it.artist}, {"path", it.path},
                        {"dur", it.durationMs}, {"last", it.lastPlayedAt}, {"mix", it.mixOutMs}, {"userMix", it.userMixOutMs},
                        {"cueIn", it.cueInMs}, {"fadeOut", it.fadeOutMs}, {"curve", it.fadeCurve}, {"intro", it.introMs},
-                       {"cueOut", it.cueOutMs}, {"energy", it.energy}, {"bpm", it.bpm}, {"parts", it.dayparts}};
+                       {"cueOut", it.cueOutMs}, {"energy", it.energy}, {"bpm", it.bpm}, {"parts", it.dayparts}, {"env", it.volumeEnv}};
 }
 
 Item itemFromJson(const QJsonObject &o)
@@ -45,6 +45,7 @@ Item itemFromJson(const QJsonObject &o)
     it.energy = std::clamp(o.value("energy").toInt(), 0, 5);
     it.bpm = o.value("bpm").toDouble();
     it.dayparts = o.value("parts").toInt();
+    it.volumeEnv = o.value("env").toString();
     return it;
 }
 

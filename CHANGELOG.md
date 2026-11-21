@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.22.0
+- Volume curve for items: in the Mix editor (Volume curve button) and in the item editor, points can be put on the
+  waveform and dragged – up and down for the level (0 … −40 dB), sideways for the time; right-click or double-click
+  deletes a point. Between points the level changes evenly in dB. Example: a news jingle stays at full level for its
+  first seconds, then its bed continues 12 dB lower under the newsreader.
+  - The curve belongs to the item, so it applies wherever the item plays: on the players, as an overlay, as a voice
+    track, in preview and in the Mix editor's preview (where changes are heard immediately). It is independent of the
+    transition settings and of Automatic mix: saving only a curve does not turn an automatic transition into a custom one.
+  - Remote editors can edit it too (with the mix permission).
+  - Database schema 11 (upgraded automatically).
+
 ## 0.21.0
 - Settings → Database: export and import the SQLite database (library, categories, playlists, scheduler, saved mixes,
   cartwall, settings; not the audio files).

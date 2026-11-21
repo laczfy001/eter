@@ -24,6 +24,8 @@ for Icecast and a backup playout in one desktop application.
   mixed by the program from the waveform (silence at the start of the next song is skipped); transitions where
   either side is not music (jingles, news, ads) still follow their saved Mix editor settings, and saved voice
   tracks still play. With *Mix editor* every transition follows its saved settings.
+- **Volume curve** for each item, drawn on the waveform in the Mix editor or the item editor: for example a news jingle
+  stays at full level at the start and its bed continues quieter under the newsreader. It applies wherever the item plays.
 - **Now playing**: the title of the item on air is written to a text file at every change, from a template
   (`%artist% - %title%`, also `%category%`, `%duration%`, `%next_artist%`, `%next_title%`, `%time%`), for a stream
   encoder (butt, Liquidsoap, Mixxx, OBS…), a website or an on-screen caption. For jingles and other non-music items

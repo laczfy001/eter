@@ -1,5 +1,6 @@
 // Mix editor: két vagy három egymást követő elem átmeneteinek beállítása idővonalon, előhallgatással.
 #pragma once
+#include "core/VolumeEnvelope.h"
 #include <functional>
 #include "audio/Engine.h"
 #include "db/Database.h"
@@ -105,7 +106,15 @@ public:
     qint64 outEndTrack(int j) const; // a j. átmenet kimenő elemének vége a saját idejében
     QPointF handlePos(Handle h, int j) const;
 
+    // Hangerőgörbe (az elem saját idejében). Szerkesztő módban a sávokon pontok tehetők le és húzhatók;
+    // a görbe mindig látszik, ha nem egyenes.
+    void setEnvelope(int k, const env::Envelope &e);
+    const env::Envelope &envelope(int k) const { return env_[k]; }
+    void setEnvelopeMode(bool on);
+    bool envelopeMode() const { return envMode_; }
+
 signals:
+    void envelopeEdited(int k);
     void paramsEdited(int j);
     void overlayDropped();                                  // a harmadik elemet a második eleje elé húzták: ráfektetés
     void timeClicked(qint64 ms);                            // kattintás (húzás nélkül) az idővonalon: előhallgatás innen
@@ -117,6 +126,7 @@ protected:
     void mousePressEvent(QMouseEvent *) override;
     void mouseMoveEvent(QMouseEvent *) override;
     void mouseReleaseEvent(QMouseEvent *) override;
+    void mouseDoubleClickEvent(QMouseEvent *) override;
     void wheelEvent(QWheelEvent *) override;
 
 private:
@@ -139,6 +149,15 @@ private:
                   qint64 trackAtLeftMs, const QColor &color) const;
 
     QVector<Clip> clips_;
+    QVector<env::Envelope> env_;
+    bool envMode_ = false;
+    int envClip_ = -1, envPoint_ = -1;            // a húzott görbepont
+    qint64 itemMsAt(int k, double x) const { return cue(k) + (msAt(x) - clipStart(k)); }
+    double envX(int k, qint64 itemMs) const { return xOf(clipStart(k) + (itemMs - cue(k))); }
+    double envY(int k, double db) const;
+    double dbAtY(int k, double y) const;
+    bool envPointAt(const QPointF &pos, int *k, int *i) const;
+    int laneAt(const QPointF &pos) const;
     QVector<MixParams> tr_;
     QVector<Clip> vt_;
     QVector<Clip> ovl_;
@@ -227,7 +246,7 @@ private:
     int currentIndex() const;
     int shown() const { return timeline_->transitions(); }      // a szerkesztett átmenetek száma
     const MixPair &pairOf(int j) const { return pairs_[currentIndex() + j]; }
-    bool anyDirty() const { return dirty_[0] || dirty_[1]; }
+    bool anyDirty() const { return dirty_[0] || dirty_[1] || envDirty_[0] || envDirty_[1] || envDirty_[2]; }
 
     Database *db_;
     eter::Engine *engine_;
@@ -235,6 +254,11 @@ private:
     int fromEntry_ = 0, toEntry_ = 0;      // a szerkesztett (első) pár
     int shownTo2_ = 0;                      // hármas nézetben a második átmenet bejövő sora
     bool dirty_[2] = {false, false};
+    bool envDirty_[3] = {false, false, false};   // a k. elem hangerőgörbéje módosult
+    QVector<Item> shownItems_;              // az idővonalon látható elemek (2 vagy 3)
+    QPushButton *envBtn_ = nullptr;
+    QLabel *envHint_ = nullptr;
+    bool saveEnvelopes(QVector<int> &changedItems);
     int kind_[2] = {0, 0};                  // 0 automatikus, 1 a számok alapértelmezése, 2 egyedi
     bool loading_ = false;
 

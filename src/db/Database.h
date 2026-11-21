@@ -33,6 +33,7 @@ struct Item {
     int energy = 0;                 // 1 nagyon nyugodt … 5 nagyon pörgős; 0 = nincs megadva
     double bpm = 0;                 // tempó; 0 = nem ismert
     int dayparts = 0;               // napszakok bitmaszkja (lásd daypartOf); 0 = bármikor szólhat
+    QString volumeEnv;              // hangerőgörbe (core/VolumeEnvelope.h: "ms:dB;…"); üres = változatlan hangerő
     // Ennyi ideig tölti ki az adást: a mix pontig, ennek híján a teljes hossz egy becsült átfedéssel.
     qint64 airMs() const { return mixOutMs > 0 ? mixOutMs : std::max<qint64>(0, durationMs - (durationMs > 30000 ? 3000 : 0)); }
 };
@@ -144,7 +145,7 @@ public:
     explicit Database(QObject *parent = nullptr);
     ~Database() override;
 
-    static constexpr int kSchemaVersion = 10;   // a legújabb séma (PRAGMA user_version)
+    static constexpr int kSchemaVersion = 11;   // a legújabb séma (PRAGMA user_version)
     bool open(const QString &path, QString *err = nullptr);
     QString path() const { return path_; }
 
@@ -257,6 +258,7 @@ public:
     void clearItemMixDefaults(int itemId);
     void setItemCueIn(int itemId, qint64 cueInMs);
     void setItemIntro(int itemId, qint64 introMs);
+    void setItemVolumeEnvelope(int itemId, const QString &envelope);   // üres: törlés
     int voiceTrackCategory();            // az első voice track típusú kategória; ha nincs, létrehozza
 
     // Adásnapló

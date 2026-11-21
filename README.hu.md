@@ -24,6 +24,8 @@ tartalék playout egyetlen asztali alkalmazásban.
   a program keveri a hullámforma alapján (a következő dal eleji csendje kimarad); ahol bármelyik oldal nem zene
   (jingle, hírek, reklám), ott a Mix editorban mentett beállítás érvényes, és a mentett voice track is megszólal.
   *Mix editor* állásban minden átmenet a mentett beállítás szerint szól.
+- **Hangerőgörbe** elemenként, a hullámformán rajzolva a Mix editorban vagy az elemszerkesztőben: például a hírek
+  szignál eleje teljes hangerőn szól, az alapja halkabban folytatódik a hírolvasó alatt. Bárhol szól az elem, így szól.
 - **Most szól**: az adásban lévő elem címét minden váltáskor szövegfájlba írja, sablon szerint (`%artist% - %title%`,
   továbbá `%category%`, `%duration%`, `%next_artist%`, `%next_title%`, `%time%`). Ebből olvashatja a stream kódoló
   (butt, Liquidsoap, Mixxx, OBS…), egy weboldal vagy egy képernyőfelirat. Jingle és más nem zenei elem alatt

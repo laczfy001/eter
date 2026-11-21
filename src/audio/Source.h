@@ -39,6 +39,9 @@ public:
     void setGain(float linear) { gain_.store(linear); }
     // Halkítás beszéd alatt (voice track): 1,0 = nincs; a váltás kb. 0,2 mp alatt, kattanás nélkül megy végbe.
     void setDuck(float linear) { duck_.store(linear); }
+    // Az elem hangerőgörbéje: (frame, lineáris erősítés) párok növekvő sorrendben; üres = nincs.
+    // Felületi szálról hívható; a pontok között az erősítés dB-ben egyenletesen változik.
+    void setEnvelope(const std::vector<std::pair<int64_t, float>> &points);
 
     bool playing() const { return playing_.load(); }
     bool fading() const { return fadeTotal_.load() > 0 && fadeStops_.load(); }
@@ -79,6 +82,8 @@ private:
     std::atomic<float> gain_{1.f};
     std::atomic<float> duck_{1.f};
     float duckNow_ = 1.f;               // csak a hangszál használja
+    std::vector<std::pair<int64_t, float>> env_;   // a ringMtx_ védi (a hangszál is csak zárolva olvassa)
+    float envAt(int64_t frame) const;
     std::atomic<int64_t> fadeTotal_{0}, fadeLeft_{0};
     std::atomic<float> fadeFrom_{1.f}, fadeTo_{0.f};
     std::atomic<int> fadeCurve_{0};

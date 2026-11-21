@@ -2,6 +2,7 @@
 // (kezdőpont, intro vége, outro kezdete) beállítása hullámformán, előhallgatással.
 #pragma once
 #include "audio/Engine.h"
+#include "core/VolumeEnvelope.h"
 #include "db/Database.h"
 
 #include <QDialog>
@@ -32,8 +33,16 @@ public:
     qint64 marker(Marker m) const { return ms_[m]; }
     QPointF markerPos(Marker m) const;         // fejlesztői ellenőrzéshez
     double xOf(qint64 ms) const;
+    // Hangerőgörbe: szerkesztő módban a hullámformára kattintva pont kerül a görbére, húzással állítható,
+    // jobb gombbal vagy dupla kattintással törölhető. A jelölők ilyenkor nem mozdulnak.
+    void setEnvelope(const env::Envelope &e) { env_ = e; update(); }
+    const env::Envelope &envelope() const { return env_; }
+    void setEnvelopeMode(bool on);
+    bool envelopeMode() const { return envMode_; }
+    QPointF envPointPos(int i) const;          // fejlesztői ellenőrzéshez
 
 signals:
+    void envelopeEdited();
     void markerMoved(int marker, qint64 ms);
     void seekRequested(qint64 ms);
 
@@ -42,8 +51,17 @@ protected:
     void mousePressEvent(QMouseEvent *) override;
     void mouseMoveEvent(QMouseEvent *) override;
     void mouseReleaseEvent(QMouseEvent *) override;
+    void mouseDoubleClickEvent(QMouseEvent *) override;
 
 private:
+    double envY(double db) const;
+    double dbAtY(double y) const;
+    int envPointAt(const QPointF &pos) const;
+    env::Envelope env_;
+    bool envMode_ = false;
+    int envDrag_ = -1;
+    QPointF envPress_;
+    bool envMoved_ = false;
     qint64 msAt(double x) const;
     Marker hit(const QPointF &pos) const;
     QVector<float> peaks_;
@@ -68,6 +86,7 @@ public:
     void playFrom(qint64 ms);
     bool previewing() const { return playing_; }
     bool save();
+    void setEnvelopeEditing(bool on);          // fejlesztői ellenőrzéshez is
 
 signals:
     void saved(int itemId);
@@ -103,6 +122,7 @@ private:
     QTimer *timer_;
     qint64 durMs_ = 0;
     bool playing_ = false, dirty_ = false, ready_ = false, loading_ = true;
+    class QPushButton *envBtn_ = nullptr, *envClear_ = nullptr;
     std::shared_ptr<std::atomic<bool>> cancel_;
     std::thread thread_;
 };

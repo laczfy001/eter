@@ -2253,5 +2253,21 @@ const I18nPair kEnglish[] = {
      "the old database cannot be renamed"},
     {"az importált adatbázis nem tehető a helyére",
      "the imported database cannot be moved into place"},
+    {"Hangerőgörbe",
+     "Volume curve"},
+    {"A hangerő szerkesztése a hullámformán: kattintásra pont kerül a görbére, húzással állítható (fel-le a szint, oldalra az idő), jobb gombbal vagy dupla kattintással törölhető. Bárhol szól az elem, így szól.",
+     "Edit the volume on the waveform: click to put a point on the curve, drag it to adjust (up and down for level, sideways for time), right-click or double-click to delete it. The item plays like this wherever it plays."},
+    {"Görbe törlése",
+     "Clear curve"},
+    {"Végig eredeti hangerő",
+     "Original volume throughout"},
+    {"Kattints a hullámformára: új pont a görbén · húzd: szint és idő · jobb gomb vagy dupla kattintás: törlés",
+     "Click the waveform: new point on the curve · drag: level and time · right-click or double-click: delete"},
+    {"Az elemek hangerejének szerkesztése a hullámformán: pontok letétele és húzása. A görbe az elemhez tartozik, bárhol szól, így szól.",
+     "Edit the items' volume on the waveform: put down and drag points. The curve belongs to the item; it plays like this wherever it plays."},
+    {"Hangerőgörbe: kattints egy elem sávjára, és a görbén új pont jelenik meg · húzd a pontot: fel-le a szint (0 … −40 dB), oldalra az idő · jobb gomb vagy dupla kattintás: a pont törlése · a görbe a Mentéssel kerül az elemhez.",
+     "Volume curve: click an item's lane and a new point appears on the curve · drag the point: up and down for level (0 … −40 dB), sideways for time · right-click or double-click: delete the point · Save stores the curve with the item."},
+    {"Hangerőgörbe mentve (az elemhez: bárhol szól, így szól).",
+     "Volume curve saved (with the item: it plays like this wherever it plays)."},
 };
-const int kEnglishCount = 1125;
+const int kEnglishCount = 1133;

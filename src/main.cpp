@@ -1,4 +1,5 @@
 #include "core/NowPlaying.h"
+#include "core/VolumeEnvelope.h"
 #include "audio/Engine.h"
 #include "db/Database.h"
 #include "ui/Library.h"
@@ -377,10 +378,11 @@ int main(int argc, char **argv)
     QCommandLineOption mixTestOpt("mixtest", QStringLiteral("Mix forgatókönyv (fejlesztéshez)."));
     QCommandLineOption recTestOpt("rectest", QStringLiteral("Felvétel forgatókönyv (fejlesztéshez)."));
     QCommandLineOption schedTestOpt("schedtest", QStringLiteral("Ütemező forgatókönyv (fejlesztéshez)."));
+    QCommandLineOption envTestOpt("envtest", QStringLiteral("Hangerőgörbe a Mix editorban és az elemszerkesztőben (fejlesztéshez)."));
     QCommandLineOption dbTestOpt("dbtest", QStringLiteral("Adatbázis export és import (fejlesztéshez)."));
     QCommandLineOption threeTestOpt("threetest", QStringLiteral("Három lejátszó: zene → jingle → zene, automatikus mix (fejlesztéshez)."));
     QCommandLineOption fakeTimeOpt("fake-time", QStringLiteral("A program órája ettől az időponttól indul (fejlesztéshez)."), "ÓÓ:pp:mm");
-    parser.addOptions({backendOpt, dbOpt, selfTestOpt, shotOpt, iconOpt, uiTestOpt, importTestOpt, schedTestOpt, fakeTimeOpt, mixTestOpt, recTestOpt, plTestOpt, cartTestOpt, editTestOpt, nextTestOpt, eventTestOpt, lookTestOpt, overlayTestOpt, editorOpt, serveTestOpt, countTestOpt, clickTestOpt, fileTestOpt, fixTestOpt, loggerTestOpt, bpmOpt, flowTestOpt, backupOpt, threeTestOpt, dbTestOpt});
+    parser.addOptions({backendOpt, dbOpt, selfTestOpt, shotOpt, iconOpt, uiTestOpt, importTestOpt, schedTestOpt, fakeTimeOpt, mixTestOpt, recTestOpt, plTestOpt, cartTestOpt, editTestOpt, nextTestOpt, eventTestOpt, lookTestOpt, overlayTestOpt, editorOpt, serveTestOpt, countTestOpt, clickTestOpt, fileTestOpt, fixTestOpt, loggerTestOpt, bpmOpt, flowTestOpt, backupOpt, threeTestOpt, dbTestOpt, envTestOpt});
     parser.addPositionalArgument("fájlok", QStringLiteral("Induláskor importálandó hangfájlok vagy mappák."), "[fájlok…]");
     parser.process(app);
 
@@ -631,7 +633,7 @@ int main(int argc, char **argv)
         QTimer::singleShot(qEnvironmentVariableIntValue("ETER_WATCH_STATE") * 1000, [] { QApplication::exit(0); });
     }
     const QStringList files = parser.positionalArguments();
-    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt) && !parser.isSet(threeTestOpt) && !parser.isSet(dbTestOpt)) window.library()->importPaths(files);
+    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt) && !parser.isSet(threeTestOpt) && !parser.isSet(dbTestOpt) && !parser.isSet(envTestOpt)) window.library()->importPaths(files);
 
     if (parser.isSet(importTestOpt)) {
         // Az importáló ablak teljes útja: mappa, kategóriaválasztás, beolvasás.
@@ -1773,6 +1775,108 @@ int main(int argc, char **argv)
             Q_UNUSED(db);
             std::fflush(stdout);
             QApplication::exit(0);
+        });
+    }
+    if (parser.isSet(envTestOpt)) {
+        // Hangerőgörbe: (1) a Mix editorban egérrel két pont a hírek szignálon (eleje 0 dB, a többi −12 dB), mentés;
+        // (2) adásban a lejátszó csúcsszintje követi-e; (3) az elemszerkesztőben egy pont törlése és mentése.
+        // Fájlok: zene szignál zene.
+        const int cat = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        const int jcat = db.addCategory(QStringLiteral("Hírek"), "news", "#ff8f85");
+        QVector<int> ids;
+        for (int i = 0; i < files.size(); ++i) {
+            eter::Decoder dec;
+            if (!dec.open(files[i].toStdString())) continue;
+            Item it;
+            it.categoryId = i == 1 ? jcat : cat;
+            it.path = QFileInfo(files[i]).absoluteFilePath();
+            it.title = i == 1 ? QStringLiteral("Hírek szignál") : QFileInfo(files[i]).completeBaseName();
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            ids << db.addItem(it);
+        }
+        db.notifyItemsChanged();
+        window.appendItems(ids);
+        const QVector<Entry> en = db.pendingEntries();
+        QTimer::singleShot(400, &window, [&window, &db, en, ids] {
+            // A Mix editor: a szignál → zene átmenet; a szignál az első sáv.
+            for (QToolButton *b : window.findChildren<QToolButton *>())
+                if (b->text() == TR("Mix editor")) b->click();
+            window.mixPage()->selectEntries(en[1].id, en[2].id);
+            QApplication::processEvents();
+            MixTimeline *t = window.mixPage()->timeline();
+            for (QPushButton *b : window.mixPage()->findChildren<QPushButton *>())
+                if (b->text() == TR("Hangerőgörbe")) b->setChecked(true);
+            QApplication::processEvents();
+            auto mouse = [t](QEvent::Type type, QPointF pt, Qt::MouseButton b, Qt::MouseButtons bs) {
+                QMouseEvent ev(type, pt, t->mapToGlobal(pt), b, bs, Qt::NoModifier);
+                QApplication::sendEvent(t, &ev);
+            };
+            const QRectF lane = t->laneRect(0);
+            const double y0 = lane.top() + 30;                     // a 0 dB-es vonal
+            const double x1 = t->xAt(t->clipStart(0) + 1500 - t->cue(0)), x2 = t->xAt(t->clipStart(0) + 2500 - t->cue(0));
+            mouse(QEvent::MouseButtonPress, {x1, y0 + 20}, Qt::LeftButton, Qt::LeftButton);   // 1. pont: a görbén marad (0 dB)
+            mouse(QEvent::MouseButtonRelease, {x1, y0 + 20}, Qt::LeftButton, Qt::NoButton);
+            mouse(QEvent::MouseButtonPress, {x2, y0}, Qt::LeftButton, Qt::LeftButton);         // 2. pont, lehúzva −12 dB-re
+            const double yTarget = y0 + 12.0 / 40.0 * ((lane.bottom() - 8) - y0);
+            mouse(QEvent::MouseMove, {x2, y0 + 10}, Qt::NoButton, Qt::LeftButton);
+            mouse(QEvent::MouseMove, {x2, yTarget}, Qt::NoButton, Qt::LeftButton);
+            mouse(QEvent::MouseButtonRelease, {x2, yTarget}, Qt::LeftButton, Qt::NoButton);
+            // Egy harmadik pont, majd törlése jobb gombbal
+            const double x3 = t->xAt(t->clipStart(0) + 3500 - t->cue(0));
+            mouse(QEvent::MouseButtonPress, {x3, y0}, Qt::LeftButton, Qt::LeftButton);
+            mouse(QEvent::MouseButtonRelease, {x3, y0}, Qt::LeftButton, Qt::NoButton);
+            const int before = t->envelope(0).size();
+            const double y3 = y0 + 12.0 / 40.0 * ((lane.bottom() - 8) - y0);
+            mouse(QEvent::MouseButtonPress, {x3, y3}, Qt::RightButton, Qt::RightButton);
+            std::printf("Mix editor görbe: %s (törlés előtt %d pont)\n", qPrintable(env::toString(t->envelope(0))), before);
+            window.grab().save("env_mix.png");
+            for (QPushButton *b : window.mixPage()->findChildren<QPushButton *>())
+                if (b->text() == TR("Mentés")) b->click();
+            std::printf("mentve az elemhez: „%s”\n", qPrintable(db.item(ids[1]).volumeEnv));
+            QSqlQuery q("SELECT COUNT(*) FROM transitions");
+            q.next();
+            std::printf("mentett átmenetek (a görbe nem tesz egyedi mixet): %d\n", q.value(0).toInt());
+            for (QToolButton *b : window.findChildren<QToolButton *>())
+                if (b->text() == TR("Adás")) b->click();
+            window.setMode(MainWindow::Auto);
+            window.next();
+            QTimer::singleShot(300, &window, [&window] { window.next(); });   // rögtön a szignál
+        });
+        // Adásban: a szignál csúcsszintje 0,5 mp-enként (a szinusz −27 dB-es).
+        auto *e = window.engine();
+        auto st = std::make_shared<QStringList>();
+        auto *sampler = new QTimer(&window);
+        QObject::connect(sampler, &QTimer::timeout, &window, [e, st, &window] {
+            const QString s = window.debugState();
+            for (auto ch : {eter::Engine::Player1, eter::Engine::Player2, eter::Engine::Player3}) {
+                auto &src = e->source(ch);
+                float l, r;
+                src.takePeaks(l, r);
+                if (!src.playing()) continue;
+                const QString path = QString::fromStdString(src.path());
+                if (!path.contains("jingle")) continue;
+                const double pos = src.position() / double(eter::kRate);
+                st->append(QStringLiteral("%1 s: %2 dB").arg(pos, 0, 'f', 1).arg(l > 0 ? 20 * std::log10(l) : -99, 0, 'f', 1));
+            }
+        });
+        sampler->start(500);
+        QTimer::singleShot(9000, &window, [st, &window, &db, ids] {
+            std::printf("a szignál szintje adásban:\n  %s\n", qPrintable(st->join("\n  ")));
+            // Elemszerkesztő: a görbe ott is látszik; a második pont törlése dupla kattintással, mentés.
+            ItemEditorDialog *dlg = window.openItemEditor(ids[1]);
+            QTimer::singleShot(1500, dlg, [dlg, &db, ids] {
+                dlg->setEnvelopeEditing(true);
+                QApplication::processEvents();
+                MarkerWave *w = dlg->wave();
+                std::printf("elemszerkesztő görbe: %s\n", qPrintable(env::toString(w->envelope())));
+                dlg->grab().save("env_item.png");
+                const QPointF pt = w->envPointPos(1);
+                QMouseEvent dc(QEvent::MouseButtonDblClick, pt, w->mapToGlobal(pt), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(w, &dc);
+                dlg->save();
+                std::printf("az elemszerkesztőben törölve, mentve: „%s”\n", qPrintable(db.item(ids[1]).volumeEnv));
+                QApplication::exit(0);
+            });
         });
     }
     if (parser.isSet(dbTestOpt)) {

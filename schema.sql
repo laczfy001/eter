@@ -59,6 +59,7 @@ CREATE TABLE items (
     fade_out_ms   INTEGER,                      -- NULL = globális alapérték
     fade_curve    TEXT CHECK (fade_curve IN ('linear','log','scurve')),
     auto_mix_out_ms INTEGER,                    -- a program által megtalált mix pont (a hullámformából)
+    volume_env    TEXT NOT NULL DEFAULT '',     -- hangerőgörbe: "ms:dB;ms:dB" (üres = változatlan)
 
     -- az ütemező szabályaihoz
     energy        INTEGER NOT NULL DEFAULT 0 CHECK (energy BETWEEN 0 AND 5),   -- 1 nyugodt … 5 pörgős; 0 = nincs megadva
@@ -281,6 +282,6 @@ INSERT INTO settings (key, value) VALUES
 
 -- Kategóriákat a felhasználó hoz létre, ezért nincs előre feltöltött lista.
 
-PRAGMA user_version = 10;
+PRAGMA user_version = 11;
 
 COMMIT;

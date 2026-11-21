@@ -31,6 +31,7 @@ bool Source::load(const std::string &path, std::string *err)
         wr_.store(0);
         rd_.store(0);
         pos_.store(0);
+        env_.clear();                    // az előző elem görbéje nem öröklődik
     }
     decodedEof_.store(false);
     flushPending_.store(false);
@@ -57,6 +58,10 @@ void Source::unload()
     fadeTotal_.store(0);
     duck_.store(1.f);
     duckNow_ = 1.f;
+    {
+        std::lock_guard<std::mutex> lk(ringMtx_);
+        env_.clear();
+    }
     peakL_.store(0.f);
     peakR_.store(0.f);
 }
@@ -184,6 +189,28 @@ void Source::decodeLoop()
     }
 }
 
+void Source::setEnvelope(const std::vector<std::pair<int64_t, float>> &points)
+{
+    std::lock_guard<std::mutex> lk(ringMtx_);
+    env_ = points;
+}
+
+// A görbe értéke (lineáris erősítés) a megadott helyen; két pont között dB-ben egyenletes átmenet.
+float Source::envAt(int64_t frame) const
+{
+    if (env_.empty()) return 1.f;
+    if (frame <= env_.front().first) return env_.front().second;
+    if (frame >= env_.back().first) return env_.back().second;
+    const auto it = std::lower_bound(env_.begin(), env_.end(), frame,
+                                     [](const std::pair<int64_t, float> &p, int64_t f) { return p.first < f; });
+    const auto &b = *it, &a = *(it - 1);
+    const float t = b.first > a.first ? float(frame - a.first) / float(b.first - a.first) : 1.f;
+    const float floor = 1e-4f;                       // −80 dB: a csend is simán közelíthető
+    const float la = std::log(std::max(a.second, floor)), lb = std::log(std::max(b.second, floor));
+    const float g = std::exp(la + (lb - la) * t);
+    return g <= floor * 1.01f ? 0.f : g;
+}
+
 void Source::mixInto(float *out, int frames)
 {
     if (!playing_.load(std::memory_order_relaxed) || flushPending_.load(std::memory_order_relaxed))
@@ -205,10 +232,16 @@ void Source::mixInto(float *out, int frames)
     const float duckTarget = duck_.load(std::memory_order_relaxed);
     float duck = duckNow_;
     float pl = 0.f, pr = 0.f;
+    // Hangerőgörbe: a blokk két végén számolva, közte egyenesen (egy blokk néhány ms).
+    const bool hasEnv = !env_.empty();
+    const int64_t at = pos_.load(std::memory_order_relaxed);
+    const float env0 = hasEnv ? envAt(at) : 1.f, env1 = hasEnv ? envAt(at + n) : 1.f;
+    const float envStep = n > 0 ? (env1 - env0) / float(n) : 0.f;
 
     for (int i = 0; i < n; ++i) {
         duck += (duckTarget - duck) * 0.0004f;
         float g = gain * duck;
+        if (hasEnv) g *= env0 + envStep * float(i);
         if (fadeTotal > 0) {
             const float p = 1.f - static_cast<float>(fadeLeft) / static_cast<float>(fadeTotal);
             g *= fadeGain(curve, fadeFrom, fadeTo, p);

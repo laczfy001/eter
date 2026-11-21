@@ -22,6 +22,7 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPointer>
 #include <QPushButton>
 #include <QSpinBox>
@@ -174,14 +175,121 @@ void MarkerWave::paintEvent(QPaintEvent *)
         p.drawText(box, Qt::AlignCenter, text);
     }
 
+    // Hangerőgörbe
+    if (durMs_ > 0 && (envMode_ || !env::isFlat(env_))) {
+        p.setRenderHint(QPainter::Antialiasing);
+        QPainterPath path;
+        path.moveTo(0, envY(env::dbAt(env_, 0)));
+        for (const env::Point &pt : env_) path.lineTo(xOf(pt.ms), envY(pt.db));
+        path.lineTo(r.width(), envY(env::dbAt(env_, durMs_)));
+        p.setPen(QPen(envMode_ ? QColor("#f7f7f7") : QColor(247, 247, 247, 150), envMode_ ? 2 : 1.5,
+                      envMode_ ? Qt::SolidLine : Qt::DashLine));
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(path);
+        QFont f = font();
+        f.setPixelSize(10);
+        p.setFont(f);
+        for (int i = 0; i < env_.size(); ++i) {
+            const QPointF c = envPointPos(i);
+            p.setPen(QPen(QColor("#121418"), 1.5));
+            p.setBrush(i == envDrag_ ? theme::amber : QColor("#f7f7f7"));
+            p.drawEllipse(c, envMode_ ? 5.5 : 3.5, envMode_ ? 5.5 : 3.5);
+            if (envMode_) {
+                p.setPen(i == envDrag_ ? theme::amber : QColor("#f7f7f7"));
+                const QString t = std::abs(env_[i].db) < 0.05 ? QStringLiteral("0 dB")
+                                  : QStringLiteral("%1 dB").arg(i18n::locale().toString(env_[i].db, 'f', 1)).replace('-', QStringLiteral("−"));
+                p.drawText(QPointF(c.x() + 8, c.y() - 7), t);
+            }
+        }
+        p.setRenderHint(QPainter::Antialiasing, false);
+    }
+
     if (playhead_ >= 0 && durMs_ > 0) {
         p.setPen(QPen(QColor("#ffffff"), 1));
         p.drawLine(QPointF(xOf(playhead_), top - 4), QPointF(xOf(playhead_), bottom));
     }
 }
 
+void MarkerWave::setEnvelopeMode(bool on)
+{
+    envMode_ = on;
+    envDrag_ = -1;
+    drag_ = None;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    update();
+}
+
+// dB-skála a hullámforma magasságában: 0 dB felül, −40 dB alul.
+double MarkerWave::envY(double db) const
+{
+    const double top = 54, bottom = height() - 18;
+    return top + std::clamp(-db / -env::kMinDb, 0.0, 1.0) * (bottom - top);
+}
+
+double MarkerWave::dbAtY(double y) const
+{
+    const double top = 54, bottom = height() - 18;
+    return std::round(std::clamp((y - top) / std::max(1.0, bottom - top), 0.0, 1.0) * env::kMinDb * 2) / 2;
+}
+
+QPointF MarkerWave::envPointPos(int i) const { return {xOf(env_[i].ms), envY(env_[i].db)}; }
+
+int MarkerWave::envPointAt(const QPointF &pos) const
+{
+    int best = -1;
+    double bestD = 10.0;
+    for (int i = 0; i < env_.size(); ++i) {
+        const double d = std::hypot(envPointPos(i).x() - pos.x(), envPointPos(i).y() - pos.y());
+        if (d < bestD) {
+            bestD = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+void MarkerWave::mouseDoubleClickEvent(QMouseEvent *e)
+{
+    if (!envMode_) return QWidget::mouseDoubleClickEvent(e);
+    const int i = envPointAt(e->position());
+    if (i >= 0) {
+        env_.remove(i);
+        envDrag_ = -1;
+        update();
+        emit envelopeEdited();
+    }
+}
+
 void MarkerWave::mousePressEvent(QMouseEvent *e)
 {
+    if (envMode_ && durMs_ > 0) {
+        const QPointF pos = e->position();
+        int i = envPointAt(pos);
+        if (e->button() == Qt::RightButton) {
+            if (i >= 0) {
+                env_.remove(i);
+                update();
+                emit envelopeEdited();
+            }
+            return;
+        }
+        if (e->button() != Qt::LeftButton) return;
+        if (i < 0) {
+            if (pos.y() < 50 || env_.size() >= env::kMaxPoints) return;
+            const qint64 ms = msAt(pos.x()) / 100 * 100;
+            const env::Point pt{ms, env::dbAt(env_, ms)};
+            env_.append(pt);
+            env::normalize(env_);
+            for (i = 0; i < env_.size(); ++i)
+                if (env_[i].ms == pt.ms) break;
+            emit envelopeEdited();
+        }
+        envDrag_ = i;
+        envPress_ = pos;
+        envMoved_ = false;
+        update();
+        return;
+    }
     if (e->button() != Qt::LeftButton || durMs_ <= 0) return;
     drag_ = hit(e->position());
     if (drag_ == None) emit seekRequested(msAt(e->position().x()));
@@ -190,6 +298,22 @@ void MarkerWave::mousePressEvent(QMouseEvent *e)
 
 void MarkerWave::mouseMoveEvent(QMouseEvent *e)
 {
+    if (envMode_) {
+        const QPointF pos = e->position();
+        if (envDrag_ < 0 || !(e->buttons() & Qt::LeftButton)) {
+            setCursor(envPointAt(pos) >= 0 ? Qt::SizeAllCursor : Qt::CrossCursor);
+            return;
+        }
+        if (!envMoved_ && (pos - envPress_).manhattanLength() <= 3) return;
+        envMoved_ = true;
+        const qint64 lo = envDrag_ > 0 ? env_[envDrag_ - 1].ms + 100 : 0;
+        const qint64 hi = envDrag_ + 1 < env_.size() ? env_[envDrag_ + 1].ms - 100 : durMs_;
+        env_[envDrag_].ms = std::clamp<qint64>(msAt(pos.x()) / 100 * 100, lo, std::max(lo, hi));
+        env_[envDrag_].db = dbAtY(pos.y());
+        update();
+        emit envelopeEdited();
+        return;
+    }
     if (drag_ == None) {
         setCursor(hit(e->position()) != None ? Qt::SizeHorCursor : Qt::ArrowCursor);
         return;
@@ -200,6 +324,7 @@ void MarkerWave::mouseMoveEvent(QMouseEvent *e)
 
 void MarkerWave::mouseReleaseEvent(QMouseEvent *)
 {
+    envDrag_ = -1;
     drag_ = None;
     update();
 }
@@ -312,6 +437,12 @@ ItemEditorDialog::ItemEditorDialog(Database *db, eter::Engine *engine, int itemI
     wave_ = new MarkerWave;
     wave_->setDuration(durMs_);
     wave_->setAccessibleName(TR("Hullámforma a jelölőpontokkal"));
+    wave_->setEnvelope(env::fromString(item_.volumeEnv));
+    connect(wave_, &MarkerWave::envelopeEdited, this, [this] {
+        // Előhallgatás közben azonnal hallható.
+        if (playing_) engine_->source(eter::Engine::Pfl).setEnvelope(env::toSource(wave_->envelope(), eter::kRate));
+        markDirty();
+    });
     root->addWidget(wave_, 1);
 
     auto *transport = new QHBoxLayout;
@@ -324,10 +455,29 @@ ItemEditorDialog::ItemEditorDialog(Database *db, eter::Engine *engine, int itemI
     pos_->setFont(mono);
     auto *hint = new QLabel(TR("A jelölők a címkéjüknél vagy a vonaluknál fogva húzhatók · kattintás a hullámformán: lejátszás onnan"));
     hint->setObjectName("small");
+    envBtn_ = new QPushButton(TR("Hangerőgörbe"));
+    envBtn_->setCheckable(true);
+    envBtn_->setToolTip(TR("A hangerő szerkesztése a hullámformán: kattintásra pont kerül a görbére, húzással állítható "
+                           "(fel-le a szint, oldalra az idő), jobb gombbal vagy dupla kattintással törölhető. Bárhol szól az "
+                           "elem, így szól."));
+    envClear_ = new QPushButton(TR("Görbe törlése"));
+    envClear_->setToolTip(TR("Végig eredeti hangerő"));
     transport->addWidget(play_);
     transport->addWidget(pos_);
+    transport->addSpacing(12);
+    transport->addWidget(envBtn_);
+    transport->addWidget(envClear_);
     transport->addStretch(1);
     transport->addWidget(hint);
+    connect(envBtn_, &QPushButton::toggled, this, [this, hint](bool on) {
+        setEnvelopeEditing(on);
+        hint->setText(on ? TR("Kattints a hullámformára: új pont a görbén · húzd: szint és idő · jobb gomb vagy dupla kattintás: törlés")
+                         : TR("A jelölők a címkéjüknél vagy a vonaluknál fogva húzhatók · kattintás a hullámformán: lejátszás onnan"));
+    });
+    connect(envClear_, &QPushButton::clicked, this, [this] {
+        wave_->setEnvelope({});
+        emit wave_->envelopeEdited();
+    });
     root->addLayout(transport);
 
     auto *grid = new QGridLayout;
@@ -539,6 +689,7 @@ void ItemEditorDialog::playFrom(qint64 ms)
         status_->setText(TR("Nem játszható le: %1").arg(QString::fromStdString(err)));
         return;
     }
+    pfl.setEnvelope(env::toSource(wave_->envelope(), eter::kRate));
     if (ms > 0) pfl.seek(ms * eter::kRate / 1000);
     pfl.play();
     playing_ = true;
@@ -597,6 +748,8 @@ bool ItemEditorDialog::save()
     }
     db_->updateItemDetails(item_.id, category_->currentData().toInt(), title, artist_->text(), album_->text(), year_->value());
     db_->setItemMarkers(item_.id, cue, intro, outro);
+    const QString envText = env::toString(wave_->envelope());
+    if (envText != item_.volumeEnv) db_->setItemVolumeEnvelope(item_.id, envText);
     int mask = 0;
     for (int p = 0; p < Scheduler::kDayparts; ++p)
         if (dayparts_[p]->isChecked()) mask |= 1 << p;
@@ -612,6 +765,18 @@ bool ItemEditorDialog::save()
     db_->notifyItemsChanged();
     emit saved(item_.id);
     return true;
+}
+
+void ItemEditorDialog::setEnvelopeEditing(bool on)
+{
+    if (envBtn_->isChecked() != on) {
+        envBtn_->setChecked(on);                // a toggled jel visszahív ide
+        return;
+    }
+    envBtn_->setProperty("active", on);
+    envBtn_->style()->unpolish(envBtn_);
+    envBtn_->style()->polish(envBtn_);
+    wave_->setEnvelopeMode(on);
 }
 
 void ItemEditorDialog::reject()
