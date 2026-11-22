@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(eter VERSION 0.29.3 LANGUAGES C CXX)
+project(eter VERSION 0.29.4 LANGUAGES C CXX)
 if(WIN32)
     enable_language(RC)
 endif()

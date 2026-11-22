@@ -215,7 +215,7 @@ accented letters, for example `C:\eter`.
 
 ### Releases
 
-Pushing a tag such as `v0.21.0` makes the GitHub workflow in `.github/workflows/build.yml`
+Pushing a tag such as `v0.29.3` makes the GitHub workflow in `.github/workflows/build.yml`
 build the AppImage and the Windows zip and attach them to a release.
 
 ## Source layout
@@ -231,7 +231,8 @@ build the AppImage and the Windows zip and attach them to a release.
 - `packaging` – desktop entry, Windows resources, the libproxy stand-in used in the AppImage
 - `i18n/en.json` – English interface text (see [CONTRIBUTING.md](CONTRIBUTING.md))
 
-Source comments are in Hungarian. The changes of each version are listed in [CHANGELOG.md](CHANGELOG.md).
+Source comments are in Hungarian. The changes of each version are listed in [CHANGELOG.md](CHANGELOG.md); a summary of what is new since 0.18 is in
+[docs/whats-new-since-0.18.md](docs/whats-new-since-0.18.md).
 
 ## Credits
 

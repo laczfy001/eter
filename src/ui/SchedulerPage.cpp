@@ -298,6 +298,34 @@ QWidget *SchedulerPage::buildClockPanel()
     h->addWidget(copy);
     h->addWidget(del);
     v->addWidget(head);
+    {
+        // A séma saját kitöltési kategóriája az élő igazításhoz (a fix pont előtti hiány kitöltése, csere).
+        auto *fillRow = new QFrame;
+        fillRow->setObjectName("panelHeader");
+        auto *fr = new QHBoxLayout(fillRow);
+        fr->setContentsMargins(10, 5, 10, 5);
+        fr->setSpacing(6);
+        auto *l = new QLabel(TR("Kitöltés a fix pontok előtt ebből"));
+        l->setObjectName("small");
+        clockFill_ = new QComboBox;
+        clockFill_->setObjectName("clockFill");
+        l->setBuddy(clockFill_);
+        clockFill_->setToolTip(TR("Ebben az órasémában a fix idejű elem előtti automatikus kitöltés és csere ebből a "
+                                  "kategóriából választ. „Az általános beállítás szerint”: a Szabályok → „Kitöltés ebből” "
+                                  "érvényes. A séma az az óra, amelyben a fix pont előtti zene szól (a 13:00-s hírek előtt "
+                                  "a 12 órás séma)."));
+        fr->addWidget(l);
+        fr->addWidget(clockFill_);
+        fr->addStretch(1);
+        v->addWidget(fillRow);
+        connect(clockFill_, &QComboBox::activated, this, [this] {
+            const int id = currentClockId();
+            if (!id) return;
+            const QString key = QStringLiteral("fix_fill_category_clock_%1").arg(id);
+            const QString val = clockFill_->currentData().toString();
+            db_->setSetting(key, val);
+        });
+    }
 
     slotTable_ = new QTableWidget(0, 5);
     slotTable_->setHorizontalHeaderLabels({QStringLiteral("#"), TR("Időzítés"), TR("Típus"),
@@ -760,6 +788,7 @@ void SchedulerPage::reloadClocks(int selectId)
         clockName_->clear();
     }
     loading_ = false;
+    reloadClockFill();
     reloadSlots();
 }
 
@@ -1104,6 +1133,22 @@ void SchedulerPage::reloadFixCategories()
     const QString current = db_->setting("fix_fill_category", "0");
     fixCategory_->clear();
     fixCategory_->addItem(TR("az előtte szóló zene kategóriája"), QStringLiteral("0"));
+    fixCategory_->addItem(TR("az óra sémájának kitöltő kategóriája"), QStringLiteral("-1"));
     for (const Category &c : db_->itemCategories()) fixCategory_->addItem(c.name, QString::number(c.id));
     fixCategory_->setCurrentIndex(std::max(0, fixCategory_->findData(current)));
+    reloadClockFill();
+}
+
+void SchedulerPage::reloadClockFill()
+{
+    if (!clockFill_) return;
+    const int id = currentClockId();
+    clockFill_->clear();
+    clockFill_->setEnabled(id != 0);
+    clockFill_->addItem(TR("az általános beállítás szerint"), QString());
+    clockFill_->addItem(TR("az előtte szóló zene kategóriája"), QStringLiteral("0"));
+    clockFill_->addItem(TR("a séma kitöltő kategóriája"), QStringLiteral("-1"));
+    for (const Category &c : db_->itemCategories()) clockFill_->addItem(c.name, QString::number(c.id));
+    const QString cur = id ? db_->setting(QStringLiteral("fix_fill_category_clock_%1").arg(id), QString()) : QString();
+    clockFill_->setCurrentIndex(std::max(0, clockFill_->findData(cur)));
 }

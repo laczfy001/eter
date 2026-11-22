@@ -74,10 +74,25 @@ void MainWindow::updateFixBar()
 
 int MainWindow::defaultFillCategory(int fixRowId) const
 {
-    const int chosen = db_->setting("fix_fill_category", "0").toInt();
-    if (chosen > 0) return chosen;
-    // A fix pont előtti utolsó zenei elem kategóriája.
+    // A fix pont előtti zene órájának sémája: annak saját beállítása, ha van, különben az általános.
     const int at = indexOfRow(fixRowId);
+    int clockId = 0;
+    {
+        const Row *fixRow = const_cast<MainWindow *>(this)->rowById(fixRowId);
+        QDateTime t = fixRow && fixRow->fixedAt.isValid() ? fixRow->fixedAt : plannedStart_.value(fixRowId, eter::now());
+        t = t.addSecs(-1);
+        clockId = const_cast<Database *>(db_)->weekGrid().value((t.date().dayOfWeek() - 1) * 100 + t.time().hour(), 0);
+    }
+    QString setting = clockId ? db_->setting(QStringLiteral("fix_fill_category_clock_%1").arg(clockId), QString()) : QString();
+    if (setting.isEmpty()) setting = db_->setting("fix_fill_category", "0");
+    const int chosen = setting.toInt();
+    if (chosen > 0) return chosen;
+    if (chosen < 0 && clockId) {
+        // A séma „Kitöltés a következő fix pontig” sorának kategóriája (az első ilyen sor).
+        for (const ClockSlot &s : const_cast<Database *>(db_)->clockSlots(clockId))
+            if (s.type == QLatin1String("fill") && s.categoryId > 0) return s.categoryId;
+    }
+    // A fix pont előtti utolsó zenei elem kategóriája.
     for (int i = at - 1; i >= 0; --i)
         if (rows_[i].item.kind == QLatin1String("music")) return rows_[i].item.categoryId;
     for (const Category &c : db_->itemCategories())

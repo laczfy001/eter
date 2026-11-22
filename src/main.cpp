@@ -1888,6 +1888,36 @@ int main(int argc, char **argv)
         if (qEnvironmentVariableIsSet("ETER_FIX_TAIL")) window.appendItems(songs, -1, 0, {}, QStringLiteral("scheduler"));
         db.setSetting("fix_adjust", qEnvironmentVariable("ETER_FIX_ADJUST", "manual"));
         db.setSetting("fix_gap_fill", qEnvironmentVariable("ETER_FIX_GAP", "0"));
+        if (qEnvironmentVariableIsSet("ETER_FIX_CLOCKFILL")) {
+            // Külön „12 Inch” kategória (a számok másolata) és séma a fix pont előtti órára; a séma saját kitöltési
+            // beállítása ETER_FIX_CLOCKFILL („-1”: a séma kitöltő kategóriája, „cat”: a 12 Inch kategória, „”: általános).
+            const int twelve = db.addCategory(QStringLiteral("12 Inch"), "music", "#f5a524");
+            for (int k = 0; k < songs.size(); ++k) {
+                Item it = db.item(songs[k]);
+                it.id = 0;
+                it.categoryId = twelve;
+                static QTemporaryDir copies;   // a fájlútvonal egyedi a hangtárban
+                const QString to = copies.filePath(QStringLiteral("12in-%1.%2").arg(k + 1).arg(QFileInfo(it.path).suffix()));
+                QFile::link(it.path, to);
+                it.path = to;
+                it.title = QStringLiteral("12in-%1").arg(k + 1);
+                it.artist = QStringLiteral("Twelve %1").arg(k + 1);
+                db.addItem(it);
+            }
+            db.notifyItemsChanged();
+            const int clock = db.addClock(QStringLiteral("12 Inch"), "#f5a524");
+            ClockSlot slot;
+            slot.clockId = clock;
+            slot.type = QStringLiteral("fill");
+            slot.categoryId = twelve;
+            db.addSlot(slot);
+            const QDateTime before = at.addSecs(-1);
+            db.setGrid(before.date().dayOfWeek() - 1, before.time().hour(), clock);
+            QString v = qEnvironmentVariable("ETER_FIX_CLOCKFILL");
+            if (v == QLatin1String("cat")) v = QString::number(twelve);
+            db.setSetting(QStringLiteral("fix_fill_category_clock_%1").arg(clock), v);
+            db.setSetting("fix_fill_category", QString::number(music));
+        }
         window.setMode(MainWindow::Auto);
         auto report = [&window](const char *when) {
             std::printf("%-22s %s\n  sorok: %s\n", when, qPrintable(window.fixDebug()), qPrintable(window.debugState()));

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.29.4
+- The category used to fill before a fixed point can now be set **for each clock** (Scheduler → Clock → *Fill before
+  fixed points from*). Before, *Fill from* in Rules was one setting for all clocks, so choosing "12 Inch" for a 12 Inch
+  hour also filled the Pop hours with 12 Inch tracks. A clock can use the general setting (default), the category
+  of the music before the fixed point, the clock's own *Fill to the next fixed point* category, or any category. The
+  clock that counts is the one of the hour in which the music before the fixed point plays (for the 13:00 news, the
+  12 o'clock clock).
+- The general *Fill from* setting has a new choice too: *the fill category of the hour's clock*.
+
 ## 0.29.3
 - Scheduler: the **Rules** section can be collapsed and is collapsed by default; click its header to open it. This
   leaves more room for the clock and the selected element.

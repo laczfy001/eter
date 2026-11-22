@@ -216,7 +216,7 @@ legyen, amelyben nincs szóköz és ékezetes betű, például `C:\eter`.
 
 ### Kiadások
 
-Ha egy `v0.21.0` formájú címkét (tag) töltesz fel, a `.github/workflows/build.yml` munkafolyamat
+Ha egy `v0.29.3` formájú címkét (tag) töltesz fel, a `.github/workflows/build.yml` munkafolyamat
 megépíti az AppImage-et és a windowsos zipet, és egy kiadáshoz (release) csatolja őket.
 
 ## A forrás felépítése
@@ -232,7 +232,8 @@ megépíti az AppImage-et és a windowsos zipet, és egy kiadáshoz (release) cs
 - `packaging` – asztali bejegyzés, windowsos erőforrások, az AppImage-ben használt libproxy-helyettesítő
 - `i18n/en.json` – a felület angol szövegei
 
-A forrás megjegyzései magyarul vannak. Az egyes verziók változásai: [CHANGELOG.md](CHANGELOG.md).
+A forrás megjegyzései magyarul vannak. Az egyes verziók változásai: [CHANGELOG.md](CHANGELOG.md); a 0.18 óta érkezett újdonságok angol nyelvű
+összefoglalója: [docs/whats-new-since-0.18.md](docs/whats-new-since-0.18.md).
 
 ## Fordítások
 

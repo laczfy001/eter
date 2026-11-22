@@ -2747,5 +2747,15 @@ const I18nPair kEnglish[] = {
      "First drag items into the mixdown and click the timeline where the voice track should start."},
     {"A szabályok megjelenítése vagy elrejtése",
      "Show or hide the rules"},
+    {"Kitöltés a fix pontok előtt ebből",
+     "Fill before fixed points from"},
+    {"Ebben az órasémában a fix idejű elem előtti automatikus kitöltés és csere ebből a kategóriából választ. „Az általános beállítás szerint”: a Szabályok → „Kitöltés ebből” érvényes. A séma az az óra, amelyben a fix pont előtti zene szól (a 13:00-s hírek előtt a 12 órás séma).",
+     "In this clock, the automatic fill and swap before a fixed-time item takes tracks from this category. “Per the general setting”: Rules → “Fill from” applies. The clock is the one of the hour in which the music before the fixed point plays (for the 13:00 news, the 12 o’clock clock)."},
+    {"az óra sémájának kitöltő kategóriája",
+     "the fill category of the hour’s clock"},
+    {"az általános beállítás szerint",
+     "per the general setting"},
+    {"a séma kitöltő kategóriája",
+     "the clock’s fill category"},
 };
-const int kEnglishCount = 1372;
+const int kEnglishCount = 1377;

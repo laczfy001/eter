@@ -77,6 +77,8 @@ private:
     QSpinBox *artistGap_, *titleGap_, *ahead_;
     QComboBox *policy_, *fixAdjust_, *fixCategory_;
     void reloadFixCategories();
+    void reloadClockFill();               // a kijelölt séma saját „Kitöltés ebből” beállítása
+    QComboBox *clockFill_ = nullptr;
     QCheckBox *autoGen_;
     QPointer<QDialog> picker_;
 };
