@@ -1,5 +1,7 @@
 #include "i18n.h"
 #include "ItemEditor.h"
+#include "core/MusicKey.h"
+#include "core/Vocal.h"
 #include "Library.h"
 #include "Theme.h"
 #include "audio/Decoder.h"
@@ -415,6 +417,38 @@ ItemEditorDialog::ItemEditorDialog(Database *db, eter::Engine *engine, int itemI
     flow->addWidget(bpmEstimate_);
     flow->addWidget(bpmTap_);
     flow->addSpacing(10);
+    key_ = new QComboBox;
+    key_->addItem(TR("nem ismert"), 0);
+    for (int n = 1; n <= 12; ++n)
+        for (bool minor : {true, false}) {
+            int k = 0;
+            for (int c = 1; c <= 24; ++c)
+                if (mkey::camelotNumber(c) == n && mkey::isMinor(c) == minor) k = c;
+            const QString other = mkey::name(k, !mkey::camelotNotation());
+            key_->addItem(mkey::display(k) + QStringLiteral("  ·  ") + other, k);
+        }
+    key_->setCurrentIndex(std::max(0, key_->findData(item_.musicKey)));
+    key_->setToolTip(TR("Hangnem (Camelot-kerék): az ütemező szabályaihoz, hogy egymáshoz illő hangnemű számok kövessék egymást"));
+    keyEstimate_ = new QPushButton(TR("Becslés"));
+    keyEstimate_->setToolTip(TR("A hangnem becslése a hangfájlból"));
+    flow->addWidget(new QLabel(TR("Hangnem")));
+    flow->addWidget(key_);
+    flow->addWidget(keyEstimate_);
+    flow->addStretch(1);
+    root->addLayout(flow);
+    flow = new QHBoxLayout;
+    flow->setSpacing(8);
+    vocal_ = new QComboBox;
+    for (int v : {vocal::Unknown, vocal::Male, vocal::Female, vocal::Group, vocal::Mixed, vocal::Instrumental})
+        vocal_->addItem(v == vocal::Unknown ? vocal::name(v) : vocal::name(v) + QStringLiteral("  ·  ") + vocal::letter(v), v);
+    vocal_->setCurrentIndex(std::max(0, vocal_->findData(item_.vocal)));
+    vocal_->setToolTip(TR("Az ütemező „azonos ének egymás után legfeljebb” szabályához. A vegyes a férfi–női duett; a nem "
+                          "ismert és az instrumentális nem számít bele a sorozatba."));
+    auto *vocalLabel = new QLabel(TR("Ének"));
+    vocalLabel->setBuddy(vocal_);
+    flow->addWidget(vocalLabel);
+    flow->addWidget(vocal_);
+    flow->addSpacing(10);
     flow->addWidget(new QLabel(TR("Napszak")));
     for (int p = 0; p < Scheduler::kDayparts; ++p) {
         dayparts_[p] = new QCheckBox(Scheduler::daypartName(p));
@@ -562,6 +596,35 @@ ItemEditorDialog::ItemEditorDialog(Database *db, eter::Engine *engine, int itemI
     connect(category_, &QComboBox::activated, this, [this] { markDirty(); });
     connect(energy_, &QComboBox::activated, this, [this] { markDirty(); });
     connect(bpm_, &QDoubleSpinBox::valueChanged, this, [this] { if (!loading_) markDirty(); });
+    connect(key_, &QComboBox::activated, this, [this] { markDirty(); });
+    connect(vocal_, &QComboBox::activated, this, [this] { markDirty(); });
+    connect(keyEstimate_, &QPushButton::clicked, this, [this] {
+        if (keyThread_.joinable()) return;
+        keyEstimate_->setEnabled(false);
+        status_->setText(TR("Hangnem becslése…"));
+        QPointer<ItemEditorDialog> self(this);
+        const std::string path = item_.path.toStdString();
+        auto flag = cancel_;
+        keyThread_ = std::thread([self, path, flag] {
+            double confidence = 0;
+            const int key = eter::estimateKey(path, *flag, &confidence);
+            if (flag->load()) return;
+            QMetaObject::invokeMethod(qApp, [self, key, confidence] {
+                if (!self) return;
+                if (self->keyThread_.joinable()) self->keyThread_.join();
+                self->keyEstimate_->setEnabled(true);
+                if (mkey::valid(key)) {
+                    self->key_->setCurrentIndex(std::max(0, self->key_->findData(key)));
+                    self->markDirty();
+                    self->status_->setText(confidence < 0.05
+                        ? TR("Becsült hangnem: %1 – bizonytalan (a párhuzamos dúr/moll is lehet).").arg(mkey::both(key))
+                        : TR("Becsült hangnem: %1").arg(mkey::both(key)));
+                } else {
+                    self->status_->setText(TR("A hangnem nem állapítható meg (nincs elég hangmagasság-információ)."));
+                }
+            }, Qt::QueuedConnection);
+        });
+    });
     for (QCheckBox *b : dayparts_) connect(b, &QCheckBox::toggled, this, [this] { if (!loading_) markDirty(); });
     connect(bpmTap_, &QPushButton::clicked, this, [this] {
         // A legutóbbi kattintások átlagos távolsága; 2 mp szünet után újrakezdődik.
@@ -650,6 +713,7 @@ ItemEditorDialog::~ItemEditorDialog()
     cancel_->store(true);
     if (thread_.joinable()) thread_.join();
     if (bpmThread_.joinable()) bpmThread_.join();
+    if (keyThread_.joinable()) keyThread_.join();
     if (playing_) stopPreview();
 }
 
@@ -755,6 +819,8 @@ bool ItemEditorDialog::save()
         if (dayparts_[p]->isChecked()) mask |= 1 << p;
     if (mask == (1 << Scheduler::kDayparts) - 1) mask = 0;
     db_->setItemFlow({item_.id}, energy_->currentData().toInt(), bpm_->value(), mask);
+    if (key_->currentData().toInt() != item_.musicKey) db_->setItemKey({item_.id}, key_->currentData().toInt());
+    if (vocal_->currentData().toInt() != item_.vocal) db_->setItemVocal({item_.id}, vocal_->currentData().toInt());
     item_ = db_->item(item_.id);
     dirty_ = false;
     save_->setEnabled(false);

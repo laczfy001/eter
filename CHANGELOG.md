@@ -1,5 +1,179 @@
 # Changelog
 
+## 0.29.3
+- Scheduler: the **Rules** section can be collapsed and is collapsed by default; click its header to open it. This
+  leaves more room for the clock and the selected element.
+
+## 0.29.2
+- Mixdown: a voice track can be **selected and deleted on its own** (click it on the timeline, then *Delete* or the
+  Delete key); before, deleting removed the item under it too. The selected voice track has an orange frame.
+- Mixdown: a new voice track (recorded, from a file or from the library) goes **where the selection is**: to the point
+  where you clicked a clip on the timeline (the playhead moves there), or to the start of the item selected in the
+  list. With a voice track selected, the new one replaces it in the same place.
+- Mixdown: clicking a clip on the timeline now selects that clip (before, the one before it), so *Delete* removes the
+  clip you clicked.
+
+## 0.29.1
+- Mixdown: **volume curve** for every clip (*Volume curve* button): click a clip for a new point, drag points (up and
+  down: level from 0 to −40 dB, sideways: time), right-click or double-click deletes. It starts from the item's own
+  curve but belongs to the mixdown only (saved in the mixdown project, the item is not changed). In a test, a −20 dB
+  section drawn on a clip measured 20.1 dB quieter in the rendered file.
+- Mixdown: items can be **dragged straight onto the timeline**, to the lane and the moment where they are dropped
+  (an orange marker shows where). The items after it keep their times when the dropped one fits before them, so a
+  jingle can be layered over the music on the other lane. Clips can also be moved to the other lane by dragging them
+  up or down. Items dropped on the voice-track lane become the voice track of the nearest transition.
+- A transition's mix point may now be later than the end of the item (the next one starts after a pause, while
+  something else can play on the other lane).
+- The volume curve between two points now changes evenly in dB in the mixdown too, as in playback.
+
+## 0.29.0
+- New **Mixdown** page (tab after the Playlist editor): put a sequence of items together, add voice tracks over the
+  transitions, and render it into one audio file, sample-accurately.
+  - Drag items in from the page's own library list or from the main window's library; reorder with drag or ↑ ↓.
+  - The transitions are the mixdown's own, completely independent of the Mix editor and the playlist: when items
+    are added they are set by the smart mix (fade-out and sudden endings, soft and strong intros, tempo and key),
+    then they can be changed freely – drag a clip on the timeline (mix point), its edges (start and end point), or
+    use the fields under it (mix point, fade-out, end, next start, voice-track start, music under the voice track).
+    *Back to automatic* restores the calculated values.
+  - Voice tracks: record (the silence at both ends is trimmed), from a file, or from the library's voice-track
+    category; the music is ducked under them with 0.3 s ramps.
+  - Preview from the red line (90 s) or listen to the selected transition on the preview output.
+  - Save and reopen mixdown projects.
+  - *Create mixdown…*: MP3 (128–320 kbps) or WAV (16/24 bit), 48 or 44.1 kHz, optional peak limit at −1 dBFS
+    (two passes: only turns the whole mix down if needed), and adding it to the library's "Mixdown" category
+    (created if missing). Rendering runs much faster than real time, the broadcast is not affected. In a test, a
+    2.5-minute mix with five items and a voice track took 0.3 s as WAV and 3.3 s as MP3 (192 kbps, with the peak limit, i.e. two passes).
+
+## 0.28.0
+- Mini mixer in the clock panel of the main window (it replaces the old "Players" level meter): channels for the three
+  players (A, B, C), the voice track, the cartwall and the main output (OUT). Each has a stereo level meter after the
+  fader with a 2-second peak hold and an overload indicator (click to clear), a fader from −∞ to +6 dB (catches at
+  0 dB; wheel ±1 dB, Shift+wheel ±0.1 dB; double-click: 0 dB) and a mute button. Right-click: 0 dB, mute, reset all.
+- The faders act above the mix and the volume curve: transitions sound the same, only the whole channel is louder or
+  quieter. The main output fader acts on everything that goes on air (overlaid items included). Fader positions are
+  kept after a restart; mutes are not, so the station never starts silent. Muting the player on air or the main
+  output asks first.
+- The time left until the end of the hour moved next to the date.
+
+## 0.27.0
+- Vocal attribute for every item: male, female, group, mixed (duet) or instrumental. Set it in the item editor (next
+  to Dayparts) or for many tracks at once from the library's right-click menu (*Set vocal ▸*); the library has a
+  sortable, coloured Vocal column.
+- Scheduler rule *Same vocal in a row: at most N* (Scheduler → Rules), one number for every vocal type. Unknown and
+  instrumental tracks do not count and do not break a run. It works like the other music-flow rules: relaxed only when
+  no track fits, followed by the fill to a fixed point, and reported after generating ("vocal: 84 / 84 tracks within
+  the rule"). In a 6-hour test with half the library female, the longest run of the same vocal went from 5 to 2.
+- The playlist shows the vocal as a letter after tempo and key (Hungarian F N E V I, English M F G X I), and marks a
+  track that makes the run too long with ⚠ ("3 female vocals in a row (at most 2)").
+- The fill to a fixed point now also orders its last tracks by the slow-songs rule.
+- The Scheduler and the Mix editor open in their own windows only when the screen resolution is below 1920×1080
+  (physical pixels, regardless of scaling); on a larger screen they are pages in the main window again.
+- Database schema 14 (upgraded automatically).
+
+## 0.26.2
+- Fixed: the automatic fill before a fixed point stopped after three changes per fixed point, so after deleting the
+  filled track by hand a few times the gap stayed empty. The limit is now a safety cap of 20, and when the tracks
+  before the fixed point change (deleted, added, moved, or the next one starts), it checks again 3 seconds later
+  instead of waiting up to two minutes.
+- A track removed from the playlist by hand is not put back by the automatic fill for two hours; it picks another one.
+
+## 0.26.1
+- New switch in Scheduler → Rules: *Fill a gap with one song*, with *may run over by at most* (default 20 s). In Auto
+  mode, when there would be silence before a fixed-time item, one track from the fill category is added that covers the
+  gap; it may run over by up to the set limit and is faded out at the fixed time. If no track is within the limit, the
+  one with the smallest overrun is used (still better than silence); if every track is shorter than the gap, the longest
+  one goes in and the rest is filled a minute later. It works on its own or together with the fixed-point adjustment.
+- Fixed: the automatic fixed-point adjustment gave up after three unsuccessful attempts. When nothing could be done
+  for a while (for example an overrun with *automatic fill*, which can only add tracks), it no longer adjusted later
+  when the overrun had turned into a gap. Now only adjustments actually made count (at most three per fixed point); a
+  check that finds nothing to do is simply repeated two minutes later.
+
+## 0.26.0
+- Smart automatic mix. Between two songs in automatic mix mode the program now looks at the end of the outgoing track
+  and the start of the next one instead of using a single level threshold:
+  - a **fade-out ending** is recognised, and the next track starts once the outgoing one has faded by a set amount
+    (default 10 dB); a **sudden ending** gets a tight join (default 0.15 s overlap);
+  - a **soft, rising intro** starts earlier, under the end of the outgoing track (by up to 6 s by default); a **strong
+    start** comes in at the end;
+  - with **tempo and key** taken into account, tracks whose tempos differ (more than 6 % by default; half and double
+    tempo count as equal) or whose keys clash on the Camelot wheel get a shorter overlap (2 s by default), with the
+    outgoing track fading throughout it;
+  - the leading silence of the incoming track is skipped, and the longest overlap is capped (8 s by default).
+- All of this is adjustable on the new *Settings → Automatic mix* tab, together with the simple-mode threshold and the
+  default fade-out (which had no setting on the interface before).
+- In automatic mix mode the Mix editor shows the smart plan on the timeline for music-to-music transitions, and the
+  banner explains it (for example "fade-out ending (4.7 s) · soft intro (3.8 s) → the next starts 3.8 s before the
+  audible end"). The remote editor receives the same settings.
+
+## 0.25.0
+- The Scheduler and the Mix editor open in their own windows instead of replacing the on-air view, so the playlist and
+  players stay visible while you work on them (they can also go on a second screen). Clicking the tab again brings the
+  window to the front. Each window remembers its position and size, and windows left open are reopened at the next
+  start. Closing the Mix editor window stops its preview. Space (Next) only works in the main window, so it cannot
+  start the next item by accident while you edit.
+
+## 0.24.3
+- Fixed: the on-time adjustment (and the *Adjust…* dialog) found no track to fill a gap when the playlist was generated
+  far ahead, because it skipped every track that appeared anywhere in the playlist – with a small library (for example
+  100 songs and 24 hours generated ahead) that is all of them. Now a track is only skipped if it plays within the
+  track-repeat time of the fixed point (in the play log or elsewhere in the playlist); if that leaves too few
+  candidates, the repeat time is shortened step by step (to half, then to 30 minutes). Tracks playing farthest from the
+  fixed point are preferred.
+
+## 0.24.2
+- The playlist shows the tempo and key of every music row (for example "124 · 8A", at the end of the artist line), and
+  marks a row with ⚠ in amber when its transition from the previous track breaks the tempo or key rule; the tooltip
+  says why (for example "tempo jump 14 % (118 → 135 BPM, the rule allows 8 %)" or "key does not match: 8A → 3B").
+- After *Generate playlists* the scheduler reports how well the rules were kept in the generated hours: how many
+  transitions are within the tempo rule and how many keys match, and in how many places a rule had to be relaxed, and
+  which one (music flow, energy band, repetition, daypart). Previously this was a single number labelled as the
+  repetition rule.
+- The fill to a fixed point now orders its last 1–3 tracks by every music-flow rule (tempo, energy jump, key), not only
+  by key, and counts it as a relaxation when the exact fill needs to break one.
+
+## 0.24.1
+- Smarter on-time adjustment before fixed-time items (Scheduler → Rules → Fixed points: *automatic fill, trim and
+  swap*). Previously it could only add items or drop one whole track, which with long tracks (6–8 minute 12-inch mixes)
+  often left minutes of overrun or a gap of silence. Now it looks at every combination of dropping up to two
+  not-yet-started tracks placed by the scheduler and adding up to three tracks from the library, and picks the one that
+  reaches the fixed point most accurately – a few seconds over (faded out at the fixed time, within "Fill accuracy") is
+  preferred to silence. A track already loaded in a player can be swapped too, if it starts at least 90 seconds later.
+  Examples from the test: 2:47 over → 0:04 over (one track swapped for a shorter one); 8 s short (silence) → 0:05 over;
+  4 minutes short → 0:05 over.
+- It now starts up to 30 minutes before the fixed point (was 20), and checks again (at most three times, two minutes
+  apart) if the playlist changes in the meantime. Items added by hand are never removed.
+- The *Adjust…* dialog shows the same combined plan (− dropped / + added) with the result, and can offer another one.
+
+## 0.24.0
+- Musical key for every item, with a Key column in the library (sortable along the Camelot wheel, with the wheel's
+  colour). Notation: Camelot (8A, 5B …) by default, or traditional (Am, C# …) – Settings → Analysis.
+- Keys and tempos are read from the file's tags on import (ID3 TKEY/TBPM, Vorbis/FLAC INITIALKEY/KEY/BPM; Camelot,
+  Open Key and traditional forms are all understood).
+- Key estimation from the audio (chroma analysis against Krumhansl–Kessler key profiles): in the item editor
+  (Estimate button next to the key) and for a selection in the library's context menu. On a synthetic test set of all
+  24 keys every key was found; with real music the relative major/minor can sometimes be confused.
+- Background analysis (Settings → Analysis): goes through the music in the library at the lowest priority (idle thread
+  and disk priority, a pause between tracks) and fills in missing tempos and keys. It runs continuously or only in a
+  daily time window, picks up new imports by itself, and never overwrites values entered by hand or taken from tags.
+- Scheduler key rule (Scheduler → Rules → Key): *prefer matching* or *matching only*, following the Camelot wheel
+  (same key, neighbouring number, or the relative major/minor). The fill to a fixed point also orders its last tracks
+  for the best key flow. In a 6-hour test with random keys, non-matching transitions went from 73 of 85 (no rule) to
+  5 of 79 (prefer) and 1–4 of 80 (matching only).
+- Database schema 13 (upgraded automatically).
+
+## 0.23.0
+- Smarter fill to the next fixed point: the scheduler now chooses the last 1–3 items of a fill together, so that they
+  end as close as possible to the fixed point (within the "Fill accuracy" setting, ±15 s by default). Previously it
+  added items until it passed the fixed point, which with long tracks (for example 6–8 minute 12-inch mixes) could
+  leave several minutes to be faded out. In a test with 400 tracks of 5–8.5 minutes, every one of the 48 fixed points
+  in 24 hours was reached within ±15 s (average 7 s).
+- Clock rows with a count can be set to "at most as many as fit": the count is then an upper limit, and the last items
+  are chosen to fit the time left before the next fixed point (or the end of the hour).
+- The clock editor warns when rows with a fixed count do not fit between two fixed points (the rows turn red, with the
+  estimated and available time), and offers a one-click fix: music rows become "Fill to the next fixed point", other
+  rows "at most as many as fit".
+- Database schema 12 (upgraded automatically).
+
 ## 0.22.2
 - Fixed a random crash ("free(): invalid pointer") while reading audio files, most often right after putting a newly
   imported item in the playlist (when its waveform was being read). The decoder started its channel layout from

@@ -36,8 +36,8 @@ static bool run(QSqlQuery &q)
     "i.id, i.category_id, c.name, c.kind, c.color, i.title, i.artist, i.file_path, i.duration_ms, " \
     "COALESCE(i.last_played_at, 0), COALESCE(i.mix_out_ms, i.auto_mix_out_ms, 0), COALESCE(i.mix_out_ms, 0), " \
     "i.cue_in_ms, COALESCE(i.fade_out_ms, -1), COALESCE(i.fade_curve, ''), COALESCE(i.intro_ms, 0), " \
-    "COALESCE(i.cue_out_ms, 0), i.energy, i.bpm, i.dayparts, i.volume_env"
-static const int kItemColumns = 21;
+    "COALESCE(i.cue_out_ms, 0), i.energy, i.bpm, i.dayparts, i.volume_env, i.music_key, i.analysis_ver, i.vocal"
+static const int kItemColumns = 24;
 static const char *kItemSelect = "SELECT " ETER_ITEM_COLS " FROM items i JOIN categories c ON c.id = i.category_id ";
 
 static Item readItem(const QSqlQuery &q, int o = 0)
@@ -64,6 +64,9 @@ static Item readItem(const QSqlQuery &q, int o = 0)
     it.bpm = q.value(o + 18).toDouble();
     it.dayparts = q.value(o + 19).toInt();
     it.volumeEnv = q.value(o + 20).toString();
+    it.musicKey = q.value(o + 21).toInt();
+    it.analysisVer = q.value(o + 22).toInt();
+    it.vocal = q.value(o + 23).toInt();
     return it;
 }
 
@@ -96,7 +99,7 @@ bool Database::open(const QString &path, QString *err)
     int v = version;
     if (v == 0) {
         if (!createSchema(err)) return false;
-        v = 11;
+        v = kSchemaVersion;
     }
     if (v == 1) {
         // 2. séma: az automatikusan megtalált mix pont eltárolása az ütemező pontosabb tervezéséhez.
@@ -240,6 +243,31 @@ bool Database::open(const QString &path, QString *err)
             return false;
         }
         v = 11;
+    }
+    if (v == 11) {
+        // 12. séma: a darabszámos óraelem lehet „legfeljebb ennyi, amennyi elfér”.
+        if (!q.exec("ALTER TABLE clock_slots ADD COLUMN up_to_fit INTEGER NOT NULL DEFAULT 0") || !q.exec("PRAGMA user_version = 12")) {
+            if (err) *err = TR("Az adatbázis frissítése nem sikerült: %1").arg(q.lastError().text());
+            return false;
+        }
+        v = 12;
+    }
+    if (v == 12) {
+        // 13. séma: hangnem és a háttérelemzés nyilvántartása.
+        if (!q.exec("ALTER TABLE items ADD COLUMN music_key INTEGER NOT NULL DEFAULT 0")
+            || !q.exec("ALTER TABLE items ADD COLUMN analysis_ver INTEGER NOT NULL DEFAULT 0") || !q.exec("PRAGMA user_version = 13")) {
+            if (err) *err = TR("Az adatbázis frissítése nem sikerült: %1").arg(q.lastError().text());
+            return false;
+        }
+        v = 13;
+    }
+    if (v == 13) {
+        // 14. séma: az ének (vokál) jellege.
+        if (!q.exec("ALTER TABLE items ADD COLUMN vocal INTEGER NOT NULL DEFAULT 0") || !q.exec("PRAGMA user_version = 14")) {
+            if (err) *err = TR("Az adatbázis frissítése nem sikerült: %1").arg(q.lastError().text());
+            return false;
+        }
+        v = 14;
     }
     housekeeping();
     return true;
@@ -391,8 +419,8 @@ int Database::addItem(const Item &item, QString *err)
 {
     const QFileInfo fi(item.path);
     QSqlQuery q;
-    q.prepare("INSERT INTO items (category_id, title, artist, file_path, file_size, file_mtime, duration_ms) "
-              "VALUES (?, ?, ?, ?, ?, ?, ?)");
+    q.prepare("INSERT INTO items (category_id, title, artist, file_path, file_size, file_mtime, duration_ms, bpm, music_key) "
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
     q.addBindValue(item.categoryId);
     q.addBindValue(item.title);
     q.addBindValue(item.artist.isNull() ? QStringLiteral("") : item.artist);   // üres, de nem NULL
@@ -400,6 +428,8 @@ int Database::addItem(const Item &item, QString *err)
     q.addBindValue(fi.size());
     q.addBindValue(fi.lastModified().toSecsSinceEpoch());
     q.addBindValue(item.durationMs);
+    q.addBindValue(item.bpm > 0 ? item.bpm : 0.0);
+    q.addBindValue(item.musicKey >= 1 && item.musicKey <= 24 ? item.musicKey : 0);
     if (!q.exec()) {
         if (err) *err = q.lastError().text();
         return 0;
@@ -1100,7 +1130,7 @@ QVector<ClockSlot> Database::clockSlots(int clockId)
     QVector<ClockSlot> out;
     QSqlQuery q;
     q.prepare("SELECT s.id, s.position, s.slot_type, COALESCE(s.category_id, 0), COALESCE(s.item_id, 0), s.item_count, "
-              "COALESCE(s.fixed_offset_s, -1), c.name, c.kind, c.color, i.title, i.artist, ic.kind, ic.color, s.energy_min, s.energy_max "
+              "COALESCE(s.fixed_offset_s, -1), c.name, c.kind, c.color, i.title, i.artist, ic.kind, ic.color, s.energy_min, s.energy_max, s.up_to_fit "
               "FROM clock_slots s LEFT JOIN categories c ON c.id = s.category_id "
               "LEFT JOIN items i ON i.id = s.item_id LEFT JOIN categories ic ON ic.id = i.category_id "
               "WHERE s.clock_id = ? ORDER BY s.position");
@@ -1118,6 +1148,7 @@ QVector<ClockSlot> Database::clockSlots(int clockId)
         s.fixedOffsetS = q.value(6).toInt();
         s.energyMin = q.value(14).toInt();
         s.energyMax = q.value(15).toInt();
+        s.upToFit = q.value(16).toInt() != 0;
         if (s.type == "item") {
             const QString artist = q.value(11).toString();
             s.label = q.value(10).toString() + (artist.isEmpty() ? QString() : QStringLiteral(" – ") + artist);
@@ -1136,8 +1167,8 @@ QVector<ClockSlot> Database::clockSlots(int clockId)
 int Database::addSlot(const ClockSlot &slot)
 {
     QSqlQuery q;
-    q.prepare("INSERT INTO clock_slots (clock_id, position, slot_type, category_id, item_id, item_count, fixed_offset_s, energy_min, energy_max) "
-              "VALUES (?, (SELECT COALESCE(MAX(position), 0) + 1 FROM clock_slots WHERE clock_id = ?), ?, ?, ?, ?, ?, ?, ?)");
+    q.prepare("INSERT INTO clock_slots (clock_id, position, slot_type, category_id, item_id, item_count, fixed_offset_s, energy_min, energy_max, up_to_fit) "
+              "VALUES (?, (SELECT COALESCE(MAX(position), 0) + 1 FROM clock_slots WHERE clock_id = ?), ?, ?, ?, ?, ?, ?, ?, ?)");
     q.addBindValue(slot.clockId);
     q.addBindValue(slot.clockId);
     q.addBindValue(slot.type);
@@ -1147,6 +1178,7 @@ int Database::addSlot(const ClockSlot &slot)
     q.addBindValue(slot.fixedOffsetS >= 0 ? QVariant(slot.fixedOffsetS) : QVariant());
     q.addBindValue(std::clamp(slot.energyMin, 0, 5));
     q.addBindValue(std::clamp(slot.energyMax, 0, 5));
+    q.addBindValue(slot.upToFit ? 1 : 0);
     if (!run(q)) return 0;
     return q.lastInsertId().toInt();
 }
@@ -1155,7 +1187,7 @@ void Database::updateSlot(const ClockSlot &slot)
 {
     QSqlQuery q;
     q.prepare("UPDATE clock_slots SET slot_type = ?, category_id = ?, item_id = ?, item_count = ?, fixed_offset_s = ?, "
-              "energy_min = ?, energy_max = ? WHERE id = ?");
+              "energy_min = ?, energy_max = ?, up_to_fit = ? WHERE id = ?");
     q.addBindValue(slot.type);
     q.addBindValue(slot.type != "item" && slot.categoryId ? QVariant(slot.categoryId) : QVariant());
     q.addBindValue(slot.type == "item" && slot.itemId ? QVariant(slot.itemId) : QVariant());
@@ -1163,6 +1195,7 @@ void Database::updateSlot(const ClockSlot &slot)
     q.addBindValue(slot.fixedOffsetS >= 0 ? QVariant(slot.fixedOffsetS) : QVariant());
     q.addBindValue(std::clamp(slot.energyMin, 0, 5));
     q.addBindValue(std::clamp(slot.energyMax, 0, 5));
+    q.addBindValue(slot.upToFit ? 1 : 0);
     q.addBindValue(slot.id);
     run(q);
 }
@@ -1335,6 +1368,87 @@ void Database::setItemVolumeEnvelope(int itemId, const QString &envelope)
     run(q);
 }
 
+void Database::setItemVocal(const QVector<int> &ids, int vocal)
+{
+    if (vocal < 0 || vocal > 5) return;
+    if (remoteHook)
+        for (int id : ids) remoteHook("setItemVocal", QJsonObject{{"item", id}, {"vocal", vocal}});
+    beginBatch();
+    for (int id : ids) {
+        QSqlQuery q;
+        q.prepare("UPDATE items SET vocal = ? WHERE id = ?");
+        q.addBindValue(vocal);
+        q.addBindValue(id);
+        run(q);
+    }
+    endBatch();
+}
+
+void Database::setItemKey(const QVector<int> &ids, int key)
+{
+    if (key < 0 || key > 24) return;
+    if (remoteHook)
+        for (int id : ids) remoteHook("setItemKey", QJsonObject{{"item", id}, {"key", key}});
+    beginBatch();
+    for (int id : ids) {
+        QSqlQuery q;
+        q.prepare("UPDATE items SET music_key = ? WHERE id = ?");
+        q.addBindValue(key);
+        q.addBindValue(id);
+        run(q);
+    }
+    endBatch();
+}
+
+QVector<AnalysisJob> Database::analysisJobs(int version, int limit)
+{
+    // Zene, amelynek a tempója vagy a hangneme hiányzik, és ez a verzió még nem nézte meg. A legrégebben
+    // felvettek előbb (az azonosító szerint), hogy az elemzés kiszámíthatóan haladjon.
+    QVector<AnalysisJob> out;
+    QSqlQuery q;
+    q.prepare("SELECT i.id, i.file_path, i.bpm <= 0, i.music_key = 0 FROM items i JOIN categories c ON c.id = i.category_id "
+              "WHERE c.kind = 'music' AND i.analysis_ver < ? AND (i.bpm <= 0 OR i.music_key = 0) ORDER BY i.id LIMIT ?");
+    q.addBindValue(version);
+    q.addBindValue(limit);
+    if (!run(q)) return out;
+    while (q.next()) out.push_back({q.value(0).toInt(), q.value(1).toString(), q.value(2).toBool(), q.value(3).toBool()});
+    return out;
+}
+
+void Database::analysisCounts(int version, int *pending, int *total)
+{
+    QSqlQuery q;
+    q.prepare("SELECT COUNT(*), SUM(CASE WHEN i.analysis_ver < ? AND (i.bpm <= 0 OR i.music_key = 0) THEN 1 ELSE 0 END) "
+              "FROM items i JOIN categories c ON c.id = i.category_id WHERE c.kind = 'music'");
+    q.addBindValue(version);
+    if (run(q) && q.next()) {
+        if (total) *total = q.value(0).toInt();
+        if (pending) *pending = q.value(1).toInt();
+    }
+}
+
+void Database::setItemAnalysis(int itemId, int version, double bpm, int key)
+{
+    // Csak az üres mezőt tölti ki: a kézzel (vagy címkéből) megadott értéket soha nem írja felül.
+    QSqlQuery q;
+    q.prepare("UPDATE items SET bpm = CASE WHEN bpm <= 0 AND ? > 0 THEN ? ELSE bpm END, "
+              "music_key = CASE WHEN music_key = 0 AND ? BETWEEN 1 AND 24 THEN ? ELSE music_key END, "
+              "analysis_ver = MAX(analysis_ver, ?) WHERE id = ?");
+    q.addBindValue(bpm);
+    q.addBindValue(bpm);
+    q.addBindValue(key);
+    q.addBindValue(key);
+    q.addBindValue(version);
+    q.addBindValue(itemId);
+    run(q);
+}
+
+void Database::resetAnalysis()
+{
+    QSqlQuery q;
+    if (!q.exec("UPDATE items SET analysis_ver = 0")) qWarning("SQL hiba: %s", qPrintable(q.lastError().text()));
+}
+
 void Database::setItemIntro(int itemId, qint64 introMs)
 {
     if (remoteHook) remoteHook("setItemIntro", QJsonObject{{"item", itemId}, {"ms", introMs}});
@@ -1409,8 +1523,8 @@ bool Database::mirrorLibrary(const QVector<Category> &categories, const QVector<
         ok = ins.exec();
     }
     ok = ok && ins.prepare("INSERT INTO items (id, category_id, title, artist, file_path, duration_ms, last_played_at, cue_in_ms, "
-                           "intro_ms, mix_out_ms, cue_out_ms, fade_out_ms, fade_curve, auto_mix_out_ms, energy, bpm, dayparts, volume_env) "
-                           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                           "intro_ms, mix_out_ms, cue_out_ms, fade_out_ms, fade_curve, auto_mix_out_ms, energy, bpm, dayparts, volume_env, "
+                           "music_key, analysis_ver, vocal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     QSet<QString> paths;
     for (const Item &it : items) {
         if (!ok) break;
@@ -1435,6 +1549,9 @@ bool Database::mirrorLibrary(const QVector<Category> &categories, const QVector<
         ins.addBindValue(it.bpm);
         ins.addBindValue(it.dayparts);
         ins.addBindValue(it.volumeEnv.isEmpty() ? QStringLiteral("") : it.volumeEnv);
+        ins.addBindValue(it.musicKey);
+        ins.addBindValue(it.analysisVer);
+        ins.addBindValue(it.vocal);
         ok = ins.exec();
     }
     if (!ok) {

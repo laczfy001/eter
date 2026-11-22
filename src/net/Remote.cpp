@@ -22,7 +22,9 @@ QJsonObject itemToJson(const Item &it)
     return QJsonObject{{"id", it.id}, {"cat", it.categoryId}, {"title", it.title}, {"artist", it.artist}, {"path", it.path},
                        {"dur", it.durationMs}, {"last", it.lastPlayedAt}, {"mix", it.mixOutMs}, {"userMix", it.userMixOutMs},
                        {"cueIn", it.cueInMs}, {"fadeOut", it.fadeOutMs}, {"curve", it.fadeCurve}, {"intro", it.introMs},
-                       {"cueOut", it.cueOutMs}, {"energy", it.energy}, {"bpm", it.bpm}, {"parts", it.dayparts}, {"env", it.volumeEnv}};
+                       {"cueOut", it.cueOutMs}, {"energy", it.energy}, {"bpm", it.bpm}, {"parts", it.dayparts}, {"env", it.volumeEnv},
+                       {"key", it.musicKey}, {"aver", it.analysisVer},
+                       {"vocal", it.vocal}};
 }
 
 Item itemFromJson(const QJsonObject &o)
@@ -46,6 +48,9 @@ Item itemFromJson(const QJsonObject &o)
     it.bpm = o.value("bpm").toDouble();
     it.dayparts = o.value("parts").toInt();
     it.volumeEnv = o.value("env").toString();
+    it.musicKey = std::clamp(o.value("key").toInt(), 0, 24);
+    it.analysisVer = o.value("aver").toInt();
+    it.vocal = std::clamp(o.value("vocal").toInt(), 0, 5);
     return it;
 }
 

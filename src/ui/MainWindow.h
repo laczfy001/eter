@@ -1,4 +1,5 @@
 #pragma once
+#include "audio/SmartMix.h"
 #include "audio/Engine.h"
 #include "db/Database.h"
 #include "sched/Scheduler.h"
@@ -65,6 +66,10 @@ public:
     static QColor playerColor(int i);
     // Átmenetek: automatikus mix (zenék között) vagy a Mix editorban mentett beállítások.
     bool autoMix() const { return autoMix_; }
+    void reloadMixSettings();   // az automatikus mix beállításai megváltoztak (Beállítások)
+    class ChannelMixer *mixer() const { return mixer_; }
+    class MixdownPage *mixdownPage() const { return mixdownPage_; }
+    void applyMixerGains();
     void setAutoMix(bool on);
     QString routeOf(int ch) const { return ch == kCartRoute ? cartRoute_ : routes_[ch]; }
     QString backendSetting() const { return backend_; }
@@ -210,6 +215,8 @@ private:
     int selectedRowId() const;
     int firstMovable() const;
     void refreshTable();
+    void updateFlowIssues();
+    QHash<int, QString> flowIssue_;       // playlist-sor → miért nem illik az előző zenéhez (tempó, hangnem)
     void updateStartTimes();
     void persistOrder();
     void reconcile();
@@ -245,6 +252,10 @@ private:
     void updatePlayerView();
     QPushButton *toPlayer_[kPlayers] = {nullptr, nullptr, nullptr};
     bool autoMix_ = true;
+    eter::SmartMixSettings smart_;
+    class ChannelMixer *mixer_ = nullptr;
+    class MixdownPage *mixdownPage_ = nullptr;
+    float vtPeak_[2] = {0.f, 0.f}, ovlPeak_[2] = {0.f, 0.f};   // a voice track és a ráfektetett elemek csúcsa (a mixerhez)
     QToolButton *mixAuto_ = nullptr, *mixEditor_ = nullptr;
     int vtItemShown_ = 0;
     QString vtTitle_;
@@ -274,7 +285,11 @@ private:
     Scheduler scheduler_;
     SchedulerPage *schedPage_ = nullptr;
     QStackedWidget *stack_ = nullptr;
-    QToolButton *tabLive_ = nullptr, *tabSched_ = nullptr, *tabMix_ = nullptr, *tabEvents_ = nullptr;
+    QWidget *schedWindow_ = nullptr, *mixWindow_ = nullptr;   // az Ütemező és a Mix editor külön ablaka
+    QWidget *schedHost_ = nullptr, *mixHost_ = nullptr;       // a helyük a főablakban (nagy képernyőn)
+    bool separatePageWindows() const;
+    QWidget *makePageWindow(QWidget *page, const QString &title, const QString &key);
+    QToolButton *tabLive_ = nullptr, *tabSched_ = nullptr, *tabMix_ = nullptr, *tabEvents_ = nullptr, *tabMixdown_ = nullptr;
     TimedEventsPage *eventsPage_ = nullptr;
     QVector<TimedEvent> events_;
     void runTimedEvents();
@@ -372,23 +387,52 @@ private:
     QFrame *fixBar_ = nullptr;
     QLabel *fixText_ = nullptr;
     QPushButton *fixBtn_ = nullptr;
-    QSet<int> autoFixed_;                              // ezekhez a fix pontokhoz már igazított automatikusan
+    // Fix pontonként az automatikus igazítás állapota: hányszor igazított, mikor próbálta utoljára, és a fix pont
+    // előtti sorok „lenyomata” – ha a playlist megváltozik (pl. kézzel törölnek belőle), azonnal újra megnézi.
+    QHash<int, qint64> removedByHand_;   // elem → mikor vették ki kézzel a playlistből (a kitöltés ne tegye vissza)
+    bool autoRemoving_ = false;          // az automatikus igazítás töröl (nem kézi)
+    struct AutoFixState { int applied = 0; qint64 lastTry = 0, lastGapTry = 0; size_t sig = 0; qint64 sigAt = 0; };
+    QHash<int, AutoFixState> autoFixed_;
     QPointer<QDialog> fixDialog_;
     void updateFixBar();
     void autoAdjustFixes();
     const FixInfo *nextFix() const;
     static qint64 rowAirMs(const Row &r);
 public:
-    struct FillPlan { QVector<Item> items; qint64 totalMs = 0; };
-    FillPlan proposeFill(int fixRowId, qint64 gapMs, int categoryId) const;
-    QVector<QPair<int, qint64>> proposeTrim(int fixRowId, qint64 overMs) const;   // sor → a kivétele utáni eltérés
+    // Igazítás a fix ponthoz: kimaradó sorok (a fix pont előtt, az ütemező tette be őket) és helyettük vagy
+    // mellettük beszúrt elemek, hogy a fix elem a lehető legpontosabban érkezzen.
+    struct AdjustPlan {
+        QVector<int> remove;                           // playlist-sorok
+        QVector<Item> add;                             // a fix elem elé
+        qint64 afterMs = 0;                            // az eltérés utána (> 0: hiány, < 0: túllógás)
+        qint64 cost = 0;
+        bool changes() const { return !remove.isEmpty() || !add.isEmpty(); }
+    };
+    AdjustPlan planAdjust(int fixRowId, qint64 diffMs, int categoryId, bool allowRemove, const QSet<int> &avoidItems = {}) const;
+    qint64 adjustCost(qint64 diffMs) const;            // mennyire rossz egy eltérés (a tervek összevetéséhez)
+    bool adjustAcceptable(qint64 diffMs) const;        // a tűrésen belül van-e
+    void applyAdjust(int fixRowId, const AdjustPlan &plan);
+    QVector<Item> fillPool(int fixRowId, int categoryId, const QSet<int> &avoidItems = {}) const;   // beszúrható számok
+    bool gapFillOne(int fixRowId, qint64 gapMs);       // hiány: egy szám, amely kitölti (kicsit túllóghat)
+    QHash<int, QDateTime> plannedStart_;               // a várakozó sorok becsült kezdése
     int defaultFillCategory(int fixRowId) const;
     void openFixDialog();
     QString fixDebug() const;                          // fejlesztéshez
+    void removeRowsForTest(const QVector<int> &rowIds) { removeRows(rowIds); }   // fejlesztéshez (kézi törlés)
+    QString deleteBeforeFixForTest()   // fejlesztéshez: a következő fix pont előtti sor törlése, a címét adja vissza
+    {
+        const FixInfo *f = nextFix();
+        const int at = f ? indexOfRow(f->rowId) : -1;
+        if (at < 1) return {};
+        const QString title = rows_[at - 1].item.title;
+        removeRows({rows_[at - 1].id});
+        return title;
+    }
 private:
     // Adásrögzítés (logger)
     std::unique_ptr<ProgramLogger> logger_;
     class NowPlaying *nowPlaying_ = nullptr;
+    class LibraryAnalyzer *analyzer_ = nullptr;
     qint64 nowIdleSince_ = 0;              // mióta nem szól semmi (a rövid szünetek nem számítanak)
     void updateNowPlaying();
     QLabel *loggerStatus_ = nullptr;
@@ -413,6 +457,7 @@ public:
     void relaunch(const QStringList &args);
     QString nowPlayingStatus() const;
     class NowPlaying *nowPlaying() const { return nowPlaying_; }
+    class LibraryAnalyzer *analyzer() const { return analyzer_; }
 private:
     remote::Server *remote_ = nullptr;
     // Feltöltések a szerkesztőkből: azonosító → a készülő fájl

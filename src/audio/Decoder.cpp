@@ -54,6 +54,8 @@ void Decoder::close()
     fifoPos_ = 0;
     title_.clear();
     artist_.clear();
+    key_.clear();
+    bpm_.clear();
 }
 
 bool Decoder::open(const std::string &path, std::string *err)
@@ -92,6 +94,11 @@ bool Decoder::open(const std::string &path, std::string *err)
 
     title_ = tag(fmt_->metadata, st->metadata, "title");
     artist_ = tag(fmt_->metadata, st->metadata, "artist");
+    key_ = tag(fmt_->metadata, st->metadata, "TKEY");
+    if (key_.empty()) key_ = tag(fmt_->metadata, st->metadata, "INITIALKEY");
+    if (key_.empty()) key_ = tag(fmt_->metadata, st->metadata, "KEY");
+    bpm_ = tag(fmt_->metadata, st->metadata, "TBPM");
+    if (bpm_.empty()) bpm_ = tag(fmt_->metadata, st->metadata, "BPM");
     return true;
 }
 
@@ -217,8 +224,12 @@ bool Decoder::seek(int64_t frame)
 }
 
 bool scanPeaks(const std::string &path, int bins, std::vector<float> &peaks,
-               int64_t &totalFrames, const std::atomic<bool> &cancel)
+               int64_t &totalFrames, const std::atomic<bool> &cancel, std::vector<float> *env100ms)
 {
+    constexpr int64_t kEnvFrames = kRate / 10;
+    float envPeak = 0.f;
+    int64_t envFill = 0;
+    if (env100ms) env100ms->clear();
     Decoder dec;
     if (!dec.open(path)) return false;
 
@@ -236,7 +247,17 @@ bool scanPeaks(const std::string &path, int bins, std::vector<float> &peaks,
             peak = std::max(peak, std::fabs(buf[i]));
         blocks.push_back(peak);
         totalFrames += n;
+        if (env100ms) {
+            envPeak = std::max(envPeak, peak);
+            envFill += n;
+            if (envFill >= kEnvFrames) {
+                env100ms->push_back(envPeak);
+                envPeak = 0.f;
+                envFill -= kEnvFrames;
+            }
+        }
     }
+    if (env100ms && envFill > 0) env100ms->push_back(envPeak);
     if (blocks.empty()) return false;
 
     peaks.assign(bins, 0.f);

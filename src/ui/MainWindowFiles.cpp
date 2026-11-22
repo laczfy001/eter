@@ -123,6 +123,8 @@ void MainWindow::removeRows(const QVector<int> &rowIds)
             continue;
         }
         if (row.state == Row::Cued && row.player >= 0) players_[row.player]->eject();
+        // Kézzel kivett szám: az automatikus kitöltés egy ideig (két óráig) ne tegye vissza.
+        if (!autoRemoving_) removedByHand_.insert(row.item.id, QDateTime::currentMSecsSinceEpoch());
         db_->deleteEntry(row.id);
     }
     rows_ = keep;

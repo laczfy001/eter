@@ -3,10 +3,14 @@
 #include <QSpinBox>
 #include <QLineEdit>
 #include <QCheckBox>
+#include <QDoubleSpinBox>
 #include "net/Remote.h"
 #include "MainWindow.h"
 #include "audio/ProgramLogger.h"
 #include "core/NowPlaying.h"
+#include "core/LibraryAnalyzer.h"
+#include "core/SmartMixConfig.h"
+#include "db/Database.h"
 
 #include <QDesktopServices>
 #include <QDir>
@@ -418,6 +422,218 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
         connect(t, &QTimer::timeout, this, [this, status] { status->setText(TR("Állapot: %1").arg(main_->nowPlayingStatus())); });
         t->start(1000);
         status->setText(TR("Állapot: %1").arg(main_->nowPlayingStatus()));
+    }
+
+    root = newPage(TR("Automatikus mix"));
+    {
+        Database *db = main_->database();
+        auto caption = [&](const QString &t) {
+            auto *c = new QLabel(t);
+            c->setObjectName("caption");
+            root->addWidget(c);
+        };
+        auto note = [&](const QString &t) {
+            auto *l = new QLabel(t);
+            l->setObjectName("small");
+            l->setWordWrap(true);
+            root->addWidget(l);
+        };
+        auto *form = new QFormLayout;
+        auto dbSpin = [](double v, double lo, double hi, const QString &suffix, int decimals = 0) {
+            auto *s = new QDoubleSpinBox;
+            s->setRange(lo, hi);
+            s->setDecimals(decimals);
+            s->setSingleStep(decimals ? 0.5 : 1);
+            s->setSuffix(suffix);
+            s->setValue(v);
+            return s;
+        };
+        caption(TR("OKOS MIX"));
+        note(TR("Két zene között (automatikus mix módban) a program megnézi a kimenő szám végét és a következő elejét: "
+                "lassan elhalkuló végnél korábban keveri rá a következőt, hirtelen végnél szorosan illeszti; lágy, felfutó "
+                "intrónál hosszabb a ráúsztatás, erős kezdésnél rövid. A Mix editorban (automatikus mix módban) a "
+                "kiválasztott átmenetnél kiírja, mit tervezett."));
+        const eter::SmartMixSettings cur = loadSmartMix(db);
+        auto *smartOn = new QCheckBox(TR("Okos mix bekapcsolva"));
+        smartOn->setObjectName("smartMixOn");
+        smartOn->setChecked(cur.enabled);
+        root->addWidget(smartOn);
+        auto *endDepth = dbSpin(cur.endDepthDb, 6, 50, TR(" dB"));
+        endDepth->setToolTip(TR("A szám hallható vége ott van, ahol a jel ennyivel a szám átlagos szintje alá esik"));
+        auto *fadeDepth = dbSpin(cur.fadeDepthDb, 2, 30, TR(" dB"));
+        fadeDepth->setToolTip(TR("Lecsengő végnél: a következő szám akkor indul, amikor a kimenő ennyit halkult (nagyobb érték: később)"));
+        auto *introMax = dbSpin(cur.introMaxMs / 1000.0, 0, 30, TR(" mp"), 1);
+        introMax->setToolTip(TR("Lágy, felfutó intrónál a következő szám legfeljebb ennyivel indul a kimenő vége előtt"));
+        auto *tight = dbSpin(cur.tightMs / 1000.0, 0, 3, TR(" mp"), 2);
+        tight->setSingleStep(0.05);
+        tight->setToolTip(TR("Hirtelen véget érő szám és erős kezdés: ennyi az átfedés (0: pontosan a vége után)"));
+        auto *maxOverlap = dbSpin(cur.maxOverlapMs / 1000.0, 0, 30, TR(" mp"), 1);
+        maxOverlap->setToolTip(TR("Semmilyen esetben nem szól tovább együtt a két szám"));
+        form->addRow(TR("Hallható vég: a szám szintje alatt"), endDepth);
+        form->addRow(TR("Lecsengő végnél a következő indul, ha a kimenő ennyit halkult"), fadeDepth);
+        form->addRow(TR("Lágy intrónál legfeljebb ennyivel korábban indul"), introMax);
+        form->addRow(TR("Hirtelen vég, erős kezdés: átfedés"), tight);
+        form->addRow(TR("Leghosszabb átfedés"), maxOverlap);
+        root->addLayout(form);
+
+        caption(TR("TEMPÓ ÉS HANGNEM"));
+        auto *flowOn = new QCheckBox(TR("Tempó és hangnem figyelése"));
+        flowOn->setChecked(cur.flowAware);
+        root->addWidget(flowOn);
+        note(TR("Ha a két szám tempója eltér, vagy a hangnemük nem illik össze (Camelot-kerék), az átfedés rövidebb, és a "
+                "kimenő szám az átfedés alatt végig halkul – így nem csúszik szét az ütem, és nem szól össze két nem illő "
+                "hangnem. A fél- és a dupla tempó egyezőnek számít. Ismeretlen tempó vagy hangnem nem korlátoz."));
+        auto *form2 = new QFormLayout;
+        auto *tempoTol = dbSpin(cur.tempoTolPct, 0, 50, TR(" %"));
+        auto *clash = dbSpin(cur.clashOverlapMs / 1000.0, 0, 30, TR(" mp"), 1);
+        form2->addRow(TR("Egyezőnek számító tempóeltérés"), tempoTol);
+        form2->addRow(TR("Ütköző tempónál vagy hangnemnél az átfedés legfeljebb"), clash);
+        root->addLayout(form2);
+
+        caption(TR("EGYSZERŰ MÓD"));
+        note(TR("Ha az okos mix ki van kapcsolva (vagy a kimenő szám elemzése még nem készült el): a mix pont az utolsó "
+                "hely, ahol a jel még a küszöb fölött van, és a kimenő szám onnan úszik ki."));
+        auto *form3 = new QFormLayout;
+        auto *thr = dbSpin(db->setting("auto_mix_threshold_db", "-24").toDouble(), -60, -3, TR(" dB"));
+        auto *defFade = dbSpin(db->setting("default_fade_out_ms", "2500").toDouble() / 1000.0, 0.1, 15, TR(" mp"), 1);
+        form3->addRow(TR("Mix pont küszöbe"), thr);
+        form3->addRow(TR("Alapértelmezett kiúsztatás"), defFade);
+        root->addLayout(form3);
+
+        auto *row = new QHBoxLayout;
+        auto *apply = new QPushButton(TR("Alkalmazás"));
+        apply->setObjectName("smartMixApply");
+        auto *defaults = new QPushButton(TR("Alapértékek"));
+        row->addWidget(apply);
+        row->addWidget(defaults);
+        row->addStretch(1);
+        root->addLayout(row);
+        root->addStretch(1);
+        connect(defaults, &QPushButton::clicked, this, [=] {
+            const eter::SmartMixSettings d;
+            smartOn->setChecked(d.enabled);
+            endDepth->setValue(d.endDepthDb);
+            fadeDepth->setValue(d.fadeDepthDb);
+            introMax->setValue(d.introMaxMs / 1000.0);
+            tight->setValue(d.tightMs / 1000.0);
+            maxOverlap->setValue(d.maxOverlapMs / 1000.0);
+            flowOn->setChecked(d.flowAware);
+            tempoTol->setValue(d.tempoTolPct);
+            clash->setValue(d.clashOverlapMs / 1000.0);
+            thr->setValue(-24);
+            defFade->setValue(2.5);
+        });
+        connect(apply, &QPushButton::clicked, this, [=, this] {
+            auto ms = [](QDoubleSpinBox *s) { return QString::number(qRound(s->value() * 1000)); };
+            db->setSetting("smart_mix", smartOn->isChecked() ? "1" : "0");
+            db->setSetting("smart_end_depth_db", QString::number(endDepth->value()));
+            db->setSetting("smart_fade_depth_db", QString::number(fadeDepth->value()));
+            db->setSetting("smart_intro_max_ms", ms(introMax));
+            db->setSetting("smart_tight_ms", ms(tight));
+            db->setSetting("smart_max_overlap_ms", ms(maxOverlap));
+            db->setSetting("smart_flow", flowOn->isChecked() ? "1" : "0");
+            db->setSetting("smart_tempo_tol_pct", QString::number(qRound(tempoTol->value())));
+            db->setSetting("smart_clash_overlap_ms", ms(clash));
+            db->setSetting("auto_mix_threshold_db", QString::number(thr->value()));
+            db->setSetting("default_fade_out_ms", ms(defFade));
+            main_->reloadMixSettings();
+        });
+    }
+
+    root = newPage(TR("Elemzés"));
+    if (LibraryAnalyzer *an = main_->analyzer()) {
+        // A hangtár háttérelemzése (tempó, hangnem) és a hangnem jelölése.
+        const LibraryAnalyzer::Config cur = an->config();
+        auto *cap = new QLabel(TR("HÁTTÉRELEMZÉS"));
+        cap->setObjectName("caption");
+        root->addWidget(cap);
+        auto *about = new QLabel(TR("A program a háttérben, a legkisebb prioritással végignézi a hangtár zenéit, és megbecsüli a "
+                                    "hiányzó tempót (BPM) és hangnemet. Két szám között szünetet tart, hogy az adást ne zavarja; "
+                                    "az új importokat magától felveszi. Csak az üres mezőt tölti ki: amit kézzel vagy a fájl "
+                                    "címkéjéből (TBPM, TKEY) kapott, azt nem írja felül."));
+        about->setObjectName("small");
+        about->setWordWrap(true);
+        root->addWidget(about);
+        auto *on = new QCheckBox(TR("Háttérelemzés bekapcsolva"));
+        on->setObjectName("analysisOn");
+        on->setChecked(cur.enabled);
+        root->addWidget(on);
+        auto *winRow = new QHBoxLayout;
+        auto *useWin = new QCheckBox(TR("Csak ebben az időablakban:"));
+        useWin->setObjectName("analysisWindow");
+        useWin->setChecked(cur.useWindow);
+        auto hourSpin = [](int v) {
+            auto *s = new QSpinBox;
+            s->setRange(0, 23);
+            s->setSuffix(QStringLiteral(":00"));
+            s->setValue(v);
+            return s;
+        };
+        QSpinBox *from = hourSpin(cur.fromHour), *to = hourSpin(cur.toHour);
+        winRow->addWidget(useWin);
+        winRow->addWidget(from);
+        winRow->addWidget(new QLabel(QStringLiteral("–")));
+        winRow->addWidget(to);
+        winRow->addStretch(1);
+        root->addLayout(winRow);
+        auto *winNote = new QLabel(TR("Például 1:00 – 6:00 éjszaka, vagy 22:00 – 6:00 (éjfélen átnyúlik). Az ablakon kívül a "
+                                      "folyamatban lévő elemzés is leáll, és a következő ablakban folytatódik."));
+        winNote->setObjectName("small");
+        winNote->setWordWrap(true);
+        root->addWidget(winNote);
+
+        auto *cap2 = new QLabel(TR("HANGNEM JELÖLÉSE"));
+        cap2->setObjectName("caption");
+        root->addWidget(cap2);
+        auto *notation = new QComboBox;
+        notation->setObjectName("keyNotation");
+        notation->addItem(TR("Camelot (8A, 5B …)"), true);
+        notation->addItem(TR("Hagyományos (Am, C# …)"), false);
+        notation->setCurrentIndex(cur.camelot ? 0 : 1);
+        auto *notRow = new QHBoxLayout;
+        notRow->addWidget(notation);
+        notRow->addStretch(1);
+        root->addLayout(notRow);
+        auto *notNote = new QLabel(TR("A Camelot-kerékben a szomszédos számok (8A → 7A, 9A) és az azonos szám másik betűje "
+                                      "(8A → 8B) illik egymáshoz. Az ütemező hangnem-szabálya (Ütemező → Szabályok) ezt használja."));
+        notNote->setObjectName("small");
+        notNote->setWordWrap(true);
+        root->addWidget(notNote);
+
+        auto *status = new QLabel;
+        status->setObjectName("analysisStatus");
+        status->setWordWrap(true);
+        root->addWidget(status);
+        auto *applyRow = new QHBoxLayout;
+        auto *apply = new QPushButton(TR("Alkalmazás"));
+        apply->setObjectName("analysisApply");
+        auto *again = new QPushButton(TR("Újrapróbálás"));
+        again->setToolTip(TR("A korábban sikertelen (üresen maradt) tempót és hangnemet újra megpróbálja"));
+        applyRow->addWidget(apply);
+        applyRow->addWidget(again);
+        applyRow->addStretch(1);
+        root->addLayout(applyRow);
+        root->addStretch(1);
+        auto show = [status, an] { status->setText(TR("Állapot: %1").arg(an->status())); };
+        connect(an, &LibraryAnalyzer::statusChanged, status, show);
+        connect(apply, &QPushButton::clicked, this, [=, this] {
+            LibraryAnalyzer::Config c;
+            c.enabled = on->isChecked();
+            c.useWindow = useWin->isChecked();
+            c.fromHour = from->value();
+            c.toHour = to->value();
+            c.camelot = notation->currentData().toBool();
+            const bool notationChanged = c.camelot != an->config().camelot;
+            LibraryAnalyzer::saveConfig(c);
+            an->configure(c);
+            if (notationChanged) main_->database()->notifyItemsChanged();
+            show();
+        });
+        connect(again, &QPushButton::clicked, an, [an, show] {
+            an->restart();
+            show();
+        });
+        show();
     }
 
     root = newPage(TR("Adatbázis"));

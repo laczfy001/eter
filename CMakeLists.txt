@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(eter VERSION 0.22.2 LANGUAGES C CXX)
+project(eter VERSION 0.29.3 LANGUAGES C CXX)
 if(WIN32)
     enable_language(RC)
 endif()
@@ -56,6 +56,10 @@ add_executable(eter
     src/ui/RemoteEditor.cpp
     src/core/FileCheck.cpp
     src/core/NowPlaying.cpp
+    src/core/LibraryAnalyzer.cpp
+    src/ui/ChannelMixer.cpp
+    src/ui/MixdownPage.cpp
+    src/audio/Mixdown.cpp
     src/core/CrashReport.cpp
     src/ui/MainWindowFiles.cpp
     src/ui/MainWindowTiming.cpp
@@ -65,6 +69,7 @@ add_executable(eter
     src/ui/BackupWindow.cpp
     src/audio/ProgramLogger.cpp
     src/audio/Analysis.cpp
+    src/audio/SmartMix.cpp
     resources/resources.qrc
 )
 

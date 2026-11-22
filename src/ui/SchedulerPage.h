@@ -22,6 +22,8 @@ class SchedulerPage : public QWidget {
 public:
     SchedulerPage(Database *db, Scheduler *scheduler, QWidget *parent = nullptr);
     void generateNow();
+    QString generateInfo() const;   // a legutóbbi generálás összegzése (fejlesztéshez)
+    void refreshAll() { categoryAvgMs_.clear(); reloadGrid(); reloadClocks(); }   // kívülről változott adatok után
 
 signals:
     void generated(const GenerateResult &result);
@@ -52,6 +54,11 @@ private:
     QComboBox *clockColor_;
     QTableWidget *slotTable_;
     QLabel *total_;
+    QLabel *overflow_ = nullptr;          // figyelmeztetés: a darabszámos elemek nem férnek a fix pontok közé
+    class QPushButton *overflowFix_ = nullptr;
+    QVector<int> overflowSlots_;          // ezek a sorok csordulnak túl
+    class QCheckBox *slotUpToFit_ = nullptr;
+    void fixOverflow();
     QVector<ClockSlot> slots_;
     QHash<int, qint64> categoryAvgMs_;
 

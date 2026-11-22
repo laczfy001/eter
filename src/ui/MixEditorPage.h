@@ -1,5 +1,6 @@
 // Mix editor: két vagy három egymást követő elem átmeneteinek beállítása idővonalon, előhallgatással.
 #pragma once
+#include "audio/SmartMix.h"
 #include "core/VolumeEnvelope.h"
 #include <functional>
 #include "audio/Engine.h"
@@ -182,6 +183,8 @@ public:
     void setRemoteMode(bool on);
     // Automatikus mix: a zenék közti mentett átmenetek most nem érvényesek (a nem zeneieké igen).
     void setAutoMixActive(bool on);
+    void reloadSmartMix();          // az okos mix beállításai megváltoztak
+    QString smartPlanText() const;  // az aktuális átmenet okos mix terve (üres, ha nem érvényes)
     // Távoli szerkesztő: a felvett vagy fájlból választott voice track feltöltése a playoutra. A done a playouton
     // létrejött elem azonosítójával hívandó (0: nem sikerült). allowed: a felhasználónak van-e joga hozzá.
     using VtUploader = std::function<void(const QString &localPath, const QString &title, std::function<void(int itemId)> done)>;
@@ -212,12 +215,16 @@ private:
         QVector<float> peaks;
         qint64 durMs = 0, autoMixMs = 0;
         bool ready = false;
+        eter::MixProfile profile;     // az okos mixhez
     };
 public:
     void selectPair(int index);
 private:
     void loadCurrent();
     class QLabel *autoBanner_ = nullptr;
+    bool autoActive_ = false;
+    eter::SmartMixSettings smart_;
+    void updateAutoBanner();
     MixParams resolve(const MixPair &pair, int *kind) const;
     MixParams resolveMix(const MixPair &pair, int *kind) const;   // a ráfektetett elem nélkül
     void requestWave(const Item &item);

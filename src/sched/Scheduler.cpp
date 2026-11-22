@@ -1,8 +1,11 @@
 #include "Scheduler.h"
 #include "i18n.h"
+#include "core/MusicKey.h"
+#include "core/Vocal.h"
 
 #include <QRandomGenerator>
 #include <algorithm>
+#include <limits>
 
 namespace {
 
@@ -17,10 +20,13 @@ struct Picker {
     int slowMax = 0;                            // ennyi lassú (energia 1–2) szám jöhet egymás után
     int energyJump = 0;                         // két egymást követő szám energiája legfeljebb ennyivel tér el
     int bpmJumpPct = 0;                         // két egymást követő szám tempója legfeljebb ennyi százalékkal tér el
+    int keyRule = 0;                            // hangnem (Camelot): 0 nincs, 1 előnyben az illő, 2 csak illő (ha van)
+    int vocalMax = 0;                           // azonos ének (férfi, női, együttes, vegyes) legfeljebb ennyi egymás után
     int daypart = -1;                           // az épp tervezett óra napszaka
     // Az utoljára betett zenei elem, és hány lassú szám áll a végén egymás után
     const Item *prev = nullptr;
     int slowRun = 0;
+    int vocalType = 0, vocalRun = 0;            // az utolsó számító ének és hányszor jött egymás után
 
     void note(const Item &it, qint64 at)
     {
@@ -35,6 +41,11 @@ struct Picker {
         if (it.kind != QLatin1String("music")) return;
         prev = &it;
         slowRun = (it.energy > 0 && it.energy <= 2) ? slowRun + 1 : 0;
+        // A nem ismert és az instrumentális ének nem számít bele, és nem is szakítja meg a sorozatot.
+        if (vocal::counts(it.vocal)) {
+            vocalRun = it.vocal == vocalType ? vocalRun + 1 : 1;
+            vocalType = it.vocal;
+        }
     }
 
     qint64 lastOf(const Item &it) const { return itemLast.value(it.id, 0); }
@@ -55,6 +66,7 @@ struct Picker {
     {
         if (it.kind != QLatin1String("music")) return true;
         if (slowMax > 0 && it.energy > 0 && it.energy <= 2 && slowRun >= slowMax) return false;
+        if (vocalMax > 0 && vocal::counts(it.vocal) && it.vocal == vocalType && vocalRun >= vocalMax) return false;
         if (!prev) return true;
         if (energyJump > 0 && it.energy > 0 && prev->energy > 0 && std::abs(it.energy - prev->energy) > energyJump) return false;
         if (bpmJumpPct > 0 && it.bpm > 0 && prev->bpm > 0) {
@@ -64,7 +76,15 @@ struct Picker {
             if (ratio > 1.5) ratio /= 2;
             if (std::abs(ratio - 1.0) * 100.0 > bpmJumpPct) return false;
         }
+        if (keyRule >= 2 && !keyFits(it)) return false;
         return true;
+    }
+
+    // Illik-e a hangneme az előző zenééhez (a Camelot-kerék szomszédja, vagy a párhuzamos dúr/moll). Ismeretlen
+    // hangnem mindenhez illik.
+    bool keyFits(const Item &it) const
+    {
+        return it.kind != QLatin1String("music") || !prev || mkey::compatible(prev->musicKey, it.musicKey);
     }
 
     static bool inBand(const Item &it, int lo, int hi)
@@ -86,7 +106,9 @@ struct Picker {
         if (pool.isEmpty()) return nullptr;
         QVector<int> ok;
         bool relaxed = false;
+        int used = 0;
         for (int level = 0; level < 5 && ok.isEmpty(); ++level) {
+            used = level;
             for (int i : pool) {
                 const Item &it = all[i];
                 if (level < 4 && !inDaypart(it)) continue;
@@ -97,11 +119,24 @@ struct Picker {
             }
             if (ok.isEmpty()) relaxed = true;
         }
-        if (relaxed && result) ++result->relaxed;
+        if (relaxed && result) result->noteRelaxed(used);
         // Legrégebben használt elöl; az azonosak között véletlen sorrend.
         std::shuffle(ok.begin(), ok.end(), *QRandomGenerator::global());
         std::stable_sort(ok.begin(), ok.end(), [&](int a, int b) { return lastOf(all[a]) < lastOf(all[b]); });
         int take = relaxed ? 1 : std::max<int>(1, (ok.size() + 2) / 3);
+        if (keyRule == 1 && !relaxed && prev && mkey::valid(prev->musicKey)) {
+            // Előnyben az illő hangnemű: előbb a legrégebben szólt harmadban keres, aztán a kétharmadban.
+            for (int span : {take, std::min<int>(ok.size(), take * 2)}) {
+                QVector<int> fit;
+                for (int k = 0; k < span; ++k)
+                    if (keyFits(all[ok[k]])) fit << ok[k];
+                if (!fit.isEmpty()) {
+                    ok = fit;
+                    take = int(fit.size());
+                    break;
+                }
+            }
+        }
         ok.resize(take);
         int chosen = ok[QRandomGenerator::global()->bounded(take)];
         if (bestFitMs > 0) {
@@ -110,9 +145,167 @@ struct Picker {
         }
         return &all[chosen];
     }
+
+    // A kategória átlagos elemhossza (a kitöltés tervezéséhez).
+    qint64 averageMs(int categoryId) const
+    {
+        const QVector<int> &pool = byCategory[categoryId];
+        qint64 sum = 0;
+        int n = 0;
+        for (int i : pool)
+            if (all[i].airMs() > 0) { sum += all[i].airMs(); ++n; }
+        return n ? sum / n : 0;
+    }
+
+    // Az utolsó 1–3 elem együttes kiválasztása úgy, hogy összesen a hátralévő `leftMs`-hez a legközelebb érjenek
+    // (±tolMs-en belül egyformán jó; ezek közül a régebben szólt elemek előnyben). A jelöltek a szabályoknak
+    // megfelelő, legrégebben használt elemek; ha így nincs elég, lazít, mint a pick().
+    QVector<int> planFit(int categoryId, qint64 at, qint64 leftMs, qint64 tolMs, int energyMin, int energyMax, int maxK = 3)
+    {
+        const QVector<int> &pool = byCategory[categoryId];
+        QVector<int> ok;
+        int used = 0;
+        for (int level = 0; level < 5 && ok.size() < 3; ++level) {
+            ok.clear();
+            used = level;
+            for (int i : pool) {
+                const Item &it = all[i];
+                if (it.airMs() <= 0) continue;
+                if (level < 4 && !inDaypart(it)) continue;
+                if (level < 3 && !separated(it, at)) continue;
+                if (level < 2 && !inBand(it, energyMin, energyMax)) continue;
+                if (level < 1 && !flows(it)) continue;
+                ok << i;
+            }
+        }
+        if (used > 0 && result && !ok.isEmpty()) result->noteRelaxed(used);
+        if (ok.isEmpty()) return {};
+        std::shuffle(ok.begin(), ok.end(), *QRandomGenerator::global());
+        std::stable_sort(ok.begin(), ok.end(), [&](int a, int b) { return lastOf(all[a]) < lastOf(all[b]); });
+        if (ok.size() > 60) ok.resize(60);
+        const int n = int(ok.size());
+        auto artistOf = [&](int i) { return all[i].artist.trimmed().toLower(); };
+        auto distinct = [&](int a, int b) {
+            const QString x = artistOf(a), y = artistOf(b);
+            return x.isEmpty() || y.isEmpty() || x != y;
+        };
+        // Költség: a tűrésen túli eltérés (ms), majd a zenei folyam szabályait sértő átmenetek száma (a legjobb
+        // sorrendben, az előző zenétől kezdve: tempó, energiaugrás, hangnem), végül a jelöltek „kora” (a helyük összege).
+        const bool anyFlowRule = keyRule > 0 || bpmJumpPct > 0 || energyJump > 0 || vocalMax > 0 || slowMax > 0;
+        int lastHard = 0;
+        auto keyMisses = [&](QVector<int> &order) {
+            // A legjobb sorrend: legfeljebb 3 elemnél minden permutációt megnéz.
+            if (!anyFlowRule) return 0;
+            std::sort(order.begin(), order.end());
+            int bestCost = 99, bestHard = 0;
+            QVector<int> bestOrder = order;
+            do {
+                int cost = 0, hard = 0;
+                const Item *last = prev;
+                int vType = vocalType, vRun = vocalRun, sRun = slowRun;
+                for (int i : order) {
+                    const Item &it = all[i];
+                    if (slowMax > 0) {
+                        sRun = (it.energy > 0 && it.energy <= 2) ? sRun + 1 : 0;
+                        if (sRun > slowMax) { cost += 2; ++hard; }
+                    }
+                    if (vocalMax > 0 && vocal::counts(it.vocal)) {
+                        vRun = it.vocal == vType ? vRun + 1 : 1;
+                        vType = it.vocal;
+                        if (vRun > vocalMax) { cost += 2; ++hard; }
+                    }
+                    if (last) {
+                        const int jump = Scheduler::tempoJumpPct(last->bpm, it.bpm);
+                        if (bpmJumpPct > 0 && jump > bpmJumpPct) { cost += 2; ++hard; }
+                        if (energyJump > 0 && it.energy > 0 && last->energy > 0 && std::abs(it.energy - last->energy) > energyJump) { cost += 2; ++hard; }
+                        if (keyRule > 0 && !mkey::compatible(last->musicKey, it.musicKey)) { cost += keyRule; if (keyRule >= 2) ++hard; }
+                    }
+                    last = &it;
+                }
+                if (cost < bestCost) { bestCost = cost; bestHard = hard; bestOrder = order; }
+            } while (bestCost > 0 && std::next_permutation(order.begin(), order.end()));
+            order = bestOrder;
+            lastHard = bestHard;
+            return bestCost;
+        };
+        struct Best { qint64 miss = std::numeric_limits<qint64>::max(); int keys = 99, hard = 0; int rank = 0; QVector<int> pick; } best;
+        auto consider = [&](std::initializer_list<int> idx) {
+            qint64 sum = 0;
+            int rank = 0;
+            for (int k : idx) { sum += all[ok[k]].airMs(); rank += k; }
+            const qint64 miss = std::max<qint64>(0, std::llabs(sum - leftMs) - tolMs);
+            if (miss > best.miss) return;
+            QVector<int> order;
+            for (int k : idx) order << ok[k];
+            const int keys = keyMisses(order);
+            if (miss < best.miss || keys < best.keys || (keys == best.keys && rank < best.rank)) {
+                best.miss = miss;
+                best.keys = keys;
+                best.hard = lastHard;
+                best.rank = rank;
+                best.pick = order;
+            }
+        };
+        for (int a = 0; a < n; ++a) {
+            consider({a});
+            for (int b = a + 1; b < n && maxK >= 2; ++b) {
+                if (!distinct(ok[a], ok[b])) continue;
+                consider({a, b});
+                for (int c = b + 1; c < n && maxK >= 3; ++c)
+                    if (distinct(ok[a], ok[c]) && distinct(ok[b], ok[c])) consider({a, b, c});
+            }
+        }
+        // A folyam szabályához: amelyik illeszkedik az előzőhöz, az kerüljön előre (ha van folyam-szabály, a sorrendet
+        // már a keyMisses() választotta).
+        if (!anyFlowRule)
+            std::stable_sort(best.pick.begin(), best.pick.end(), [&](int x, int y) { return flows(all[x]) && !flows(all[y]); });
+        else if (best.hard > 0 && result && used == 0)
+            result->noteRelaxed(1);   // a pontos kitöltéshez a zenei folyam egy szabályából engedni kellett
+        return best.pick;
+    }
 };
 
 } // namespace
+
+int Scheduler::tempoJumpPct(double a, double b)
+{
+    if (a <= 0 || b <= 0) return -1;
+    double ratio = b / a;
+    if (ratio < 0.75) ratio *= 2;   // a fél- és kétszeres tempó ugyanaz az ütem
+    if (ratio > 1.5) ratio /= 2;
+    return int(std::lround(std::abs(ratio - 1.0) * 100.0));
+}
+
+FlowStats Scheduler::flowStats(const QVector<Entry> &entries, int bpmPct, int keyRule, int vocalMax)
+{
+    FlowStats st;
+    const Item *prev = nullptr;
+    int vType = 0, vRun = 0;
+    for (const Entry &e : entries) {
+        if (e.overlay || e.item.kind != QLatin1String("music")) continue;
+        if (vocal::counts(e.item.vocal)) {
+            vRun = e.item.vocal == vType ? vRun + 1 : 1;
+            vType = e.item.vocal;
+            ++st.vocalKnown;
+            if (vocalMax <= 0 || vRun <= vocalMax) ++st.vocalOk;
+        }
+        if (prev) {
+            ++st.transitions;
+            const int jump = tempoJumpPct(prev->bpm, e.item.bpm);
+            if (jump >= 0) {
+                ++st.tempoKnown;
+                if (bpmPct <= 0 || jump <= bpmPct) ++st.tempoOk;
+            }
+            if (mkey::valid(prev->musicKey) && mkey::valid(e.item.musicKey)) {
+                ++st.keyKnown;
+                if (mkey::compatible(prev->musicKey, e.item.musicKey)) ++st.keyOk;
+            }
+        }
+        prev = &e.item;
+    }
+    (void)keyRule;
+    return st;
+}
 
 GenerateResult Scheduler::generate(const QDateTime &from, int hours, bool replace)
 {
@@ -131,6 +324,9 @@ GenerateResult Scheduler::generate(const QDateTime &from, int hours, bool replac
     picker.slowMax = db_->setting("rule_slow_max", "0").toInt();
     picker.energyJump = db_->setting("rule_energy_jump", "0").toInt();
     picker.bpmJumpPct = db_->setting("rule_bpm_jump_pct", "0").toInt();
+    picker.keyRule = std::clamp(db_->setting("rule_key", "0").toInt(), 0, 2);
+    picker.vocalMax = std::clamp(db_->setting("rule_vocal_max", "0").toInt(), 0, 20);
+    const qint64 tolMs = std::clamp(db_->setting("fill_tolerance_s", "15").toLongLong(), 0LL, 120LL) * 1000;
     const QVector<int> starts = daypartStarts(db_);
     for (int i = 0; i < picker.all.size(); ++i) {
         const Item &it = picker.all[i];
@@ -182,11 +378,20 @@ GenerateResult Scheduler::generate(const QDateTime &from, int hours, bool replac
             ++result.entries;
         };
         auto fillUntil = [&](int category, qint64 untilMs, int eMin, int eMax) {
-            // Addig tesz be elemeket, amíg túl nem ér a határon (a fix időpontnál a szóló elem kiúszik,
-            // így nem marad csend); az utolsó elem hossza a hátralévő időhöz igazodik.
+            // Kitöltés a határig: amíg sok idő van hátra, egyenként választ; az utolsó 1–3 elemet együtt, úgy, hogy
+            // összesen a lehető legpontosabban (±tolerancia) érjenek a határhoz. Hosszú (például 6–8 perces) számoknál
+            // így sem marad nagy csonkítás vagy üres idő a fix pont előtt.
+            const qint64 avg = std::max<qint64>(60000, picker.averageMs(category));
             for (int guard = 0; guard < 5000 && t < untilMs; ++guard) {
                 const qint64 left = untilMs - t;
-                const Item *it = picker.pick(category, base + t / 1000, left < 480000 ? left : 0, eMin, eMax);
+                if (left <= tolMs) break;                       // elég közel: a fix pont pontosan jön
+                if (left <= 3 * avg + tolMs) {
+                    const QVector<int> plan = picker.planFit(category, base + t / 1000, left, tolMs, eMin, eMax);
+                    if (plan.isEmpty()) break;
+                    for (int i : plan) add(picker.all[i], -1);
+                    continue;                                   // ha még maradt idő (rövid elemek), újra tervez
+                }
+                const Item *it = picker.pick(category, base + t / 1000, 0, eMin, eMax);
                 if (!it || it->durationMs <= 0) break;
                 add(*it, -1);
             }
@@ -216,9 +421,24 @@ GenerateResult Scheduler::generate(const QDateTime &from, int hours, bool replac
                 fillMin = slot.energyMin;
                 fillMax = slot.energyMax;
             } else {
+                const qint64 slotAvg = std::max<qint64>(60000, picker.averageMs(slot.categoryId));
                 for (int n = 0; n < std::max(1, slot.count); ++n) {
-                    const Item *it = picker.pick(slot.categoryId, base + t / 1000, 0, slot.energyMin, slot.energyMax);
+                    // „Legfeljebb ennyi, amennyi elfér”: a következő fix pont előtt megáll; az utolsó (legfeljebb 3,
+                    // de a darabszámon belül maradó) elemet együtt választja, hogy a lehető legpontosabban érjen oda.
+                    const qint64 left = nextFixed - t;
+                    if (slot.upToFit && n > 0 && left <= tolMs) break;
+                    const int remaining = std::max(1, slot.count) - n;
+                    if (slot.upToFit && n > 0 && left <= std::min(remaining, 3) * slotAvg + tolMs) {
+                        const QVector<int> plan = picker.planFit(slot.categoryId, base + t / 1000, left, tolMs, slot.energyMin,
+                                                                 slot.energyMax, std::min(remaining, 3));
+                        for (int i : plan)
+                            if (picker.all[i].airMs() <= left + tolMs || plan.size() > 1) add(picker.all[i], -1);
+                        break;
+                    }
+                    const Item *it = picker.pick(slot.categoryId, base + t / 1000, slot.upToFit && left < 480000 ? left : 0,
+                                                 slot.energyMin, slot.energyMax);
                     if (!it) { ++result.empty; break; }
+                    if (slot.upToFit && n > 0 && it->airMs() > left + tolMs) break;
                     add(*it, n == 0 ? fixed : -1);
                 }
                 if (slot.kind == "music") {

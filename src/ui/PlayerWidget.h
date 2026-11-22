@@ -1,4 +1,5 @@
 #pragma once
+#include "audio/SmartMix.h"
 #include "audio/Engine.h"
 
 #include <QFrame>
@@ -65,6 +66,7 @@ public:
     void setMixPoint(qint64 frame, const QString &label, const QColor &color);
     // Az első hallható pont (a szám eleji csend vége); −1, amíg a hullámforma nincs kész.
     qint64 leadInFrame() const { return leadIn_; }
+    const eter::MixProfile &mixProfile() const { return profile_; }   // az okos mixhez (a hullámforma beolvasása után)
 
 signals:
     void outputChosen(const QString &deviceName);
@@ -99,6 +101,7 @@ private:
     int scanGeneration_ = 0;
     qint64 mixOut_ = -1;
     qint64 leadIn_ = -1;
+    eter::MixProfile profile_;
     int index_ = 0;
     bool leaving_ = false, sounding_ = false;
     QLabel *caption_ = nullptr, *vtChip_ = nullptr;

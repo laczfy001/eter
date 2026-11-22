@@ -1,5 +1,7 @@
 #include "i18n.h"
 #include "Library.h"
+#include "core/MusicKey.h"
+#include "core/Vocal.h"
 
 #include <QMessageBox>
 #include "Theme.h"
@@ -188,6 +190,12 @@ void LibraryModel::apply()
         case 3: r = x.durationMs < y.durationMs ? -1 : x.durationMs > y.durationMs; break;
         case 5: r = x.energy < y.energy ? -1 : x.energy > y.energy; break;
         case 6: r = x.bpm < y.bpm ? -1 : x.bpm > y.bpm; break;
+        case 7: r = mkey::sortKey(x.musicKey) < mkey::sortKey(y.musicKey) ? -1 : mkey::sortKey(x.musicKey) > mkey::sortKey(y.musicKey); break;
+        case 8: {   // a nem ismert a végére
+            const int a = x.vocal ? x.vocal : 99, b = y.vocal ? y.vocal : 99;
+            r = a < b ? -1 : a > b;
+            break;
+        }
         default: r = x.lastPlayedAt < y.lastPlayedAt ? -1 : x.lastPlayedAt > y.lastPlayedAt; break;
         }
         if (r == 0) r = col.compare(x.artist, y.artist);
@@ -225,10 +233,12 @@ QVariant LibraryModel::data(const QModelIndex &index, int role) const
         case 3: return formatMs(it->durationMs);
         case 5: return it->energy > 0 ? QString(it->energy, QChar(0x25CF)) + QString(5 - it->energy, QChar(0x25CB)) : QString();
         case 6: return it->bpm > 0 ? QString::number(it->bpm, 'f', 0) : QString();
+        case 7: return mkey::display(it->musicKey);
+        case 8: return it->vocal ? vocal::name(it->vocal) : QStringLiteral("–");
         default: return formatLastPlayed(it->lastPlayedAt);
         }
     }
-    if (role == Qt::TextAlignmentRole && c >= 3) return int(Qt::AlignRight | Qt::AlignVCenter);
+    if (role == Qt::TextAlignmentRole && c >= 3) return int((c >= 7 ? Qt::AlignLeft : Qt::AlignRight) | Qt::AlignVCenter);
     if (role == Qt::FontRole && c >= 3) {
         QFont mono("IBM Plex Mono");
         mono.setPixelSize(12);
@@ -237,6 +247,10 @@ QVariant LibraryModel::data(const QModelIndex &index, int role) const
     if (role == Qt::ForegroundRole && (c == 2 || c == 4)) return QColor("#c9ced6");
     if (role == Qt::DecorationRole && c == 2 && !it->color.isEmpty()) return swatch(QColor(it->color));
     if (role == Qt::ForegroundRole && c == 5) return QColor("#f5a524");
+    if (role == Qt::DecorationRole && c == 7 && mkey::valid(it->musicKey))   // a Camelot-kerék színe
+        return swatch(QColor::fromHsv((mkey::camelotNumber(it->musicKey) - 1) * 30, mkey::isMinor(it->musicKey) ? 150 : 210, 235));
+    if (role == Qt::ToolTipRole && c == 7 && mkey::valid(it->musicKey)) return mkey::both(it->musicKey);
+    if (role == Qt::ForegroundRole && c == 8) return vocal::color(it->vocal);
     if (role == Qt::ToolTipRole) return it->path;
     return {};
 }
@@ -245,7 +259,7 @@ QVariant LibraryModel::headerData(int section, Qt::Orientation o, int role) cons
 {
     if (o != Qt::Horizontal || role != Qt::DisplayRole) return {};
     static const QString names[] = {TR("Cím"), TR("Előadó"), TR("Kategória"),
-                                    TR("Hossz"), TR("Utoljára adásban"), TR("Energia"), TR("BPM")};
+                                    TR("Hossz"), TR("Utoljára adásban"), TR("Energia"), TR("BPM"), TR("Hangnem"), TR("Ének")};
     return names[section];
 }
 
@@ -333,11 +347,15 @@ LibraryPanel::LibraryPanel(Database *db, QWidget *parent) : QFrame(parent), db_(
     hh->setSectionResizeMode(4, QHeaderView::Fixed);
     hh->setSectionResizeMode(5, QHeaderView::Fixed);
     hh->setSectionResizeMode(6, QHeaderView::Fixed);
+    hh->setSectionResizeMode(7, QHeaderView::Fixed);
+    hh->setSectionResizeMode(8, QHeaderView::Fixed);
     view_->setColumnWidth(2, 150);
     view_->setColumnWidth(3, 64);
     view_->setColumnWidth(4, 130);
     view_->setColumnWidth(5, 70);
     view_->setColumnWidth(6, 50);
+    view_->setColumnWidth(7, 72);
+    view_->setColumnWidth(8, 120);
     view_->installEventFilter(this);
     setAcceptDrops(true);
     installEventFilter(this);
@@ -477,6 +495,27 @@ void LibraryPanel::contextMenu(const QPoint &pos)
     menu.addAction(TR("Napszakok…"), this, [this, ids] { editDayparts(ids); });
     menu.addAction(ids.size() == 1 ? TR("Tempó becslése") : TR("Tempó becslése (%1 elem)").arg(ids.size()), this,
                    [this, ids] { estimateTempo(ids); });
+    menu.addAction(ids.size() == 1 ? TR("Hangnem becslése") : TR("Hangnem becslése (%1 elem)").arg(ids.size()), this,
+                   [this, ids] { estimateTempo(ids, true); });
+    {
+        QMenu *vm = menu.addMenu(ids.size() == 1 ? TR("Ének beállítása") : TR("Ének beállítása (%1 elem)").arg(ids.size()));
+        for (int v : {vocal::Male, vocal::Female, vocal::Group, vocal::Mixed, vocal::Instrumental})
+            vm->addAction(vocal::name(v) + QStringLiteral("\t") + vocal::letter(v), this, [this, ids, v] {
+                db_->setItemVocal(ids, v);
+                db_->notifyItemsChanged();
+            });
+        vm->addSeparator();
+        vm->addAction(TR("Törlés (nem ismert)"), this, [this, ids] {
+            db_->setItemVocal(ids, vocal::Unknown);
+            db_->notifyItemsChanged();
+        });
+    }
+    if (ids.size() > 1) {
+        menu.addAction(TR("Hangnem törlése (%1 elem)").arg(ids.size()), this, [this, ids] {
+            db_->setItemKey(ids, 0);
+            db_->notifyItemsChanged();
+        });
+    }
     menu.addSeparator();
     menu.addAction(TR("Törlés a hangtárból"), this, &LibraryPanel::deleteSelected);
     menu.exec(view_->viewport()->mapToGlobal(pos));
@@ -730,6 +769,8 @@ void ImportDialog::step()
             }
         }
         it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+        it.musicKey = mkey::parse(QString::fromStdString(dec.keyTag()));
+        it.bpm = mkey::parseBpm(QString::fromStdString(dec.bpmTag()));
         if (const int id = db_->addItem(it)) {
             ids_ << id;
             ++added_;
@@ -1070,31 +1111,39 @@ void LibraryPanel::editDayparts(const QVector<int> &ids)
     emit message(TR("%1 elem napszakai elmentve.").arg(ids.size()));
 }
 
-void LibraryPanel::estimateTempo(const QVector<int> &ids)
+void LibraryPanel::estimateTempo(const QVector<int> &ids, bool key)
 {
-    // Háttérszálon, elemenként; a korábbi, még futó becslés leáll.
+    // Háttérszálon, elemenként; a korábbi, még futó becslés leáll. Kézi kérés: a meglévő értéket is felülírja.
     if (tempoCancel_) tempoCancel_->store(true);
     auto cancel = std::make_shared<std::atomic<bool>>(false);
     tempoCancel_ = cancel;
     QVector<QPair<int, QString>> work;
     for (int id : ids) work.push_back({id, db_->item(id).path});
     QPointer<LibraryPanel> self(this);
-    emit message(TR("Tempó becslése: %1 elem…").arg(work.size()));
-    std::thread([self, work, cancel] {
+    emit message((key ? TR("Hangnem becslése: %1 elem…") : TR("Tempó becslése: %1 elem…")).arg(work.size()));
+    std::thread([self, work, cancel, key] {
         int found = 0;
         for (int i = 0; i < work.size(); ++i) {
             if (cancel->load()) return;
-            const double bpm = eter::estimateBpm(work[i].second.toStdString(), *cancel);
+            const std::string path = work[i].second.toStdString();
+            const double value = key ? double(eter::estimateKey(path, *cancel)) : eter::estimateBpm(path, *cancel);
             if (cancel->load()) return;
-            if (bpm > 0) ++found;
+            if (value > 0) ++found;
             const int id = work[i].first, n = i + 1, total = int(work.size()), ok = found;
-            QMetaObject::invokeMethod(qApp, [self, id, bpm, n, total, ok] {
+            QMetaObject::invokeMethod(qApp, [self, id, value, n, total, ok, key] {
                 if (!self) return;
-                if (bpm > 0) self->db_->setItemFlow({id}, -1, bpm, -1);
+                if (value > 0) {
+                    if (key) self->db_->setItemKey({id}, int(value));
+                    else self->db_->setItemFlow({id}, -1, value, -1);
+                }
                 if (n == total || n % 20 == 0) {
                     self->db_->notifyItemsChanged();
-                    emit self->message(n == total ? TR("Tempó becslése kész: %1 / %2 elemnél sikerült.").arg(ok).arg(total)
-                                                  : TR("Tempó becslése: %1 / %2…").arg(n).arg(total));
+                    if (key)
+                        emit self->message(n == total ? TR("Hangnem becslése kész: %1 / %2 elemnél sikerült.").arg(ok).arg(total)
+                                                      : TR("Hangnem becslése: %1 / %2…").arg(n).arg(total));
+                    else
+                        emit self->message(n == total ? TR("Tempó becslése kész: %1 / %2 elemnél sikerült.").arg(ok).arg(total)
+                                                      : TR("Tempó becslése: %1 / %2…").arg(n).arg(total));
                 }
             }, Qt::QueuedConnection);
         }

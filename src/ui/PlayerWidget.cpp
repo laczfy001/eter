@@ -197,13 +197,15 @@ void PlayerWidget::startScan(const QString &path)
     scanCancel_ = cancel;
     const std::string p = path.toStdString();
     scanThread_ = std::thread([this, p, cancel, generation] {
-        std::vector<float> peaks;
+        std::vector<float> peaks, env;
         int64_t total = 0;
-        const bool ok = eter::scanPeaks(p, 1200, peaks, total, *cancel);
+        const bool ok = eter::scanPeaks(p, 1200, peaks, total, *cancel, &env);
         if (!ok || cancel->load() || peaks.empty() || total <= 0) return;
         QVector<float> v(peaks.begin(), peaks.end());
-        QMetaObject::invokeMethod(this, [this, v, total, generation] {
+        auto profile = std::make_shared<eter::MixProfile>(eter::analyzeMixProfile(env, total * 1000 / eter::kRate));
+        QMetaObject::invokeMethod(this, [this, v, total, generation, profile] {
             if (generation != scanGeneration_ || !src_->loaded()) return;
+            profile_ = *profile;
             wave_->setPeaks(v);
             src_->setDuration(total);     // a teljes végigolvasás pontos hosszt ad
             // Automatikus mix pont: az utolsó hely, ahol a jel még a küszöb fölött van.
@@ -223,6 +225,7 @@ bool PlayerWidget::loadFile(const QString &path, QString *err)
     cancelScan();
     mixOut_ = -1;
     leadIn_ = -1;
+    profile_ = eter::MixProfile();
     cue_ = 0;
     intro_ = 0;
     fadeRequested_ = false;
@@ -251,6 +254,7 @@ void PlayerWidget::eject()
     rowId = -1;
     mixOut_ = -1;
     leadIn_ = -1;
+    profile_ = eter::MixProfile();
     wave_->clear();
     wave_->setMixMarker(-1, {}, {});
     setVtChip({});

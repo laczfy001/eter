@@ -20,6 +20,15 @@ tartalék playout egyetlen asztali alkalmazásban.
   lévő elem utolsó 10 másodpercében piros visszaszámláló jelenik meg az ablak alján (automata módban a mix pontig
   számol); nem kattintható.
   Minden csatorna (A, B és C lejátszó, előhallgatás, cartwall) külön hangkártyára tehető.
+- **Mixdown**: elemek sorozata voice trackekkel, saját idővonalon (az átmenetek az okos mix szerint állnak be, utána
+  szabadon állíthatók; a voice track oda kerül, ahová az idővonalon kattintottál), és kikeverés egyetlen MP3 vagy WAV fájlba, amely a hangtár „Mixdown” kategóriájába is bekerül.
+- **Mini mixer** az óra paneljén: jelszint és fader a három lejátszóhoz, a voice trackhez, a cartwallhoz és a fő
+  kimenethez, némítással.
+- **Ének-szabály**: a számok énekét (férfi, női, együttes, vegyes, instrumentális) egyenként vagy a hangtárban sokat
+  egyszerre megadva korlátozható, hány azonos ének jöhet egymás után.
+- **Okos automatikus mix**: felismeri a lecsengő és a hirtelen véget, a lágy és az erős kezdést, és (ha kéred) ütköző
+  tempónál vagy hangnemnél rövidebb az átfedés; minden küszöb állítható a *Beállítások → Automatikus mix* lapon, és a Mix
+  editor minden átmenetnél megmutatja a tervet.
 - **Automatikus mix / Mix editor** kapcsoló a felső sávban: *Automatikus mix* állásban a két zene közti átmeneteket
   a program keveri a hullámforma alapján (a következő dal eleji csendje kimarad); ahol bármelyik oldal nem zene
   (jingle, hírek, reklám), ott a Mix editorban mentett beállítás érvényes, és a mentett voice track is megszólal.
@@ -45,7 +54,9 @@ tartalék playout egyetlen asztali alkalmazásban.
 - **Cartwall** a playlist helyén: színes gombfalak azonnal induló hangokkal, a hangtárból vagy fájlból
   feltöltve, saját kimenettel (alapból az A lejátszóét követi).
 - **Pontos időre igazítás**: minden fix idejű elem (például az óra eleji hírek) előtt látszik, mennyi hiányzik vagy
-  mennyivel lóg túl a playlist; a program kitöltést vagy kivehető elemet javasol, automata módban magától is igazít.
+  mennyivel lóg túl a playlist, és a program javítást javasol: beszúrandó számokat, vagy az ütemező által betett számok
+  kivételét, illetve jobban illőre cseréjét, hogy a fix elem néhány másodpercen belül érkezzen (kis túllógás inkább
+  kiúszik, mint hogy csend legyen). Automata módban ezt magától is elvégzi, legfeljebb 30 perccel előre.
 - **Hiányzó fájlok**: a háttérben ellenőrzi a fájlokat; amelyik nem érhető el, az a sorban pirosan látszik jóval az
   adásba kerülése előtt. A teljes hangtár is átnézhető.
 - **Adásrögzítés (logger)**: az adás óránkénti MP3 fájlokba kerül, a régieket a beállított idő után törli.
@@ -55,11 +66,21 @@ tartalék playout egyetlen asztali alkalmazásban.
 
 - **Hangtár** SQLite adatbázisban, saját kategóriákkal, fájlok és egész mappák importálásával,
   elemszerkesztővel (cím, előadó, album, év, kategória, kezdőpont, intro és outro jelölő).
-- **Ütemező**: órasémák kategóriákból, fix idejű elemekkel és kitöltéssel, heti rács,
+- **Ütemező** (1920×1080-nál kisebb képernyőn külön ablakban nyílik): órasémák kategóriákból, fix idejű elemekkel és kitöltéssel, heti rács,
   előadó- és számismétlési szabályok, automatikus előre generálás. Az elemeknek energiája (1–5), tempója (a hangból
-  becsülve vagy kopogtatva) és napszakai lehetnek; a szabályok szétválasztják a lassú számokat, korlátozzák az
-  energiaugrást és a tempóváltást, és egy séma-hely energiasávot is kérhet.
-- **Mix editor**: két vagy három egymást követő elem átmenete idővonalon állítható: mix pont, a kimenő elem
+  becsülve vagy kopogtatva), hangneme és napszakai lehetnek; a szabályok szétválasztják a lassú számokat, korlátozzák
+  az energiaugrást és a tempóváltást, és egy séma-hely energiasávot is kérhet. A kitöltés a következő fix pont közelében
+  ér véget (az utolsó 1–3 számot együtt választja ki).
+- **Hangnem és harmonikus keverés**: a hangtárban Hangnem oszlop van, Camelot (8A) vagy hagyományos (Am) jelöléssel
+  (Beállítások → Elemzés). A hangnem a fájl címkéjéből (TKEY, INITIALKEY), az elemszerkesztőből (kézzel vagy
+  *Becslés*), vagy a **háttérelemzésből** jön: ez a legkisebb prioritással végignézi a zenéket, és kitölti a hiányzó
+  tempót és hangnemet – folyamatosan, vagy csak egy beállított időablakban (például éjjel); a kézzel vagy címkéből
+  kapott értéket nem írja felül. Az ütemező **hangnem-szabálya** (Ütemező → Szabályok) a Camelot-kereket követi:
+  *előnyben az illő* esetén illő hangnemű számot választ, ha amúgy is sorra kerülne egy; *csak illő* esetén kötelező, és
+  csak akkor lazít, ha egyáltalán nincs illő jelölt. A playlistben minden szám tempója és hangneme látszik, a
+  szabályt sértő átmenet figyelmeztető jelet kap, és a *Generálás* után az ütemező kiírja, hány átmenet tartja a tempó-
+  és a hangnem-szabályt.
+- **Mix editor** (1920×1080-nál kisebb képernyőn külön ablakban nyílik, így mellette látszik az adás): két vagy három egymást követő elem átmenete idővonalon állítható: mix pont, a kimenő elem
   vége, úsztatási görbék, kezdőpont, beúsztatás, intro, voice track (felvétel vagy fájl) és zenehalkítás,
   előhallgatással. Hármas nézetben a harmadik elemet a második eleje elé húzva és elengedve a középső elem
   ráfekszik az átmenetre, saját sávval. Bármelyik sávba kattintva onnan szól az előhallgatás. A nem zenei elemek

@@ -31,6 +31,8 @@ public:
     int64_t durationFrames() const { return duration_; }
     const std::string &title() const { return title_; }
     const std::string &artist() const { return artist_; }
+    const std::string &keyTag() const { return key_; }   // a fájlban tárolt hangnem-címke (TKEY / INITIALKEY)
+    const std::string &bpmTag() const { return bpm_; }
 
     // Legfeljebb `frames` sztereó képkockát ír `out`-ba; 0 = fájl vége.
     int read(float *out, int frames);
@@ -54,13 +56,14 @@ private:
     int errors_ = 0;
     std::vector<float> fifo_;
     size_t fifoPos_ = 0;
-    std::string title_, artist_;
+    std::string title_, artist_, key_, bpm_;
 };
 
 // Teljes fájl végigolvasása a hullámformához: `bins` darab csúcsérték (0..1)
 // és a pontos hossz. `cancel` igazra állítva megszakítható.
 bool scanPeaks(const std::string &path, int bins, std::vector<float> &peaks,
-               int64_t &totalFrames, const std::atomic<bool> &cancel);
+               int64_t &totalFrames, const std::atomic<bool> &cancel,
+               std::vector<float> *env100ms = nullptr);
 
 // Automatikus mix pont: az utolsó hely, ahol a jel még a küszöb (dB) fölött van.
 int64_t autoMixOut(const std::vector<float> &peaks, int64_t totalFrames, double thresholdDb);

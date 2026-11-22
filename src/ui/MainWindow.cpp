@@ -18,12 +18,19 @@
 #include "PlaylistTable.h"
 #include "SchedulerPage.h"
 #include "SettingsDialog.h"
+#include "core/LibraryAnalyzer.h"
+#include "core/SmartMixConfig.h"
+#include "core/MusicKey.h"
+#include "core/Vocal.h"
+#include "ChannelMixer.h"
+#include "MixdownPage.h"
 #include "Theme.h"
 #include "Widgets.h"
 #include "audio/ProgramLogger.h"
 
 #include <QApplication>
 #include <QCloseEvent>
+#include <functional>
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
@@ -41,6 +48,7 @@
 #include <QPainter>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScreen>
 #include <QSettings>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -72,6 +80,39 @@ public:
 private:
     MainWindow *w_;
 };
+
+// Külön ablak egy oldalnak (Ütemező, Mix editor). Saját felső szintű ablak (nem a főablaké), hogy a főablak
+// elé-mögé szabadon kerülhessen, és másik monitorra is tehető legyen; a helyét és méretét megjegyzi.
+namespace {
+class PageWindow : public QWidget {
+public:
+    PageWindow(const QString &title, const QString &key, std::function<void()> onClose)
+        : QWidget(nullptr, Qt::Window), key_(key), onClose_(std::move(onClose))
+    {
+        setWindowTitle(TR("Éter – %1").arg(title));
+        setWindowIcon(theme::appIcon());
+        setObjectName("pageWindow");
+        auto *l = new QVBoxLayout(this);
+        l->setContentsMargins(0, 0, 0, 0);
+        resize(1360, 860);
+        const QByteArray geo = QSettings().value(key_).toByteArray();
+        if (!geo.isEmpty()) restoreGeometry(geo);
+    }
+    void saveGeo() { QSettings().setValue(key_, saveGeometry()); }
+
+protected:
+    void closeEvent(QCloseEvent *e) override
+    {
+        saveGeo();
+        if (onClose_) onClose_();
+        QWidget::closeEvent(e);
+    }
+
+private:
+    QString key_;
+    std::function<void()> onClose_;
+};
+} // namespace
 
 static QFrame *makePanel()
 {
@@ -109,8 +150,7 @@ MainWindow::MainWindow(Database *db, const QString &backendOverride, QWidget *pa
     buildMenus();
     startAudio();
     setAutoMix(autoMix_);
-    const double mixDb = db_->setting("auto_mix_threshold_db", "-24").toDouble();
-    for (auto *p : players_) p->autoMixDb = mixDb;
+    reloadMixSettings();
 
     // Az előző futásból megmaradt, még le nem játszott sorok
     // Ami az ütemezőtől egy már elmúlt órára maradt, az nem kerül adásba.
@@ -165,6 +205,8 @@ MainWindow::MainWindow(Database *db, const QString &backendOverride, QWidget *pa
     nowPlaying_ = new NowPlaying(this);
     nowPlaying_->configure(NowPlaying::loadConfig());
     configureLogger();
+    analyzer_ = new LibraryAnalyzer(db_, this);
+    if (qEnvironmentVariable("ETER_ANALYZE") == QLatin1String("0")) analyzer_->setPaused(true);
 
     // Tartalék playoutoknak: a változások után fél perccel, és tíz percenként mindenképp új adatbázis-másolat.
     snapshotTimer_ = new QTimer(this);
@@ -196,6 +238,19 @@ MainWindow::~MainWindow()
              return l;
          }())
         delete d.data();
+    // A külön ablakos oldalak (Mix editor: előhallgatás a hangmotoron) még a motor leállítása előtt szűnjenek meg.
+    for (QWidget *w : {schedWindow_, mixWindow_})
+        if (auto *pw = static_cast<PageWindow *>(w)) pw->saveGeo();
+    if (mixPage_) mixPage_->stopPreview();
+    delete mixPage_;      // akár a főablakban, akár a külön ablakban van
+    delete schedPage_;
+    mixPage_ = nullptr;
+    schedPage_ = nullptr;
+    delete mixWindow_;
+    delete schedWindow_;
+    mixWindow_ = schedWindow_ = nullptr;
+    delete analyzer_;   // a szála még az adatbázis előtt álljon le
+    analyzer_ = nullptr;
     engine_.shutdown();
 }
 
@@ -215,6 +270,14 @@ void MainWindow::closeEvent(QCloseEvent *e)
         if (row.logId) db_->logEnd(row.logId, "stopped");
     if (nowPlaying_) nowPlaying_->writeIdle();
     QSettings().setValue("window/geometry", saveGeometry());
+    for (QWidget *w : {schedWindow_, mixWindow_})
+        if (w && w->isVisible()) {
+            static_cast<PageWindow *>(w)->saveGeo();
+            QSettings().setValue(w == mixWindow_ ? "window/mixeditorOpen" : "window/schedulerOpen", true);
+            w->hide();
+        } else if (w) {
+            QSettings().setValue(w == mixWindow_ ? "window/mixeditorOpen" : "window/schedulerOpen", false);
+        }
     e->accept();
 }
 
@@ -252,6 +315,8 @@ void MainWindow::buildUi()
     connect(tabMix_, &QToolButton::clicked, this, [this] { showPage(2); });
     tabPl_ = addTab(TR("Playlist szerkesztő"), true, TR("Egyéni playlistek összeállítása és mentése"));
     connect(tabPl_, &QToolButton::clicked, this, [this] { showPage(3); });
+    tabMixdown_ = addTab(TR("Mixdown"), true, TR("Elemek sorozatából (voice trackekkel) egyetlen hangfájl, MP3 vagy WAV"));
+    connect(tabMixdown_, &QToolButton::clicked, this, [this] { showPage(5); });
     tabEvents_ = addTab(TR("Időzítések"), true, TR("Elem vagy playlist időzített beküldése a playlistbe vagy adásba"));
     connect(tabEvents_, &QToolButton::clicked, this, [this] { showPage(4); });
     auto *settingsTab = addTab(TR("Beállítások"), true, TR("Hangkimenetek beállítása"));
@@ -365,7 +430,6 @@ void MainWindow::buildUi()
     });
     stack_ = new QStackedWidget;
     stack_->addWidget(split);
-    stack_->addWidget(schedPage_);
     mixPage_ = new MixEditorPage(db_, &engine_);
     connect(mixPage_, &MixEditorPage::message, this, [this](const QString &m) { say(m, 8000); });
     connect(mixPage_, &MixEditorPage::mixSaved, this, &MainWindow::onMixSaved);
@@ -377,7 +441,21 @@ void MainWindow::buildUi()
         if (itemEditor_) itemEditor_->releasePreview();
         if (pflActive_) stopPfl();        // egyszerre csak egy előhallgatás szólhat
     });
-    stack_->addWidget(mixPage_);
+    // Az Ütemező és a Mix editor: 1920×1080-nál kisebb képernyőn külön ablakban nyílik (mellette látszik az adás),
+    // nagyobbon a főablakban, mint a többi oldal. A két oldal a helyének megfelelően kerül az egyikbe vagy a másikba.
+    auto host = [](QWidget *page) {
+        auto *h = new QWidget;
+        auto *l = new QVBoxLayout(h);
+        l->setContentsMargins(0, 0, 0, 0);
+        l->addWidget(page);
+        return h;
+    };
+    schedHost_ = host(schedPage_);
+    mixHost_ = host(mixPage_);
+    stack_->addWidget(schedHost_);
+    stack_->addWidget(mixHost_);
+    schedWindow_ = makePageWindow(schedPage_, TR("Ütemező"), QStringLiteral("window/scheduler"));
+    mixWindow_ = makePageWindow(mixPage_, TR("Mix editor"), QStringLiteral("window/mixeditor"));
     plPage_ = new PlaylistEditorPage(db_);
     connect(plPage_, &PlaylistEditorPage::message, this, [this](const QString &m) { say(m, 8000); });
     connect(plPage_, &PlaylistEditorPage::editRequested, this, [this](int id) { openItemEditor(id); });
@@ -386,12 +464,28 @@ void MainWindow::buildUi()
     eventsPage_ = new TimedEventsPage(db_);
     connect(eventsPage_, &TimedEventsPage::message, this, [this](const QString &m) { say(m, 8000); });
     stack_->addWidget(eventsPage_);
+    mixdownPage_ = new MixdownPage(db_, &engine_);
+    connect(mixdownPage_, &MixdownPage::message, this, [this](const QString &m) { say(m, 10000); });
+    connect(mixdownPage_, &MixdownPage::previewStarting, this, [this] {
+        if (pflActive_) stopPfl();
+        if (mixPage_) mixPage_->stopPreview();
+        if (itemEditor_) itemEditor_->releasePreview();
+    });
+    stack_->addWidget(mixdownPage_);   // 5
     events_ = db_->timedEvents();
     connect(db_, &Database::timedEventsChanged, this, [this] { events_ = db_->timedEvents(); });
     bodyLayout->addWidget(stack_, 1);
     root->addWidget(body, 1);
     showPage(0);
     showLeft(db_->setting("left_view", "0").toInt());
+    // A legutóbb nyitva hagyott külön ablakok újra megnyílnak (a főablak megjelenése után).
+    QTimer::singleShot(0, this, [this] {
+        if (!separatePageWindows()) return;
+        if (QSettings().value("window/schedulerOpen", false).toBool()) showPage(1);
+        if (QSettings().value("window/mixeditorOpen", false).toBool()) showPage(2);
+        raise();                  // az adás ablaka legyen elöl
+        activateWindow();
+    });
     setCentralWidget(central);
     countdown_ = new CountdownOverlay(central);     // az utolsó 10 másodperc; csak kijelzés, nem kattintható
 
@@ -507,30 +601,36 @@ QWidget *MainWindow::buildDeck()
     clock_->setObjectName("clock");
     date_ = new QLabel;
     date_->setObjectName("small");
-    auto *hourRow = new QHBoxLayout;
-    auto *hourLabel = new QLabel(TR("Óra végéig"));
-    hourLabel->setObjectName("muted");
+    // Felül az óra, alatta egy sorban a dátum és az óra végéig hátralévő idő, a panel többi része a mini mixer.
+    auto *dateRow = new QHBoxLayout;
     toHour_ = new QLabel;
     toHour_->setObjectName("mono");
-    hourRow->addWidget(hourLabel);
-    hourRow->addStretch(1);
-    hourRow->addWidget(toHour_);
-    auto *masterRow = new QHBoxLayout;
-    auto *masterLabel = new QLabel(TR("LEJÁTSZÓK"));
-    masterLabel->setObjectName("caption");
-    masterDb_ = new QLabel;
-    masterDb_->setObjectName("mono");
-    masterRow->addWidget(masterLabel);
-    masterRow->addStretch(1);
-    masterRow->addWidget(masterDb_);
+    toHour_->setToolTip(TR("Az óra végéig hátralévő idő"));
+    dateRow->addWidget(date_);
+    dateRow->addStretch(1);
+    dateRow->addWidget(toHour_);
+    masterDb_ = new QLabel(clk);   // a régi „Lejátszók” szintmérő: a mixer „KI” csatornája vette át (rejtve marad)
+    masterDb_->hide();
     master_ = new MeterWidget(8);
+    master_->setParent(clk);
+    master_->hide();
+    mixer_ = new ChannelMixer;
+    mixer_->setObjectName("channelMixer");
+    mixer_->confirmMute = [this](int strip) {
+        // Az adásban szóló lejátszó vagy a fő kimenet némítása előtt rákérdez.
+        const bool onAirStrip = strip <= ChannelMixer::C && strip == onAirPlayer() && players_[strip]->isPlaying();
+        const bool out = strip == ChannelMixer::Out && anythingPlaying();
+        if (!onAirStrip && !out) return true;
+        return QMessageBox::question(this, TR("Némítás"),
+                                     out ? TR("A fő kimenet némításával az adás elnémul. Biztosan?")
+                                         : TR("Az adásban szóló lejátszót némítod – az adás elnémul. Biztosan?"))
+               == QMessageBox::Yes;
+    };
+    connect(mixer_, &ChannelMixer::changed, this, &MainWindow::applyMixerGains);
     kl->addWidget(clock_);
-    kl->addWidget(date_);
-    kl->addSpacing(4);
-    kl->addLayout(hourRow);
-    kl->addStretch(1);
-    kl->addLayout(masterRow);
-    kl->addWidget(master_);
+    kl->addLayout(dateRow);
+    kl->addSpacing(2);
+    kl->addWidget(mixer_, 1);
     row->addWidget(clk, 3);
     return deck;
 }
@@ -896,6 +996,7 @@ void MainWindow::say(const QString &msg, int ms) { statusBar()->showMessage(msg,
 
 void MainWindow::startAudio()
 {
+    applyMixerGains();   // a mini mixer faderjei (a hangmotor újraindítása után is)
     std::string err;
     if (!engine_.init(backend_.toStdString(), &err)) {
         // A kért háttérrendszer nem megy: automatikus választás.
@@ -1070,13 +1171,28 @@ bool MainWindow::changeBackend(const QString &backend)
 void MainWindow::tick()
 {
     float peakL = 0.f, peakR = 0.f;
-    for (auto *p : players_) {
+    for (int i = 0; i < kPlayers; ++i) {
         float l = 0.f, r = 0.f;
-        p->tick(&l, &r);
+        players_[i]->tick(&l, &r);
+        if (mixer_) {
+            mixer_->feed(i, l, r);
+            mixer_->setOnAir(i, i == onAirPlayer() && players_[i]->isPlaying());
+        }
         peakL = std::max(peakL, l);
         peakR = std::max(peakR, r);
     }
-    if (cartPanel_) cartPanel_->tick(&peakL, &peakR);
+    {
+        float cl = 0.f, cr = 0.f;
+        if (cartPanel_) cartPanel_->tick(&cl, &cr);
+        if (mixer_) {
+            mixer_->feed(ChannelMixer::Cart, cl, cr);
+            mixer_->feed(ChannelMixer::Vt, vtPeak_[0], vtPeak_[1]);
+        }
+        peakL = std::max({peakL, cl, vtPeak_[0], ovlPeak_[0]});
+        peakR = std::max({peakR, cr, vtPeak_[1], ovlPeak_[1]});
+        vtPeak_[0] = vtPeak_[1] = ovlPeak_[0] = ovlPeak_[1] = 0.f;
+    }
+    if (mixer_) mixer_->feed(ChannelMixer::Out, peakL, peakR);
     master_->feed(peakL, peakR);
     const double db = master_->levelDb();
     masterDb_->setText(db <= -60.0 ? TR("−∞ dB")
@@ -1253,6 +1369,8 @@ void MainWindow::runOverlays()
         auto &src = engine_.source(static_cast<Engine::Channel>(Engine::Ovl1 + v));
         float l, r;
         src.takePeaks(l, r);
+        ovlPeak_[0] = std::max(ovlPeak_[0], l);
+        ovlPeak_[1] = std::max(ovlPeak_[1], r);
         if (src.takeFinished() || !src.playing()) endOverlay(v, "finished");
     }
     // A várakozó ráfektetett elemek közül az, amelyiknek eljött az ideje (a lista elejét elég nézni).
@@ -1734,9 +1852,31 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     p->setFont(sansBold);
     p->setPen(QColor("#f3f4f6"));
     p->drawText(QRect(x, r.top() + 6, tw, 20), Qt::AlignLeft | Qt::AlignVCenter, QFontMetrics(sansBold).elidedText(row.item.title, Qt::ElideRight, tw));
+    // A második sor jobb végén a tempó és a hangnem; ha az előző zenéhez képest sérül egy szabály, figyelmeztetéssel.
+    int artistW = tw;
+    if (row.item.kind == QLatin1String("music")) {
+        QStringList flow;
+        if (row.item.bpm > 0) flow << QString::number(row.item.bpm, 'f', 0);
+        if (mkey::valid(row.item.musicKey)) flow << mkey::display(row.item.musicKey);
+        if (row.item.vocal) flow << vocal::letter(row.item.vocal);
+        const bool issue = flowIssue_.contains(row.id);
+        QString text = flow.join(QStringLiteral(" · "));
+        if (issue) text = QStringLiteral("⚠ ") + text;
+        if (!text.isEmpty()) {
+            QFont f = monoSmall;
+            f.setPixelSize(11);
+            const int fw = QFontMetrics(f).horizontalAdvance(text) + 4;
+            if (fw < tw / 2) {
+                p->setFont(f);
+                p->setPen(issue ? QColor("#ffb347") : sub);
+                p->drawText(QRect(x + tw - fw, r.top() + 26, fw, 16), Qt::AlignRight | Qt::AlignVCenter, text);
+                artistW = tw - fw - 8;
+            }
+        }
+    }
     p->setFont(sans);
     p->setPen(sub);
-    p->drawText(QRect(x, r.top() + 26, tw, 16), Qt::AlignLeft | Qt::AlignVCenter, QFontMetrics(sans).elidedText(row.item.artist, Qt::ElideRight, tw));
+    p->drawText(QRect(x, r.top() + 26, artistW, 16), Qt::AlignLeft | Qt::AlignVCenter, QFontMetrics(sans).elidedText(row.item.artist, Qt::ElideRight, artistW));
     // haladás
     if (progress >= 0) {
         p->fillRect(QRect(r.left(), r.bottom() - 3, r.width(), 3), QColor(0, 0, 0, 90));
@@ -1998,6 +2138,8 @@ void MainWindow::runVoiceTrack()
     if (vtPlaying_) {
         float l, r;
         vt.takePeaks(l, r);
+        vtPeak_[0] = std::max(vtPeak_[0], l);
+        vtPeak_[1] = std::max(vtPeak_[1], r);
         if (vt.takeFinished() || !vt.playing()) endVoiceTrack("finished");
         return;
     }
@@ -2212,6 +2354,28 @@ void MainWindow::updateNowPlaying()
     if (now - nowIdleSince_ >= 3000) nowPlaying_->setTracks({}, next);
 }
 
+// A mini mixer faderjei a hangmotor csatornáinak erősítéseként (a mix és a hangerőgörbe fölött). A fő kimenet
+// minden adásba menő csatornára hat; a ráfektetett elemek csak a fő kimenet faderét követik.
+void MainWindow::applyMixerGains()
+{
+    if (!mixer_) return;
+    const float out = mixer_->gain(ChannelMixer::Out);
+    for (int i = 0; i < kPlayers; ++i) engine_.source(playerChannel(i)).setGain(mixer_->gain(i) * out);
+    engine_.source(Engine::Vt).setGain(mixer_->gain(ChannelMixer::Vt) * out);
+    for (int c = Engine::Cart1; c <= Engine::CartLast; ++c)
+        engine_.source(static_cast<Engine::Channel>(c)).setGain(mixer_->gain(ChannelMixer::Cart) * out);
+    for (int v = 0; v < Engine::kOverlayVoices; ++v) engine_.source(static_cast<Engine::Channel>(Engine::Ovl1 + v)).setGain(out);
+}
+
+void MainWindow::reloadMixSettings()
+{
+    smart_ = loadSmartMix(db_);
+    const double mixDb = db_->setting("auto_mix_threshold_db", "-24").toDouble();
+    for (auto *p : players_) p->autoMixDb = mixDb;
+    ++mixVersion_;   // a terv újraszámolása
+    if (mixPage_) mixPage_->reloadSmartMix();
+}
+
 void MainWindow::configureNowPlaying()
 {
     nowPlaying_->configure(NowPlaying::loadConfig());
@@ -2240,6 +2404,29 @@ MainWindow::MixPlan MainWindow::planFor(int outPlayer, int inPlayer)
     // Automatikus mix: két zene között a hullámforma alapján, a mentett időzítéstől függetlenül.
     // A mentett voice track megmarad. Ha bármelyik oldal nem zene, a mentett beállítás érvényes.
     if (autoMixApplies(outRow, inRow)) {
+        // Okos mix: a kimenő szám végének és a bejövő elejének hangerő-képe, és (ha be van kapcsolva) a tempó és
+        // a hangnem alapján. Ha a kimenő szám elemzése még nincs kész, a régi, küszöb szerinti mix pont marad.
+        const eter::MixProfile &po = players_[outPlayer]->mixProfile();
+        if (smart_.enabled && po.valid) {
+            const eter::MixProfile none;
+            const eter::SmartMixPlan sp = eter::planSmartMix(po, inPlayer >= 0 ? players_[inPlayer]->mixProfile() : none,
+                                                             outRow->item.bpm, inRow->item.bpm, outRow->item.musicKey,
+                                                             inRow->item.musicKey, smart_);
+            if (sp.valid) {
+                plan.mixOutFrames = sp.mixOutMs * eter::kRate / 1000;
+                plan.outEndFrames = sp.outEndMs * eter::kRate / 1000;
+                plan.fadeOutMs = sp.fadeOutMs;
+                plan.curve = eter::FadeCurve::SCurve;
+                if (inPlayer >= 0 && inRow->item.cueInMs <= 0 && players_[inPlayer]->mixProfile().valid && sp.cueInMs > 0)
+                    plan.cueInFrames = sp.cueInMs * eter::kRate / 1000;
+                if (planTransition_.toEntryId) {
+                    plan.vtItemId = planTransition_.vtItemId;
+                    plan.vtOffsetMs = planTransition_.vtOffsetMs;
+                    plan.vtDuckDb = planTransition_.vtDuckDb;
+                }
+                return plan;
+            }
+        }
         plan.mixOutFrames = players_[outPlayer]->mixOutFrame();
         if (inPlayer >= 0 && inRow->item.cueInMs <= 0) {
             const qint64 lead = players_[inPlayer]->leadInFrame();
@@ -2960,6 +3147,41 @@ void MainWindow::clearList()
     refreshTable();
 }
 
+// A zenei folyam szabályainak ellenőrzése a playlistben: melyik zene nem illik az előtte szóló zenéhez (tempó,
+// hangnem). Csak a bekapcsolt szabályokat nézi; a sor figyelmeztető jelet kap, a súgóban az ok.
+void MainWindow::updateFlowIssues()
+{
+    flowIssue_.clear();
+    const int bpmPct = db_->setting("rule_bpm_jump_pct", "0").toInt();
+    const int keyRule = db_->setting("rule_key", "0").toInt();
+    const int vocalMax = db_->setting("rule_vocal_max", "0").toInt();
+    const Row *prev = nullptr;
+    int vType = 0, vRun = 0;
+    for (const Row &row : rows_) {
+        if (row.overlay || row.item.kind != QLatin1String("music") || row.state == Row::Skipped || row.state == Row::Failed) continue;
+        // Azonos ének sorozata (a nem ismert és az instrumentális nem számít, nem is szakítja meg).
+        if (vocal::counts(row.item.vocal)) {
+            vRun = row.item.vocal == vType ? vRun + 1 : 1;
+            vType = row.item.vocal;
+            if (vocalMax > 0 && vRun > vocalMax && row.state != Row::Played)
+                flowIssue_.insert(row.id, TR("%1. %2 ének egymás után (legfeljebb %3)").arg(vRun).arg(vocal::adjective(vType)).arg(vocalMax));
+        }
+        if (prev && row.state != Row::Played) {
+            QStringList why;
+            if (flowIssue_.contains(row.id)) why << flowIssue_.value(row.id);
+            const int jump = Scheduler::tempoJumpPct(prev->item.bpm, row.item.bpm);
+            if (bpmPct > 0 && jump > bpmPct)
+                why << TR("tempóugrás %1 % (%2 → %3 BPM, a szabály: legfeljebb %4 %)")
+                           .arg(jump).arg(prev->item.bpm, 0, 'f', 0).arg(row.item.bpm, 0, 'f', 0).arg(bpmPct);
+            if (keyRule > 0 && mkey::valid(prev->item.musicKey) && mkey::valid(row.item.musicKey)
+                && !mkey::compatible(prev->item.musicKey, row.item.musicKey))
+                why << TR("a hangnem nem illik: %1 → %2").arg(mkey::display(prev->item.musicKey), mkey::display(row.item.musicKey));
+            if (!why.isEmpty()) flowIssue_.insert(row.id, why.join(QStringLiteral("; ")));
+        }
+        prev = &row;
+    }
+}
+
 void MainWindow::refreshTable()
 {
     // Az újraépítés közbeni görgetés nem kézi görgetés.
@@ -2967,6 +3189,7 @@ void MainWindow::refreshTable()
     struct Restore { MainWindow *w; ~Restore() { w->programmaticScroll_ = false; w->followPlaying(); } } restore{this};
     const int selected = selectedRowId();
     const int selectedHead = selectedHeaderRowId();
+    updateFlowIssues();
     rebuildView();
     table_->setRowCount(view_.size());
     for (int v = 0; v < view_.size(); ++v) {
@@ -3130,7 +3353,19 @@ void MainWindow::refreshTable()
             item->setData(kGroupRole, row.groupId ? 1 : 0);
             item->setData(kRowIdRole, c == 0 ? QVariant(row.id) : QVariant());
             item->setData(kHeadIdRole, QVariant());
-            item->setToolTip(c == 1 ? row.item.path : QString());
+            {
+                QString tip = row.item.path;
+                if (row.item.kind == QLatin1String("music") && (row.item.bpm > 0 || mkey::valid(row.item.musicKey) || row.item.vocal)) {
+                    QStringList flow;
+                    if (row.item.bpm > 0) flow << TR("%1 BPM").arg(row.item.bpm, 0, 'f', 0);
+                    if (mkey::valid(row.item.musicKey)) flow << mkey::both(row.item.musicKey);
+                    if (row.item.vocal == vocal::Instrumental) flow << vocal::name(row.item.vocal);
+                    else if (row.item.vocal) flow << TR("%1 ének").arg(vocal::name(row.item.vocal));
+                    tip += QStringLiteral("\n") + flow.join(QStringLiteral(" · "));
+                }
+                if (flowIssue_.contains(row.id)) tip += QStringLiteral("\n⚠ ") + flowIssue_.value(row.id);
+                item->setToolTip(tip);
+            }
             if (c == 3) item->setData(kChipRole, row.item.color.isEmpty() ? QVariant() : QVariant(QColor(row.item.color)));
         }
         if (row.id == selected) selectRow = v;
@@ -3188,6 +3423,7 @@ void MainWindow::updateStartTimes()
     const bool fixedFade = db_->setting("fixed_time_policy", "fade") == "fade";
     QDateTime t = chainBase_;
     startText_.resize(rows_.size());
+    plannedStart_.clear();
     QVector<QDateTime> at(rows_.size());
     QVector<int> overlays;
     QVector<FixInfo> fixes;
@@ -3220,6 +3456,7 @@ void MainWindow::updateStartTimes()
                 t = fixedFade ? row.fixedAt : std::max(t, row.fixedAt);
             text = t.toString("HH:mm:ss");
             at[r] = t;
+            plannedStart_.insert(row.id, t);
             // A sor a mix pontjáig tölti ki az időt, ha az már ismert.
             t = t.addMSecs(row.item.mixOutMs > 0 ? row.item.mixOutMs : row.frames * 1000 / eter::kRate);
             break;
@@ -3421,15 +3658,59 @@ QString MainWindow::debugState() const
 
 // ---------------------------------------------------------------- ütemező
 
+QWidget *MainWindow::makePageWindow(QWidget *page, const QString &title, const QString &key)
+{
+    const bool mix = page == mixPage_;
+    auto *w = new PageWindow(title, key, [this, mix] {
+        if (mix && mixPage_) mixPage_->stopPreview();
+        (mix ? tabMix_ : tabSched_)->setChecked(false);
+    });
+    w->setAttribute(Qt::WA_QuitOnClose, false);   // a főablak bezárásakor ezek miatt ne maradjon futva a program
+    return w;
+}
+
+// Külön ablak kell-e: ha a főablak képernyőjének felbontása (fizikai képpontban, a nagyítástól függetlenül)
+// 1920×1080-nál kisebb. ETER_PAGE_WINDOWS=1/0 felülbírálja (fejlesztéshez).
+bool MainWindow::separatePageWindows() const
+{
+    const QString force = qEnvironmentVariable("ETER_PAGE_WINDOWS");
+    if (!force.isEmpty()) return force == QLatin1String("1");
+    const QScreen *s = screen();
+    if (!s) return false;
+    const QSize px = s->geometry().size() * s->devicePixelRatio();
+    return px.width() < 1920 || px.height() < 1080;
+}
+
 void MainWindow::showPage(int page)
 {
+    if (page == 1 || page == 2) {
+        QWidget *p = page == 1 ? static_cast<QWidget *>(schedPage_) : static_cast<QWidget *>(mixPage_);
+        QWidget *w = page == 1 ? schedWindow_ : mixWindow_;
+        QWidget *h = page == 1 ? schedHost_ : mixHost_;
+        if (separatePageWindows()) {
+            if (p->parentWidget() != w) w->layout()->addWidget(p);
+            p->show();
+            if (w->isMinimized()) w->showNormal();
+            else w->show();
+            w->raise();
+            w->activateWindow();
+            (page == 1 ? tabSched_ : tabMix_)->setChecked(true);
+            return;
+        }
+        if (w->isVisible()) w->hide();
+        if (p->parentWidget() != h) h->layout()->addWidget(p);
+        p->show();
+    }
     stack_->setCurrentIndex(page);
     tabLive_->setChecked(page == 0);
-    tabSched_->setChecked(page == 1);
-    tabMix_->setChecked(page == 2);
     tabPl_->setChecked(page == 3);
     tabEvents_->setChecked(page == 4);
-    if (page != 2 && mixPage_) mixPage_->stopPreview();
+    tabMixdown_->setChecked(page == 5);
+    if (page != 5 && mixdownPage_) mixdownPage_->stopPreview();
+    // A főablakba ágyazott oldal füle csak akkor jelölt, ha az látszik; külön ablaknál az ablak nyitottsága számít.
+    if (!schedWindow_->isVisible()) tabSched_->setChecked(page == 1);
+    if (!mixWindow_->isVisible()) tabMix_->setChecked(page == 2);
+    if (page != 2 && mixPage_ && mixPage_->parentWidget() == mixHost_) mixPage_->stopPreview();
 }
 
 MainWindow::Row MainWindow::makeRow(const Entry &e) const
@@ -3694,9 +3975,16 @@ QJsonObject MainWindow::remoteLibrary()
     QJsonArray cats, items;
     for (const Category &c : db_->categories()) cats.push_back(remote::categoryToJson(c));
     for (const Item &it : db_->items()) items.push_back(remote::itemToJson(it));
+    QJsonObject settings{{"auto_mix_threshold_db", db_->setting("auto_mix_threshold_db", "-24")},
+                         {"default_fade_out_ms", db_->setting("default_fade_out_ms", "2500")}};
+    // Az okos mix beállításai is, hogy a távoli Mix editor ugyanazt a tervet mutassa.
+    for (const char *k : {"smart_mix", "smart_end_depth_db", "smart_fade_depth_db", "smart_max_overlap_ms", "smart_intro_max_ms",
+                          "smart_tight_ms", "smart_flow", "smart_tempo_tol_pct", "smart_clash_overlap_ms"}) {
+        const QString v = db_->setting(k);
+        if (!v.isEmpty()) settings.insert(QLatin1String(k), v);
+    }
     return QJsonObject{{"t", "library"}, {"station", QSysInfo::machineHostName()}, {"categories", cats}, {"items", items},
-                       {"settings", QJsonObject{{"auto_mix_threshold_db", db_->setting("auto_mix_threshold_db", "-24")},
-                                                {"default_fade_out_ms", db_->setting("default_fade_out_ms", "2500")}}}};
+                       {"settings", settings}};
 }
 
 QJsonObject MainWindow::remoteState() const
@@ -3779,13 +4067,16 @@ QString MainWindow::applyRemoteOp(const QJsonObject &m, remote::Connection *c, Q
         onMixSaved({rowById(to)->item.id});
         what = TR("átmenet automatikusra");
     } else if (op == QLatin1String("setItemIntro") || op == QLatin1String("setItemCueIn") || op == QLatin1String("setItemMixDefaults")
-               || op == QLatin1String("clearItemMixDefaults") || op == QLatin1String("setItemEnvelope")) {
+               || op == QLatin1String("clearItemMixDefaults") || op == QLatin1String("setItemEnvelope")
+               || op == QLatin1String("setItemKey") || op == QLatin1String("setItemVocal")) {
         const int itemId = m.value("item").toInt();
         const Item it = db_->item(itemId);
         if (!it.id) return TR("Az elem már nincs a hangtárban.");
         if (op == QLatin1String("setItemIntro")) db_->setItemIntro(itemId, m.value("ms").toInteger());
         else if (op == QLatin1String("setItemCueIn")) db_->setItemCueIn(itemId, m.value("ms").toInteger());
         else if (op == QLatin1String("clearItemMixDefaults")) db_->clearItemMixDefaults(itemId);
+        else if (op == QLatin1String("setItemKey")) db_->setItemKey({itemId}, std::clamp(m.value("key").toInt(), 0, 24));
+        else if (op == QLatin1String("setItemVocal")) db_->setItemVocal({itemId}, std::clamp(m.value("vocal").toInt(), 0, 5));
         else if (op == QLatin1String("setItemEnvelope"))
             db_->setItemVolumeEnvelope(itemId, env::toString(env::fromString(m.value("env").toString())));
         else db_->setItemMixDefaults(itemId, m.value("mix").toInteger(), m.value("fadeOut").toInteger(), m.value("curve").toString(),

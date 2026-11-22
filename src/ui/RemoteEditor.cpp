@@ -480,6 +480,7 @@ void RemoteEditorWindow::applyLibrary(const QJsonObject &m)
     }
     const QJsonObject settings = m.value("settings").toObject();
     for (auto it = settings.begin(); it != settings.end(); ++it) db_->setSetting(it.key(), it.value().toString());
+    if (mix_) mix_->reloadSmartMix();
     station_ = m.value("station").toString();
     setWindowTitle(TR("Éter – távoli szerkesztő · %1").arg(station_.isEmpty() ? target_.host : station_));
     const auto hook = std::move(db_->remoteHook);

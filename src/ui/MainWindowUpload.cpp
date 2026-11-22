@@ -1,6 +1,7 @@
 // A főablak: hangfájlok feltöltése a távoli szerkesztőkből (új hangtárelem vagy voice track). A fájl darabokban érkezik,
 // minden darabot nyugtázunk; a végén a playout ellenőrzi, hogy hangfájl-e, és felveszi a hangtárba.
 #include "MainWindow.h"
+#include "core/MusicKey.h"
 #include "audio/Decoder.h"
 #include "i18n.h"
 #include "Library.h"
@@ -129,6 +130,8 @@ QString MainWindow::applyUpload(const QJsonObject &m, remote::Connection *c, QJs
             if (item.title.isEmpty()) item.title = QFileInfo(u.name).completeBaseName();
             item.artist = QString::fromStdString(dec.artist()).trimmed();
             item.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            item.musicKey = mkey::parse(QString::fromStdString(dec.keyTag()));
+            item.bpm = mkey::parseBpm(QString::fromStdString(dec.bpmTag()));
             QString err;
             id = db_->addItem(item, &err);
             if (!id) {

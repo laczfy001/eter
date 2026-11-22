@@ -42,7 +42,7 @@ public:
     int totalCount() const { return all_.size(); }
 
     int rowCount(const QModelIndex & = {}) const override { return rows_.size(); }
-    int columnCount(const QModelIndex & = {}) const override { return 7; }
+    int columnCount(const QModelIndex & = {}) const override { return 9; }
     QVariant data(const QModelIndex &index, int role) const override;
     QVariant headerData(int section, Qt::Orientation o, int role) const override;
     void sort(int column, Qt::SortOrder order) override;
@@ -99,7 +99,7 @@ private:
     void deleteSelected();
     void setEnergy(const QVector<int> &ids, int energy);
     void editDayparts(const QVector<int> &ids);
-    void estimateTempo(const QVector<int> &ids);
+    void estimateTempo(const QVector<int> &ids, bool key = false);
     std::shared_ptr<std::atomic<bool>> tempoCancel_;
 
     Database *db_;

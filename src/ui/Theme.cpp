@@ -65,6 +65,8 @@ QFrame#panelHeader { border: 0; border-bottom: 1px solid #30353e; }
 QFrame#panelFooter { border: 0; border-top: 1px solid #30353e; }
 
 QLabel#caption { color: #9aa3af; font-size: 11px; letter-spacing: 1px; }
+QToolButton#rulesToggle { color: #9aa3af; font-size: 11px; letter-spacing: 1px; border: 0; background: transparent; padding: 2px 0; }
+QToolButton#rulesToggle:hover { color: #e6e9ee; }
 QLabel#muted { color: #9aa3af; }
 QLabel#small { color: #9aa3af; font-size: 12px; }
 QLabel#panelTitle { font-size: 14px; font-weight: 600; }

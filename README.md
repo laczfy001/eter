@@ -20,6 +20,16 @@ for Icecast and a backup playout in one desktop application.
   10 seconds of the item on air a red countdown appears at the bottom of the window (in automatic mode it counts
   to the mix point); it never takes clicks.
   Every channel (players A, B and C, preview, cartwall) can go to its own sound card.
+- **Mixdown**: build a sequence of items with voice tracks on its own timeline (transitions set by the smart mix,
+  then freely adjustable; voice tracks are recorded where you click on the timeline) and render it to one MP3 or WAV file, which also goes into the library's "Mixdown"
+  category.
+- **Mini mixer** in the clock panel: level meters and faders for the three players, the voice track, the cartwall and
+  the main output, with mute.
+- **Vocal rule**: tag tracks as male, female, group, mixed or instrumental (one by one or many at once from the
+  library), and limit how many of the same vocal play in a row.
+- **Smart automatic mix**: recognises fade-out and sudden endings, soft and strong intros, and (optionally) shortens the
+  overlap when tempos or keys clash; every threshold is adjustable in *Settings → Automatic mix*, and the Mix editor
+  shows the plan for each transition.
 - **Automatic mix / Mix editor** switch in the top bar: with *Automatic mix* the transitions between two songs are
   mixed by the program from the waveform (silence at the start of the next song is skipped); transitions where
   either side is not music (jingles, news, ads) still follow their saved Mix editor settings, and saved voice
@@ -45,7 +55,9 @@ for Icecast and a backup playout in one desktop application.
 - **Cartwall** in place of the playlist: coloured walls of instant-start buttons, filled from the library or
   from files, with its own output (by default it follows player A).
 - **On time**: before every fixed-time item (the news at the top of the hour, say) the playlist shows how much is
-  missing or over, suggests items to fill the gap or to take out, and in automatic mode can do it by itself.
+  missing or over, and suggests a fix: tracks to add, or scheduler-placed tracks to drop or swap for better fitting ones,
+  so the fixed item arrives within a few seconds (a small overrun is faded out rather than leaving silence). In
+  automatic mode it can do this by itself, up to 30 minutes ahead.
 - **Missing files** are found in the background: rows whose file cannot be reached turn red well before they would go on
   air, and the whole library can be checked as well.
 - **Program logger**: what goes on air is recorded into hourly MP3 files, old ones are deleted after a set time.
@@ -55,11 +67,20 @@ for Icecast and a backup playout in one desktop application.
 
 - **Library** in SQLite with user-defined categories, import of files and whole folders, and an item editor
   for title, artist, album, year, category, cue-in, intro and outro markers.
-- **Scheduler**: clocks built from categories, fixed-time elements and fills, a week grid,
+- **Scheduler** (on screens below 1920×1080 it opens in its own window): clocks built from categories, fixed-time elements and fills, a week grid,
   artist and title separation, automatic generation ahead of time. Items can have an energy (1–5), a tempo (estimated
-  from the audio or tapped in) and dayparts; rules keep slow songs apart, limit energy jumps and tempo changes, and a
-  clock slot can ask for an energy band.
-- **Mix editor**: set the transition between two or three consecutive items on a timeline: mix point,
+  from the audio or tapped in), a musical key and dayparts; rules keep slow songs apart, limit energy jumps and tempo
+  changes, and a clock slot can ask for an energy band. Fills end close to the next fixed point (the last 1–3 tracks
+  are chosen together).
+- **Musical key and harmonic mixing**: the library has a Key column, shown in Camelot (8A) or traditional (Am)
+  notation (Settings → Analysis). Keys come from the file's tags (TKEY, INITIALKEY), the item editor (manual or
+  *Estimate*), or the **background analysis**, which goes through the music at the lowest priority and fills in missing
+  tempos and keys – continuously, or only in a time window you set (for example at night); it never overwrites values
+  entered by hand or taken from tags. The scheduler's **key rule** (Scheduler → Rules) follows the Camelot wheel: *prefer
+  matching* picks a track in a matching key when one is due anyway, *matching only* requires it and relaxes only when
+  there is no matching candidate at all. The playlist shows each track's tempo and key and marks transitions that
+  break a rule, and *Generate playlists* reports how many transitions keep the tempo and key rules.
+- **Mix editor** (on screens below 1920×1080 it opens in its own window, so the on-air view stays visible): set the transition between two or three consecutive items on a timeline: mix point,
   end of the outgoing item, fade curves, cue-in, fade-in, intro, voice tracks (recorded or from file) and
   music ducking, with preview. In the three-item view, drag the third item in front of the second one and
   release: the middle item is overlaid on the transition, with its own lane. Click anywhere in a lane to listen from

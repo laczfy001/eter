@@ -32,10 +32,19 @@ struct Item {
     qint64 cueOutMs = 0;            // a számhoz mentett vég (itt hallgat el); 0 = nincs megadva
     int energy = 0;                 // 1 nagyon nyugodt … 5 nagyon pörgős; 0 = nincs megadva
     double bpm = 0;                 // tempó; 0 = nem ismert
+    int musicKey = 0;               // hangnem 1..24 (core/MusicKey.h); 0 = nem ismert
+    int analysisVer = 0;            // a háttérelemzés verziója, amellyel már megnézte
+    int vocal = 0;                  // ének (core/Vocal.h); 0 = nem ismert
     int dayparts = 0;               // napszakok bitmaszkja (lásd daypartOf); 0 = bármikor szólhat
     QString volumeEnv;              // hangerőgörbe (core/VolumeEnvelope.h: "ms:dB;…"); üres = változatlan hangerő
     // Ennyi ideig tölti ki az adást: a mix pontig, ennek híján a teljes hossz egy becsült átfedéssel.
     qint64 airMs() const { return mixOutMs > 0 ? mixOutMs : std::max<qint64>(0, durationMs - (durationMs > 30000 ? 3000 : 0)); }
+};
+
+struct AnalysisJob {
+    int id = 0;
+    QString path;
+    bool needBpm = false, needKey = false;
 };
 
 struct Entry {
@@ -91,6 +100,7 @@ struct ClockSlot {
     int count = 1;
     int fixedOffsetS = -1;          // −1 = folytatólagos
     int energyMin = 0, energyMax = 0;   // a választható elemek energiája; 0 = nincs korlát
+    bool upToFit = false;           // „category”: legfeljebb count darab, de csak amennyi a következő fix pontig elfér
     QString label;                  // megjelenítéshez: kategória vagy elem neve
     QString kind, color;
 };
@@ -145,7 +155,7 @@ public:
     explicit Database(QObject *parent = nullptr);
     ~Database() override;
 
-    static constexpr int kSchemaVersion = 11;   // a legújabb séma (PRAGMA user_version)
+    static constexpr int kSchemaVersion = 14;   // a legújabb séma (PRAGMA user_version)
     bool open(const QString &path, QString *err = nullptr);
     QString path() const { return path_; }
 
@@ -172,6 +182,13 @@ public:
     void updateItemDetails(int id, int categoryId, const QString &title, const QString &artist, const QString &album, int year);
     // Energia, tempó és napszakok (az ütemező szabályaihoz); negatív érték: az a mező marad.
     void setItemFlow(const QVector<int> &ids, int energy, double bpm, int dayparts);
+    void setItemKey(const QVector<int> &ids, int key);   // 0 = nincs megadva
+    void setItemVocal(const QVector<int> &ids, int vocal);   // core/Vocal.h; 0 = nem ismert
+    // Háttérelemzés (tempó, hangnem): a még meg nem nézett zenék, a számlálók és az eredmény mentése.
+    QVector<AnalysisJob> analysisJobs(int version, int limit);
+    void analysisCounts(int version, int *pending, int *total);
+    void setItemAnalysis(int itemId, int version, double bpm, int key);
+    void resetAnalysis();
     // introMs: 0 = nincs; outroMs (az outro kezdete, vagyis a mix pont): 0 = automatikus.
     void setItemMarkers(int id, qint64 cueInMs, qint64 introMs, qint64 outroMs);
     bool deleteItem(int id, QString *err = nullptr);

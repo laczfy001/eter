@@ -109,12 +109,12 @@ private:
     Item item_;
     QLineEdit *title_, *artist_, *album_;
     QSpinBox *year_;
-    QComboBox *category_, *energy_;
+    QComboBox *category_, *energy_, *key_, *vocal_;
     QDoubleSpinBox *bpm_;
     QCheckBox *dayparts_[5];
-    QPushButton *bpmEstimate_, *bpmTap_;
+    QPushButton *bpmEstimate_, *bpmTap_, *keyEstimate_;
     QVector<qint64> taps_;
-    std::thread bpmThread_;
+    std::thread bpmThread_, keyThread_;
     MarkerWave *wave_;
     QDoubleSpinBox *spin_[3];
     QPushButton *play_, *save_;

@@ -16,6 +16,7 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QToolButton>
 #include "sched/Scheduler.h"
 #include <QSplitter>
 #include <QTableView>
@@ -211,6 +212,8 @@ void SchedulerPage::assignSelection(int clockId)
                          : TR("%1 óra kiürítve.").arg(selected.size()));
 }
 
+QString SchedulerPage::generateInfo() const { return genInfo_->text(); }
+
 void SchedulerPage::generateNow()
 {
     if (db_->weekGrid().isEmpty()) {
@@ -218,11 +221,42 @@ void SchedulerPage::generateNow()
         return;
     }
     const int hours = std::clamp(db_->setting("generate_ahead_hours", "24").toInt(), 1, 168);
-    const GenerateResult r = scheduler_->generate(eter::now(), hours, true);
+    const QDateTime from = eter::now();
+    const GenerateResult r = scheduler_->generate(from, hours, true);
     QStringList parts{TR("%1 órára %2 elem készült").arg(r.hours).arg(r.entries)};
-    if (r.relaxed) parts << TR("%1 helyen nem volt az ismétlési szabálynak megfelelő elem").arg(r.relaxed);
+    // A szabályok ellenőrzése a most generált órákon: az egymást követő zenék közti átmenetek.
+    const int firstKey = Scheduler::keyOf(QDateTime(from.date(), QTime(from.time().hour(), 0)));
+    QVector<Entry> made;
+    for (const Entry &e : db_->pendingEntries())
+        if (e.playlistKey >= firstKey) made << e;
+    const int bpmPct = db_->setting("rule_bpm_jump_pct", "0").toInt();
+    const int keyRule = db_->setting("rule_key", "0").toInt();
+    const int vocalMax = db_->setting("rule_vocal_max", "0").toInt();
+    const FlowStats st = Scheduler::flowStats(made, bpmPct, keyRule, vocalMax);
+    if (bpmPct > 0)
+        parts << (st.tempoKnown ? TR("tempó: %1 / %2 átmenet a szabályon belül").arg(st.tempoOk).arg(st.tempoKnown)
+                                : TR("tempó: nincs ismert tempójú számpár"));
+    if (keyRule > 0)
+        parts << (st.keyKnown ? TR("hangnem: %1 / %2 átmenet illik").arg(st.keyOk).arg(st.keyKnown)
+                              : TR("hangnem: nincs ismert hangnemű számpár"));
+    if (vocalMax > 0)
+        parts << (st.vocalKnown ? TR("ének: %1 / %2 szám a szabályon belül").arg(st.vocalOk).arg(st.vocalKnown)
+                                : TR("ének: nincs megadott énekű szám"));
+    if (r.relaxed) {
+        QStringList why;
+        if (r.relaxedBy[1]) why << TR("zenei folyam (tempó, hangnem, energia, ének) %1×").arg(r.relaxedBy[1]);
+        if (r.relaxedBy[2]) why << TR("energiasáv %1×").arg(r.relaxedBy[2]);
+        if (r.relaxedBy[3]) why << TR("ismétlés %1×").arg(r.relaxedBy[3]);
+        if (r.relaxedBy[4]) why << TR("napszak %1×").arg(r.relaxedBy[4]);
+        parts << TR("lazítás %1 helyen: %2").arg(r.relaxed).arg(why.join(QStringLiteral(", ")));
+    } else {
+        parts << TR("lazítás nem kellett");
+    }
     if (r.empty) parts << TR("%1 hely üresen maradt (üres kategória)").arg(r.empty);
     genInfo_->setText(parts.join(QStringLiteral(" · ")));
+    genInfo_->setToolTip(TR("Lazítás: ha egy helyre nem volt minden szabálynak megfelelő elem, az ütemező sorban enged: "
+                            "előbb a zenei folyam szabályaiból, aztán az energiasávból, az ismétlésből, végül a napszakból. "
+                            "A playlistben a szabályt sértő átmenet sora figyelmeztető jelet kap."));
     emit generated(r);
 }
 
@@ -306,6 +340,24 @@ QWidget *SchedulerPage::buildClockPanel()
     b->addStretch(1);
     b->addWidget(total_);
     v->addWidget(bar);
+    // Túlcsordulás: a darabszámos elemek becsült hossza nem fér el két fix pont között.
+    auto *warn = new QFrame;
+    warn->setObjectName("panelFooter");
+    auto *wl = new QHBoxLayout(warn);
+    wl->setContentsMargins(10, 6, 10, 6);
+    wl->setSpacing(8);
+    overflow_ = new QLabel;
+    overflow_->setWordWrap(true);
+    overflow_->setStyleSheet(QStringLiteral("color: #ff8f85;"));
+    overflowFix_ = new QPushButton(TR("Javítás: kitöltés a fix pontig"));
+    overflowFix_->setToolTip(TR("A túlcsorduló zenei sorok „Kitöltés a következő fix pontig” típusúak lesznek, a többi "
+                                "darabszámos sor pedig „legfeljebb ennyi, amennyi elfér”"));
+    wl->addWidget(overflow_, 1);
+    wl->addWidget(overflowFix_);
+    warn->hide();
+    v->addWidget(warn);
+    connect(overflowFix_, &QPushButton::clicked, this, &SchedulerPage::fixOverflow);
+    overflow_->setProperty("frame", QVariant::fromValue<QObject *>(warn));
 
     // A kijelölt elem beállításai
     slotForm_ = new QFrame;
@@ -338,6 +390,10 @@ QWidget *SchedulerPage::buildClockPanel()
     row1->addWidget(slotCategory_, 1);
     row1->addWidget(slotCountLabel_);
     row1->addWidget(slotCount_);
+    slotUpToFit_ = new QCheckBox(TR("legfeljebb, amennyi elfér"));
+    slotUpToFit_->setToolTip(TR("A darabszám csak felső határ: ha a következő fix pontig (vagy az óra végéig) nem fér el "
+                                "ennyi, kevesebb kerül be, és az utolsó hossza a hátralévő időhöz igazodik."));
+    row1->addWidget(slotUpToFit_);
     row1->addWidget(slotItemLabel_, 1);
     row1->addWidget(slotPick_);
     fl->addLayout(row1);
@@ -379,10 +435,31 @@ QWidget *SchedulerPage::buildClockPanel()
     // Szabályok
     auto *rules = new QFrame;
     rules->setObjectName("panelFooter");
-    auto *rl = new QVBoxLayout(rules);
-    rl->setContentsMargins(10, 10, 10, 10);
+    auto *ro = new QVBoxLayout(rules);
+    ro->setContentsMargins(10, 6, 10, 6);
+    ro->setSpacing(4);
+    // Lecsukható: alapból csukva, a fejlécre kattintva nyílik.
+    auto *rulesToggle = new QToolButton;
+    rulesToggle->setObjectName("rulesToggle");
+    rulesToggle->setText(TR("SZABÁLYOK"));
+    rulesToggle->setCheckable(true);
+    rulesToggle->setChecked(false);
+    rulesToggle->setArrowType(Qt::RightArrow);
+    rulesToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    rulesToggle->setAutoRaise(true);
+    rulesToggle->setToolTip(TR("A szabályok megjelenítése vagy elrejtése"));
+    ro->addWidget(rulesToggle);
+    auto *rulesBody = new QWidget;
+    rulesBody->setObjectName("rulesBody");
+    rulesBody->setVisible(false);
+    ro->addWidget(rulesBody);
+    connect(rulesToggle, &QToolButton::toggled, this, [rulesToggle, rulesBody](bool on) {
+        rulesToggle->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+        rulesBody->setVisible(on);
+    });
+    auto *rl = new QVBoxLayout(rulesBody);
+    rl->setContentsMargins(0, 4, 0, 4);
     rl->setSpacing(8);
-    rl->addWidget(caption(TR("SZABÁLYOK")));
     auto *rr = new QHBoxLayout;
     rr->setSpacing(8);
     auto spin = [&](const QString &label, const QString &suffix, int max, const QString &key, const QString &def) {
@@ -434,8 +511,45 @@ QWidget *SchedulerPage::buildClockPanel()
     auto *bpmJump = spin(TR("Tempóváltás"), TR(" %"), 60, "rule_bpm_jump_pct", "0");
     bpmJump->setSpecialValueText(TR("nincs szabály"));
     bpmJump->setToolTip(TR("Két egymást követő szám tempója legfeljebb ennyi százalékkal térhet el (a fél- és dupla tempó egyezőnek számít)"));
+    {
+        auto *l = new QLabel(TR("Hangnem"));
+        auto *keyRule = new QComboBox;
+        keyRule->setObjectName("keyRule");
+        keyRule->addItem(TR("nincs szabály"), 0);
+        keyRule->addItem(TR("előnyben az illő"), 1);
+        keyRule->addItem(TR("csak illő"), 2);
+        keyRule->setCurrentIndex(std::clamp(db_->setting("rule_key", "0").toInt(), 0, 2));
+        keyRule->setToolTip(TR("Harmonikus keverés a Camelot-kerék szerint: a következő szám hangneme az előzővel azonos, "
+                               "szomszédos (8A → 7A, 9A) vagy a párhuzamos dúr/moll (8A → 8B) legyen.\n"
+                               "Előnyben az illő: ha a soron következő számok között van illő, abból választ.\n"
+                               "Csak illő: kötelező, és csak akkor lazít, ha egyáltalán nincs illő jelölt.\n"
+                               "Az ismeretlen hangnemű szám mindenhez illik (Beállítások → Elemzés)."));
+        l->setBuddy(keyRule);
+        rr4->addWidget(l);
+        rr4->addWidget(keyRule);
+        connect(keyRule, &QComboBox::activated, this, [this, keyRule] { db_->setSetting("rule_key", keyRule->currentData().toString()); });
+    }
     rr4->addStretch(1);
     rl->addLayout(rr4);
+    auto *rrv = new QHBoxLayout;
+    rrv->setSpacing(8);
+    {
+        auto *l = new QLabel(TR("Azonos ének egymás után"));
+        auto *vocalMax = new QComboBox;
+        vocalMax->setObjectName("vocalRule");
+        vocalMax->addItem(TR("nincs szabály"), 0);
+        for (int n = 1; n <= 6; ++n) vocalMax->addItem(TR("legfeljebb %1").arg(n), n);
+        vocalMax->setCurrentIndex(std::max(0, vocalMax->findData(db_->setting("rule_vocal_max", "0").toInt())));
+        vocalMax->setToolTip(TR("Férfi, női, együttes és vegyes ének egyaránt: legfeljebb ennyi azonos jön egymás után. A nem "
+                                "ismert és az instrumentális szám nem számít bele, és nem is szakítja meg a sorozatot. Az ének "
+                                "az elemszerkesztőben vagy a hangtár jobb klikkes menüjében állítható."));
+        l->setBuddy(vocalMax);
+        rrv->addWidget(l);
+        rrv->addWidget(vocalMax);
+        connect(vocalMax, &QComboBox::activated, this, [this, vocalMax] { db_->setSetting("rule_vocal_max", vocalMax->currentData().toString()); });
+    }
+    rrv->addStretch(1);
+    rl->addLayout(rrv);
     auto *rr5 = new QHBoxLayout;
     rr5->setSpacing(8);
     rr5->addWidget(new QLabel(TR("Napszakok kezdete")));
@@ -469,9 +583,11 @@ QWidget *SchedulerPage::buildClockPanel()
     fixAdjust_ = new QComboBox;
     fixAdjust_->addItem(TR("kézzel (csak jelzi)"), "manual");
     fixAdjust_->addItem(TR("automatikus kitöltés"), "fill");
-    fixAdjust_->addItem(TR("automatikus kitöltés és rövidítés"), "both");
-    fixAdjust_->setToolTip(TR("Automata üzemmódban a fix idejű elem előtt 20 perccel: ha a playlist nem érne oda pontosan, "
-                              "elemet tesz be (kitöltés) vagy vesz ki (rövidítés)"));
+    fixAdjust_->addItem(TR("automatikus kitöltés, rövidítés és csere"), "both");
+    fixAdjust_->setToolTip(TR("Automata üzemmódban a fix idejű elem előtt legfeljebb 30 perccel: ha a playlist nem érne oda "
+                              "pontosan (a „Kitöltés pontossága” tűrésén belül), elemet tesz be (kitöltés), vagy az ütemező "
+                              "által betett, még el nem indult zenék közül kivesz egyet-kettőt, és jobban illőket tesz a "
+                              "helyükre (rövidítés és csere). Kézzel betett elemhez nem nyúl."));
     fixAdjust_->setCurrentIndex(std::max(0, fixAdjust_->findData(db_->setting("fix_adjust", "manual"))));
     adjustLabel->setBuddy(fixAdjust_);
     auto *fillLabel = new QLabel(TR("Kitöltés ebből"));
@@ -483,8 +599,51 @@ QWidget *SchedulerPage::buildClockPanel()
     rr3->addSpacing(12);
     rr3->addWidget(fillLabel);
     rr3->addWidget(fixCategory_);
+    rr3->addSpacing(12);
+    auto *tolLabel = new QLabel(TR("Kitöltés pontossága"));
+    auto *tol = new QSpinBox;
+    tol->setRange(0, 120);
+    tol->setPrefix(QStringLiteral("± "));
+    tol->setSuffix(TR(" mp"));
+    tol->setValue(db_->setting("fill_tolerance_s", "15").toInt());
+    tol->setToolTip(TR("Az ütemező a kitöltés utolsó 1–3 elemét együtt választja ki úgy, hogy a fix pontig hátralévő időtől "
+                       "legfeljebb ennyivel térjenek el (ha van ilyen összeállítás)."));
+    tolLabel->setBuddy(tol);
+    rr3->addWidget(tolLabel);
+    rr3->addWidget(tol);
+    connect(tol, &QSpinBox::valueChanged, this, [this](int v) { db_->setSetting("fill_tolerance_s", QString::number(v)); });
     rr3->addStretch(1);
     rl->addLayout(rr3);
+    {
+        // Hiány a fix pont előtt: egy dallal kitölti, kis túllógással.
+        auto *rr6 = new QHBoxLayout;
+        rr6->setSpacing(8);
+        auto *gap = new QCheckBox(TR("Hiány esetén egy dallal kitölti"));
+        gap->setObjectName("gapFill");
+        gap->setChecked(db_->setting("fix_gap_fill", "0") == QLatin1String("1"));
+        gap->setToolTip(TR("Automata üzemmódban: ha a fix idejű elem előtt csend lenne, a „Kitöltés ebből” kategóriából "
+                           "betesz egy számot, amely kitölti a hiányt. Túllóghat (a beállított értéken belül "
+                           "választ); a fix időpontban a szóló szám kiúszik („Fix időpontkor: a szóló "
+                           "elemet kiúsztatja”). Ha nincs ilyen szám, a legkisebb túllógásút teszi be, mert az még mindig "
+                           "jobb a csendnél. Az „igazítás” beállítástól függetlenül is működik."));
+        auto *overLabel = new QLabel(TR("túllóghat legfeljebb"));
+        auto *over = new QSpinBox;
+        over->setRange(0, 300);
+        over->setSuffix(TR(" mp"));
+        over->setValue(db_->setting("fix_gap_over_s", "20").toInt());
+        overLabel->setBuddy(over);
+        over->setEnabled(gap->isChecked());
+        rr6->addWidget(gap);
+        rr6->addWidget(overLabel);
+        rr6->addWidget(over);
+        rr6->addStretch(1);
+        rl->addLayout(rr6);
+        connect(gap, &QCheckBox::toggled, this, [this, over](bool on) {
+            db_->setSetting("fix_gap_fill", on ? "1" : "0");
+            over->setEnabled(on);
+        });
+        connect(over, &QSpinBox::valueChanged, this, [this](int v) { db_->setSetting("fix_gap_over_s", QString::number(v)); });
+    }
     connect(fixAdjust_, &QComboBox::activated, this, [this] { db_->setSetting("fix_adjust", fixAdjust_->currentData().toString()); });
     connect(fixCategory_, &QComboBox::activated, this, [this] { db_->setSetting("fix_fill_category", fixCategory_->currentData().toString()); });
     connect(db_, &Database::categoriesChanged, this, &SchedulerPage::reloadFixCategories);
@@ -566,6 +725,7 @@ QWidget *SchedulerPage::buildClockPanel()
     connect(slotCategory_, &QComboBox::activated, this, &SchedulerPage::applySlot);
     connect(slotCount_, &QSpinBox::valueChanged, this, &SchedulerPage::applySlot);
     connect(slotFixed_, &QCheckBox::toggled, this, &SchedulerPage::applySlot);
+    connect(slotUpToFit_, &QCheckBox::toggled, this, &SchedulerPage::applySlot);
     connect(slotEnergyMin_, &QComboBox::activated, this, &SchedulerPage::applySlot);
     connect(slotEnergyMax_, &QComboBox::activated, this, &SchedulerPage::applySlot);
     connect(slotTime_, &QTimeEdit::timeChanged, this, &SchedulerPage::applySlot);
@@ -640,7 +800,9 @@ void SchedulerPage::reloadSlots(int selectSlotId)
             estimate = TR("változó");
             hasFill = true;
         } else {
-            source = s.count > 1 ? QStringLiteral("%1 × %2").arg(s.count).arg(s.label) : s.label;
+            source = s.count > 1 ? (s.upToFit ? TR("legfeljebb %1 × %2").arg(s.count).arg(s.label)
+                                              : QStringLiteral("%1 × %2").arg(s.count).arg(s.label))
+                                 : s.label;
             ms = categoryAvgMs_.value(s.categoryId, 0) * s.count;
         }
         if (s.type != "item" && (s.energyMin || s.energyMax)) {
@@ -665,11 +827,87 @@ void SchedulerPage::reloadSlots(int selectSlotId)
     }
     if (selectRow < 0 && !slots_.isEmpty()) selectRow = 0;
     if (selectRow >= 0) slotTable_->setCurrentCell(selectRow, 0);
+
+    // Túlcsordulás: fix pontonként (és az óra végéig) összeadja a darabszámos és konkrét elemek becsült hosszát.
+    // Ahol nincs kitöltés vagy „legfeljebb” sor, és a becslés több mint fél perccel hosszabb a rendelkezésre álló
+    // időnél, ott a sorok pirosak, és a javítás felajánlható.
+    overflowSlots_.clear();
+    QStringList problems;
+    {
+        int segStart = 0;
+        int r = 0;
+        while (r < slots_.size()) {
+            int end = r + 1;
+            while (end < slots_.size() && slots_[end].fixedOffsetS < 0) ++end;
+            const int fromS = slots_[r].fixedOffsetS >= 0 ? slots_[r].fixedOffsetS : segStart;
+            const int toS = end < slots_.size() ? slots_[end].fixedOffsetS : 3600;
+            qint64 est = 0;
+            bool flexible = false;
+            QVector<int> rows;
+            for (int k = r; k < end; ++k) {
+                const ClockSlot &s = slots_[k];
+                if (s.type == "fill" || s.upToFit) { flexible = true; continue; }
+                if (s.type == "item") est += s.itemId ? db_->item(s.itemId).durationMs : 0;
+                else { est += categoryAvgMs_.value(s.categoryId, 0) * s.count; rows << k; }
+            }
+            const qint64 room = qint64(std::max(0, toS - fromS)) * 1000;
+            if (!flexible && !rows.isEmpty() && est > room + 30000) {
+                // A zenei sorok a hibásak (a jingle, a reklám marad); ha nincs zenei sor, mind.
+                QVector<int> music;
+                for (int k : rows)
+                    if (slots_[k].kind == QLatin1String("music")) music << k;
+                overflowSlots_ << (music.isEmpty() ? rows : music);
+                problems << TR("%1–%2: ~%3 a %4 helyett").arg(QStringLiteral(":%1").arg(fromS / 60, 2, 10, QLatin1Char('0')),
+                                                               toS >= 3600 ? TR("óra vége") : QStringLiteral(":%1").arg(toS / 60, 2, 10, QLatin1Char('0')),
+                                                               formatMs(est), formatMs(room));
+            }
+            segStart = toS;
+            r = end;
+        }
+    }
+    for (int k : overflowSlots_)
+        for (int c = 0; c < 5; ++c)
+            if (QTableWidgetItem *it = slotTable_->item(k, c)) {
+                it->setForeground(QColor("#ff8f85"));
+                it->setToolTip(TR("Ez a sor a becsült hossza alapján nem fér el a következő fix pontig."));
+            }
+    if (auto *frame = qobject_cast<QWidget *>(overflow_->property("frame").value<QObject *>())) {
+        frame->setVisible(!problems.isEmpty());
+        overflow_->setText(TR("Túlcsordul: %1. Állítsd a zenei sorokat „Kitöltés a következő fix pontig” típusúra, vagy jelöld be "
+                              "a „legfeljebb, amennyi elfér” opciót.").arg(problems.join(QStringLiteral(" · "))));
+    }
     total_->setText(slots_.isEmpty() ? TR("Üres séma")
                     : hasFill ? TR("Fix hosszú rész: ~%1 · a többit a kitöltés adja").arg(formatMs(total))
                               : TR("Becsült hossz: ~%1 / 60:00").arg(formatMs(total)));
     loading_ = false;
     showSlot();
+}
+
+// A túlcsorduló sorok javítása: a zenei sor kitöltés lesz (fix pontig), a többi darabszámos sor „legfeljebb”.
+// Egy szakaszban csak egy zenei sor lesz kitöltés (az utolsó); a többi zenei sor „legfeljebb” marad.
+void SchedulerPage::fixOverflow()
+{
+    if (overflowSlots_.isEmpty()) return;
+    QSet<int> filled;                             // szakaszonként már van-e kitöltés: a szakasz első sorának indexe
+    int changed = 0;
+    for (int i = overflowSlots_.size() - 1; i >= 0; --i) {
+        const int k = overflowSlots_[i];
+        int segFirst = k;
+        while (segFirst > 0 && slots_[segFirst].fixedOffsetS < 0) --segFirst;
+        ClockSlot s = slots_[k];
+        if (s.kind == QLatin1String("music") && !filled.contains(segFirst) && s.fixedOffsetS < 0) {
+            s.type = "fill";
+            s.count = 1;
+            s.upToFit = false;
+            filled.insert(segFirst);
+        } else {
+            s.upToFit = true;
+        }
+        db_->updateSlot(s);
+        ++changed;
+    }
+    reloadSlots(slots_.value(currentSlotRow()).id);
+    emit message(TR("%1 sor javítva: a zene a következő fix pontig tölt, a többi sor legfeljebb annyi, amennyi elfér.").arg(changed));
 }
 
 void SchedulerPage::showSlot()
@@ -690,6 +928,7 @@ void SchedulerPage::showSlot()
         slotCategory_->addItem(swatchIcon(QColor(c.color)), QStringLiteral("%1 (%2)").arg(c.name).arg(c.itemCount), c.id);
     slotCategory_->setCurrentIndex(std::max(0, slotCategory_->findData(s.categoryId)));
     slotCount_->setValue(s.count);
+    slotUpToFit_->setChecked(s.upToFit);
     slotFixed_->setChecked(s.fixedOffsetS >= 0);
     const int off = std::max(0, s.fixedOffsetS);
     slotTime_->setTime(QTime(0, off / 60, off % 60));
@@ -702,6 +941,7 @@ void SchedulerPage::showSlot()
     slotCategory_->setVisible(!isItem);
     slotCountLabel_->setVisible(!isItem && !isFill);
     slotCount_->setVisible(!isItem && !isFill);
+    slotUpToFit_->setVisible(!isItem && !isFill);
     slotItemLabel_->setVisible(isItem);
     slotPick_->setVisible(isItem);
     slotFixed_->setVisible(!isFill);
@@ -734,6 +974,7 @@ void SchedulerPage::applySlot()
         return;
     }
     s.count = s.type == "category" ? slotCount_->value() : 1;
+    s.upToFit = s.type == "category" && slotUpToFit_->isChecked();
     s.energyMin = s.type != "item" ? slotEnergyMin_->currentData().toInt() : 0;
     s.energyMax = s.type != "item" ? slotEnergyMax_->currentData().toInt() : 0;
     if (s.energyMin && s.energyMax && s.energyMin > s.energyMax) std::swap(s.energyMin, s.energyMax);
