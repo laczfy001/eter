@@ -1,4 +1,5 @@
 #pragma once
+#include "net/WebSync.h"
 #include "audio/SmartMix.h"
 #include "audio/Engine.h"
 #include "db/Database.h"
@@ -458,7 +459,34 @@ public:
     QString nowPlayingStatus() const;
     class NowPlaying *nowPlaying() const { return nowPlaying_; }
     class LibraryAnalyzer *analyzer() const { return analyzer_; }
+
+    // Weboldal: „Most szól”, „Következő számok” és számkérés (Beállítások → Weboldal). MainWindowRequests.cpp
+    void configureWeb();
+    class WebSync *webSync() const { return web_; }
+    void openRequestsDialog();
+    void approveRequest(int requestId);            // web_requests.id
+    void rejectRequest(int requestId);
+    int pendingRequestCount() const;
+    bool isRequestRow(int entryId) const { return requestEntries_.contains(entryId); }
+    // fejlesztéshez: a weboldalról érkezett kérések feldolgozása hálózat nélkül
+    void injectRequestsForTest(const QVector<std::pair<int, int>> &remoteAndItem);
 private:
+    class WebSync *web_ = nullptr;
+    WebSync::Track webNow_;
+    bool webHasNow_ = false;
+    QSet<int> requestEntries_;                     // a kérésként betett playlist-sorok
+    QToolButton *requestsBtn_ = nullptr;
+    QPointer<QDialog> requestsDlg_;
+    QTimer *requestTimer_ = nullptr;
+    void initWeb();
+    void updateWeb();
+    void onWebRequests(const QVector<std::pair<int, int>> &remoteAndItem);
+    bool queueRequest(const WebRequest &r);
+    int requestInsertIndex() const;
+    void checkRequests();
+    void updateRequestsButton();
+    void refreshRequestsDialog();
+
     remote::Server *remote_ = nullptr;
     // Feltöltések a szerkesztőkből: azonosító → a készülő fájl
     struct Upload {

@@ -41,6 +41,15 @@ for Icecast and a backup playout in one desktop application.
   encoder (butt, Liquidsoap, Mixxx, OBS…), a website or an on-screen caption. For jingles and other non-music items
   the previous song's title can stay, or their own title or a fixed text can be shown. Optionally Éter updates the
   Icecast server's metadata directly (admin/metadata). Settings → Now playing.
+- **Website (WordPress)**: with the Éter Radio plugin (`eter-radio.zip`, attached to each release) the site gets
+  *Now playing*, *Up next* and *Song request* blocks (and the shortcodes `[eter_now_playing]`, `[eter_up_next]`,
+  `[eter_request]`). Éter sends what is on air every few seconds and collects the requests; it always opens the
+  connection itself (signed HTTPS), so the studio computer does not have to be reachable from the internet.
+  A requested track goes into the playlist right after the item on air, below any earlier requests, marked REQUEST;
+  without requests the playlist runs as usual. Requests can go in automatically or wait for approval (Requests
+  button in the top bar), can be limited to selected categories and to the hours of selected clocks.
+  Settings → Website; in WordPress: Settings → Éter Radio (also the plugin's language: English by default, Dutch,
+  Hungarian, or the site's language).
 - **Playlist** with planned air times and hour separators. Each row shows the start time, a type icon,
   the length, title and artist, and marks for custom mixes (MIX), voice tracks (VT) and fixed times (FIX).
   Non-music items are filled with their category colour; the item on air and the one on standby stand out,
@@ -224,7 +233,8 @@ build the AppImage and the Windows zip and attach them to a release.
   engine (miniaudio: outputs, routing, mixing, recording)
 - `src/ui` – main window, players, library, scheduler, mix editor and mini mix editor, playlist editor,
   cartwall, timed events, remote editor
-- `src/net` – remote editing protocol (JSON lines over TCP, HMAC login), server and client
+- `src/net` – remote editing protocol (JSON lines over TCP, HMAC login), server and client; website sync
+- `wordpress/eter-radio` – the WordPress plugin (pack it with `scripts/build_wp_plugin.sh`)
 - `src/core` – missing file check, now playing output (title file, Icecast update)
 - `src/db` – SQLite layer and migrations; `schema.sql` – the database schema
 - `src/sched` – playlist generation

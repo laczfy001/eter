@@ -1,0 +1,225 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8
+Language: nl_NL
+Plural-Forms: nplurals=2; plural=(n != 1);
+"
+
+msgid "%1$s – last update %2$s ago, Éter %3$s."
+msgstr "%1$s – laatste update %2$s geleden, Éter %3$s."
+
+msgid "A new key was created. Paste it into Éter, otherwise Éter can no longer update the site."
+msgstr "Er is een nieuwe sleutel gemaakt. Plak deze in Éter, anders kan Éter de site niet meer bijwerken."
+
+msgid "Add the Now playing, Up next and Song request blocks in the block editor (Widgets category). In classic themes and page builders use the shortcodes [eter_now_playing], [eter_up_next count=\"5\"] and [eter_request]."
+msgstr "Voeg de blokken Nu op de radio, Straks en Verzoeknummer toe in de blokeditor (categorie Widgets). Gebruik in klassieke thema's en paginabouwers de shortcodes [eter_now_playing], [eter_up_next count=\"5\"] en [eter_request]."
+
+msgid "Artist"
+msgstr "Artiest"
+
+msgid "Blocks"
+msgstr "Blokken"
+
+msgid "Clear finished requests"
+msgstr "Afgehandelde verzoeken wissen"
+
+msgid "Connecting Éter"
+msgstr "Éter koppelen"
+
+msgid "Connection"
+msgstr "Verbinding"
+
+msgid "Create a new key"
+msgstr "Nieuwe sleutel maken"
+
+msgid "Finished requests were cleared."
+msgstr "Afgehandelde verzoeken zijn gewist."
+
+msgid "Heading"
+msgstr "Kop"
+
+msgid "In Éter, open Settings → Website, and enter these two values:"
+msgstr "Open in Éter Instellingen → Website en vul deze twee waarden in:"
+
+msgid "Key"
+msgstr "Sleutel"
+
+msgid "Language"
+msgstr "Taal"
+
+msgid "No matching tracks."
+msgstr "Geen nummers gevonden."
+
+msgid "No requests yet."
+msgstr "Nog geen verzoeken."
+
+msgid "No upcoming tracks yet."
+msgstr "Nog geen komende nummers."
+
+msgid "Nothing is playing right now."
+msgstr "Er speelt nu niets."
+
+msgid "Now playing"
+msgstr "Nu op de radio"
+
+msgid "Number of tracks"
+msgstr "Aantal nummers"
+
+msgid "Offline"
+msgstr "Offline"
+
+msgid "Online"
+msgstr "Online"
+
+msgid "Recent requests"
+msgstr "Recente verzoeken"
+
+msgid "Refresh the blocks every"
+msgstr "Blokken verversen elke"
+
+msgid "Request"
+msgstr "Aanvragen"
+
+msgid "Requestable tracks: %d."
+msgstr "Aan te vragen nummers: %d."
+
+msgid "Requests are closed right now."
+msgstr "Verzoeken zijn nu gesloten."
+
+msgid "Search for an artist or title…"
+msgstr "Zoek op artiest of titel…"
+
+msgid "Sending…"
+msgstr "Versturen…"
+
+msgid "Settings"
+msgstr "Instellingen"
+
+msgid "Settings saved."
+msgstr "Instellingen opgeslagen."
+
+msgid "Show progress bar"
+msgstr "Voortgangsbalk tonen"
+
+msgid "Show start times"
+msgstr "Begintijden tonen"
+
+msgid "Show the station as offline after"
+msgstr "Station als offline tonen na"
+
+msgid "Something went wrong, please try again."
+msgstr "Er ging iets mis, probeer het opnieuw."
+
+msgid "Song request"
+msgstr "Verzoeknummer"
+
+msgid "Song requests are on, but closed at this hour."
+msgstr "Verzoeknummers staan aan, maar zijn op dit uur gesloten."
+
+msgid "Song requests are open now."
+msgstr "Verzoeknummers zijn nu open."
+
+msgid "Song requests are turned off in Éter."
+msgstr "Verzoeknummers staan uit in Éter."
+
+msgid "Status"
+msgstr "Status"
+
+msgid "The language of the blocks on the site and of this page. With “The site’s language”, it follows Settings → General → Site Language (English if the plugin has no translation for it)."
+msgstr "De taal van de blokken op de site en van deze pagina. Met „Taal van de site” volgt hij Instellingen → Algemeen → Taal van de site (Engels als de plugin geen vertaling heeft voor die taal)."
+
+msgid "The next tracks in the playlist."
+msgstr "De volgende nummers in de playlist."
+
+msgid "The site’s language"
+msgstr "Taal van de site"
+
+msgid "The station is offline right now."
+msgstr "Het station is nu offline."
+
+msgid "The track on air, updated live by Éter."
+msgstr "Het nummer dat nu speelt, live bijgewerkt door Éter."
+
+msgid "This track cannot be requested."
+msgstr "Dit nummer kan niet worden aangevraagd."
+
+msgid "Time"
+msgstr "Tijd"
+
+msgid "Title"
+msgstr "Titel"
+
+msgid "Treat it like a password: with it anyone could change what the site shows."
+msgstr "Behandel hem als een wachtwoord: met deze sleutel kan iedereen veranderen wat de site toont."
+
+msgid "Up next"
+msgstr "Straks"
+
+msgid "Visitors search the library and request a track, while requests are open."
+msgstr "Bezoekers zoeken in de muziekbibliotheek en vragen een nummer aan, zolang verzoeken open zijn."
+
+msgid "Website address"
+msgstr "Websiteadres"
+
+msgid "You are not allowed to do this."
+msgstr "Je hebt geen toestemming om dit te doen."
+
+msgid "Your request: %s"
+msgstr "Jouw verzoek: %s"
+
+msgid "awaiting approval"
+msgstr "wacht op goedkeuring"
+
+msgid "could not be played this time"
+msgstr "kon deze keer niet gedraaid worden"
+
+msgid "in the playlist"
+msgstr "in de playlist"
+
+msgid "in the playlist, coming up soon"
+msgstr "staat in de playlist, komt zo"
+
+msgid "new"
+msgstr "nieuw"
+
+msgid "not accepted this time"
+msgstr "deze keer niet geaccepteerd"
+
+msgid "not available"
+msgstr "niet beschikbaar"
+
+msgid "played"
+msgstr "gedraaid"
+
+msgid "played – thank you!"
+msgstr "gedraaid – bedankt!"
+
+msgid "received, waiting for the studio"
+msgstr "ontvangen, wacht op de studio"
+
+msgid "rejected"
+msgstr "afgewezen"
+
+msgid "removed from the playlist"
+msgstr "uit de playlist gehaald"
+
+msgid "request"
+msgstr "verzoek"
+
+msgid "seconds"
+msgstr "seconden"
+
+msgid "seconds without an update from Éter (requests are closed meanwhile)"
+msgstr "seconden zonder update van Éter (verzoeken zijn dan gesloten)"
+
+msgid "this track is not available now"
+msgstr "dit nummer is nu niet beschikbaar"
+
+msgid "waiting for approval in the studio"
+msgstr "wacht op goedkeuring in de studio"
+
+msgid "Éter Radio"
+msgstr "Éter Radio"
+
+msgid "Éter has not connected yet."
+msgstr "Éter heeft nog geen verbinding gemaakt."
+

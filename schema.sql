@@ -273,6 +273,21 @@ CREATE INDEX idx_log_started ON play_log(started_at);
 CREATE INDEX idx_log_item    ON play_log(item_id, started_at);
 
 -- ---------------------------------------------------------------------
+-- Számkérések a weboldalról (Beállítások → Weboldal)
+-- ---------------------------------------------------------------------
+CREATE TABLE web_requests (
+    id           INTEGER PRIMARY KEY,
+    remote_id    INTEGER NOT NULL UNIQUE,     -- a kérés azonosítója a weboldalon
+    item_id      INTEGER NOT NULL,
+    title        TEXT NOT NULL DEFAULT '',
+    artist       TEXT NOT NULL DEFAULT '',
+    requested_at INTEGER NOT NULL,            -- unix mp
+    status       TEXT NOT NULL,               -- pending, queued, played, rejected, invalid, removed
+    entry_id     INTEGER NOT NULL DEFAULT 0,  -- a playlist sora, amíg benne van
+    updated_at   INTEGER NOT NULL
+) STRICT;
+
+-- ---------------------------------------------------------------------
 -- Kezdőadatok
 -- ---------------------------------------------------------------------
 INSERT INTO settings (key, value) VALUES
@@ -286,6 +301,6 @@ INSERT INTO settings (key, value) VALUES
 
 -- Kategóriákat a felhasználó hoz létre, ezért nincs előre feltöltött lista.
 
-PRAGMA user_version = 14;
+PRAGMA user_version = 15;
 
 COMMIT;

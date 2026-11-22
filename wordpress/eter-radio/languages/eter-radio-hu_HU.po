@@ -1,0 +1,225 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8
+Language: hu_HU
+Plural-Forms: nplurals=2; plural=(n != 1);
+"
+
+msgid "%1$s – last update %2$s ago, Éter %3$s."
+msgstr "%1$s – utolsó frissítés %2$s ezelőtt, Éter %3$s."
+
+msgid "A new key was created. Paste it into Éter, otherwise Éter can no longer update the site."
+msgstr "Új kulcs készült. Másold be az Éterbe, különben az Éter nem tudja tovább frissíteni az oldalt."
+
+msgid "Add the Now playing, Up next and Song request blocks in the block editor (Widgets category). In classic themes and page builders use the shortcodes [eter_now_playing], [eter_up_next count=\"5\"] and [eter_request]."
+msgstr "A Most szól, a Következő számok és a Számkérés blokkot a blokkszerkesztőben adhatod hozzá (Widgetek kategória). Klasszikus sablonokban és oldalépítőkben a rövidkódokat használd: [eter_now_playing], [eter_up_next count=\"5\"] és [eter_request]."
+
+msgid "Artist"
+msgstr "Előadó"
+
+msgid "Blocks"
+msgstr "Blokkok"
+
+msgid "Clear finished requests"
+msgstr "A lezárt kérések törlése"
+
+msgid "Connecting Éter"
+msgstr "Az Éter csatlakoztatása"
+
+msgid "Connection"
+msgstr "Kapcsolat"
+
+msgid "Create a new key"
+msgstr "Új kulcs készítése"
+
+msgid "Finished requests were cleared."
+msgstr "A lezárt kérések törölve."
+
+msgid "Heading"
+msgstr "Cím"
+
+msgid "In Éter, open Settings → Website, and enter these two values:"
+msgstr "Az Éterben nyisd meg a Beállítások → Weboldal fület, és add meg ezt a két értéket:"
+
+msgid "Key"
+msgstr "Kulcs"
+
+msgid "Language"
+msgstr "Nyelv"
+
+msgid "No matching tracks."
+msgstr "Nincs ilyen szám."
+
+msgid "No requests yet."
+msgstr "Még nem érkezett kérés."
+
+msgid "No upcoming tracks yet."
+msgstr "Még nincsenek következő számok."
+
+msgid "Nothing is playing right now."
+msgstr "Most nem szól semmi."
+
+msgid "Now playing"
+msgstr "Most szól"
+
+msgid "Number of tracks"
+msgstr "Számok száma"
+
+msgid "Offline"
+msgstr "Nem elérhető"
+
+msgid "Online"
+msgstr "Elérhető"
+
+msgid "Recent requests"
+msgstr "Legutóbbi kérések"
+
+msgid "Refresh the blocks every"
+msgstr "A blokkok frissítése"
+
+msgid "Request"
+msgstr "Kérem"
+
+msgid "Requestable tracks: %d."
+msgstr "Kérhető számok: %d."
+
+msgid "Requests are closed right now."
+msgstr "Most nem lehet számot kérni."
+
+msgid "Search for an artist or title…"
+msgstr "Keress előadóra vagy címre…"
+
+msgid "Sending…"
+msgstr "Küldés…"
+
+msgid "Settings"
+msgstr "Beállítások"
+
+msgid "Settings saved."
+msgstr "A beállítások elmentve."
+
+msgid "Show progress bar"
+msgstr "Folyamatjelző"
+
+msgid "Show start times"
+msgstr "Kezdési idők"
+
+msgid "Show the station as offline after"
+msgstr "A rádió nem elérhetőnek látszik"
+
+msgid "Something went wrong, please try again."
+msgstr "Valami hiba történt, próbáld újra."
+
+msgid "Song request"
+msgstr "Számkérés"
+
+msgid "Song requests are on, but closed at this hour."
+msgstr "A számkérés be van kapcsolva, de ebben az órában nem lehet kérni."
+
+msgid "Song requests are open now."
+msgstr "Most lehet számot kérni."
+
+msgid "Song requests are turned off in Éter."
+msgstr "A számkérés ki van kapcsolva az Éterben."
+
+msgid "Status"
+msgstr "Állapot"
+
+msgid "The language of the blocks on the site and of this page. With “The site’s language”, it follows Settings → General → Site Language (English if the plugin has no translation for it)."
+msgstr "A blokkok nyelve az oldalon, és ennek a lapnak a nyelve. „Az oldal nyelve” esetén a Beállítások → Általános → A honlap nyelve szerint alakul (angol, ha a bővítménynek nincs fordítása arra a nyelvre)."
+
+msgid "The next tracks in the playlist."
+msgstr "A playlist következő számai."
+
+msgid "The site’s language"
+msgstr "Az oldal nyelve"
+
+msgid "The station is offline right now."
+msgstr "A rádió most nem elérhető."
+
+msgid "The track on air, updated live by Éter."
+msgstr "Az adásban lévő szám, az Éter élőben frissíti."
+
+msgid "This track cannot be requested."
+msgstr "Ez a szám nem kérhető."
+
+msgid "Time"
+msgstr "Idő"
+
+msgid "Title"
+msgstr "Cím"
+
+msgid "Treat it like a password: with it anyone could change what the site shows."
+msgstr "Kezeld jelszóként: aki ismeri, megváltoztathatja, mit mutat az oldal."
+
+msgid "Up next"
+msgstr "Következő számok"
+
+msgid "Visitors search the library and request a track, while requests are open."
+msgstr "A látogatók kereshetnek a hangtárban és számot kérhetnek, amíg lehet kérni."
+
+msgid "Website address"
+msgstr "A weboldal címe"
+
+msgid "You are not allowed to do this."
+msgstr "Ehhez nincs jogosultságod."
+
+msgid "Your request: %s"
+msgstr "A kérésed: %s"
+
+msgid "awaiting approval"
+msgstr "jóváhagyásra vár"
+
+msgid "could not be played this time"
+msgstr "most nem kerülhetett adásba"
+
+msgid "in the playlist"
+msgstr "a playlistben"
+
+msgid "in the playlist, coming up soon"
+msgstr "bekerült a playlistbe, hamarosan szól"
+
+msgid "new"
+msgstr "új"
+
+msgid "not accepted this time"
+msgstr "most nem került be"
+
+msgid "not available"
+msgstr "nem elérhető"
+
+msgid "played"
+msgstr "lejátszva"
+
+msgid "played – thank you!"
+msgstr "lejátszva – köszönjük!"
+
+msgid "received, waiting for the studio"
+msgstr "megérkezett, a stúdióra vár"
+
+msgid "rejected"
+msgstr "elutasítva"
+
+msgid "removed from the playlist"
+msgstr "kivéve a playlistből"
+
+msgid "request"
+msgstr "kérés"
+
+msgid "seconds"
+msgstr "másodpercenként"
+
+msgid "seconds without an update from Éter (requests are closed meanwhile)"
+msgstr "másodperc után, ha nem jön frissítés az Étertől (addig nem lehet kérni)"
+
+msgid "this track is not available now"
+msgstr "ez a szám most nem elérhető"
+
+msgid "waiting for approval in the studio"
+msgstr "a stúdióban jóváhagyásra vár"
+
+msgid "Éter Radio"
+msgstr "Éter Rádió"
+
+msgid "Éter has not connected yet."
+msgstr "Az Éter még nem csatlakozott."
+

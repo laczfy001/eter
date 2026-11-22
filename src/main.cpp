@@ -55,6 +55,7 @@
 #include "ui/MixdownPage.h"
 #include "core/LibraryAnalyzer.h"
 #include "ui/BackupWindow.h"
+#include "net/WebSync.h"
 #include <QRegularExpression>
 #include "net/Remote.h"
 #include <QTabWidget>
@@ -818,6 +819,79 @@ int main(int argc, char **argv)
         });
         QTimer::singleShot(2600, &window, [t] { t->start(30); });
     }
+    if (qEnvironmentVariableIsSet("ETER_WEB_TEST")) {
+        // Fejlesztéshez: kapcsolat a WordPress-oldallal (ETER_WEB_URL, ETER_WEB_KEY). A fájlok zenék az „Előadó N”
+        // előadóval; az első négy az ütemező soraként a playlistben, és szól. 5 mp-enként az állapot; a végén
+        // (ETER_WEB_SECS) a kérések táblája, és kép a főablakról és a Kérések ablakról (ETER_WEB_TEST = a képek mappája).
+        // ETER_WEB_APPROVE=1: jóváhagyásos mód; ETER_WEB_APPROVE_AT: ennyi mp-nél az első várakozó jóváhagyása.
+        const int music = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        const int jingles = db.addCategory(QStringLiteral("Jingle"), "jingle", "#b99cff");
+        QVector<int> ids;
+        int n = 0;
+        for (const QString &f : parser.positionalArguments()) {
+            eter::Decoder dec;
+            if (!dec.open(f.toStdString())) continue;
+            Item it;
+            const bool jingle = QFileInfo(f).completeBaseName().startsWith(QLatin1String("jingle"));
+            it.categoryId = jingle ? jingles : music;
+            it.path = QFileInfo(f).absoluteFilePath();
+            it.title = jingle ? QStringLiteral("Állomásazonosító") : QStringLiteral("Dal %1").arg(++n);
+            it.artist = jingle ? QString() : QStringLiteral("Előadó %1").arg(n);
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            ids << db.addItem(it);
+        }
+        db.notifyItemsChanged();
+        window.appendItems(ids.mid(0, 4), -1, 0, {}, QStringLiteral("scheduler"));
+        WebSync::Config c;
+        c.enabled = true;
+        c.url = qEnvironmentVariable("ETER_WEB_URL");
+        c.key = qEnvironmentVariable("ETER_WEB_KEY");
+        c.requests = true;
+        c.approve = qEnvironmentVariable("ETER_WEB_APPROVE") == QLatin1String("1");
+        WebSync::saveConfig(c);
+        window.configureWeb();
+        QTimer::singleShot(1000, &window, [&window] {
+            window.setMode(MainWindow::Auto);
+            window.next();
+        });
+        auto *t = new QTimer(&window);
+        QObject::connect(t, &QTimer::timeout, &window, [&window] {
+            std::printf("[%s] web: %s\n  sorok: %s\n", qPrintable(QTime::currentTime().toString("HH:mm:ss")),
+                        qPrintable(window.webSync()->status()), qPrintable(window.debugState()));
+            std::fflush(stdout);
+        });
+        t->start(5000);
+        const int approveAt = qEnvironmentVariableIntValue("ETER_WEB_APPROVE_AT");
+        if (approveAt > 0)
+            QTimer::singleShot(approveAt * 1000, &window, [&window, &db] {
+                window.openRequestsDialog();
+                const auto pending = db.webRequests({QStringLiteral("pending")});
+                std::printf("jóváhagyásra vár: %d\n", int(pending.size()));
+                if (!pending.isEmpty()) window.approveRequest(pending.first().id);
+            });
+        const int secs = qEnvironmentVariableIsSet("ETER_WEB_SECS") ? qEnvironmentVariableIntValue("ETER_WEB_SECS") : 40;
+        QTimer::singleShot(secs * 1000, &window, [&window, &db] {
+            for (const WebRequest &r : db.webRequests())
+                std::printf("kérés #%d (távoli %d): %s – %s · %s · sor %d\n", r.id, r.remoteId, qPrintable(r.artist),
+                            qPrintable(r.title), qPrintable(r.status), r.entryId);
+            const QString dir = qEnvironmentVariable("ETER_WEB_TEST");
+            window.grab().save(dir + "/web-main.png");
+            window.openRequestsDialog();
+            QTimer::singleShot(500, &window, [dir, &window] {
+                for (QWidget *w : QApplication::topLevelWidgets())
+                    if (w->isVisible() && w->windowTitle() == TR("Számkérések")) w->grab().save(dir + "/web-requests.png");
+                auto *dlg = new SettingsDialog(&window);
+                if (auto *tabs = dlg->findChild<QTabWidget *>("settingsTabs"))
+                    for (int i = 0; i < tabs->count(); ++i)
+                        if (tabs->tabText(i) == TR("Weboldal")) tabs->setCurrentIndex(i);
+                dlg->resize(820, 820);
+                dlg->show();
+                QApplication::processEvents();
+                dlg->grab().save(dir + "/web-settings.png");
+                QApplication::exit(0);
+            });
+        });
+    }
     if (qEnvironmentVariableIsSet("ETER_SMARTMIX_TEST")) {
         // Fejlesztéshez: okos automatikus mix adásban. A megadott fájlok zeneként, sorban; minden szám 26 mp-re ugrik,
         // és kiírja, a kimenő szám hol tart, amikor a következő elindul, és hol áll meg.
@@ -1045,7 +1119,7 @@ int main(int argc, char **argv)
         QTimer::singleShot(qEnvironmentVariableIntValue("ETER_WATCH_STATE") * 1000, [] { QApplication::exit(0); });
     }
     const QStringList files = parser.positionalArguments();
-    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt) && !parser.isSet(threeTestOpt) && !parser.isSet(dbTestOpt) && !parser.isSet(envTestOpt) && !parser.isSet(freshTestOpt) && !parser.isSet(fillTestOpt) && !qEnvironmentVariableIsSet("ETER_ANALYZE_WATCH") && !qEnvironmentVariableIsSet("ETER_FLOW_SHOT") && !qEnvironmentVariableIsSet("ETER_SMARTMIX_TEST") && !qEnvironmentVariableIsSet("ETER_MIXER_TEST") && !qEnvironmentVariableIsSet("ETER_MIXDOWN_TEST")) window.library()->importPaths(files);
+    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt) && !parser.isSet(threeTestOpt) && !parser.isSet(dbTestOpt) && !parser.isSet(envTestOpt) && !parser.isSet(freshTestOpt) && !parser.isSet(fillTestOpt) && !qEnvironmentVariableIsSet("ETER_ANALYZE_WATCH") && !qEnvironmentVariableIsSet("ETER_FLOW_SHOT") && !qEnvironmentVariableIsSet("ETER_SMARTMIX_TEST") && !qEnvironmentVariableIsSet("ETER_MIXER_TEST") && !qEnvironmentVariableIsSet("ETER_MIXDOWN_TEST") && !qEnvironmentVariableIsSet("ETER_WEB_TEST")) window.library()->importPaths(files);
 
     if (parser.isSet(importTestOpt)) {
         // Az importáló ablak teljes útja: mappa, kategóriaválasztás, beolvasás.

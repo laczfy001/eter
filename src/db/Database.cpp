@@ -269,6 +269,18 @@ bool Database::open(const QString &path, QString *err)
         }
         v = 14;
     }
+    if (v == 14) {
+        // 15. séma: számkérések a weboldalról.
+        if (!q.exec("CREATE TABLE web_requests (id INTEGER PRIMARY KEY, remote_id INTEGER NOT NULL UNIQUE, "
+                    "item_id INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '', artist TEXT NOT NULL DEFAULT '', "
+                    "requested_at INTEGER NOT NULL, status TEXT NOT NULL, entry_id INTEGER NOT NULL DEFAULT 0, "
+                    "updated_at INTEGER NOT NULL) STRICT")
+            || !q.exec("PRAGMA user_version = 15")) {
+            if (err) *err = TR("Az adatbázis frissítése nem sikerült: %1").arg(q.lastError().text());
+            return false;
+        }
+        v = 15;
+    }
     housekeeping();
     return true;
 }
@@ -307,6 +319,80 @@ void Database::housekeeping()
     q.exec("DELETE FROM playlists WHERE id NOT IN (SELECT DISTINCT playlist_id FROM playlist_entries) "
            "AND generated_at IS NULL");
     q.exec("UPDATE play_log SET ended_at = started_at, end_reason = 'error' WHERE ended_at IS NULL");
+    // Lezárt számkérések egy hét után; a playlistből közben kikerült sorokra mutató kérés „kivéve” lesz.
+    q.exec(QStringLiteral("DELETE FROM web_requests WHERE status NOT IN ('pending','queued') AND updated_at < %1")
+               .arg(QDateTime::currentSecsSinceEpoch() - 7 * 86400));
+}
+
+// ---- Számkérések a weboldalról ----
+
+static WebRequest readWebRequest(const QSqlQuery &q)
+{
+    WebRequest r;
+    r.id = q.value(0).toInt();
+    r.remoteId = q.value(1).toInt();
+    r.itemId = q.value(2).toInt();
+    r.title = q.value(3).toString();
+    r.artist = q.value(4).toString();
+    r.requestedAt = q.value(5).toLongLong();
+    r.status = q.value(6).toString();
+    r.entryId = q.value(7).toInt();
+    return r;
+}
+
+static const char *kWebRequestColumns = "id, remote_id, item_id, title, artist, requested_at, status, entry_id";
+
+int Database::addWebRequest(const WebRequest &r)
+{
+    QSqlQuery q;
+    q.prepare("INSERT OR IGNORE INTO web_requests (remote_id, item_id, title, artist, requested_at, status, entry_id, "
+              "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    q.addBindValue(r.remoteId);
+    q.addBindValue(r.itemId);
+    q.addBindValue(r.title);
+    q.addBindValue(r.artist);
+    q.addBindValue(r.requestedAt);
+    q.addBindValue(r.status);
+    q.addBindValue(r.entryId);
+    q.addBindValue(QDateTime::currentSecsSinceEpoch());
+    if (!q.exec() || q.numRowsAffected() <= 0) return 0;
+    return q.lastInsertId().toInt();
+}
+
+WebRequest Database::webRequestByRemote(int remoteId)
+{
+    QSqlQuery q;
+    q.prepare(QStringLiteral("SELECT %1 FROM web_requests WHERE remote_id = ?").arg(kWebRequestColumns));
+    q.addBindValue(remoteId);
+    if (q.exec() && q.next()) return readWebRequest(q);
+    return {};
+}
+
+QVector<WebRequest> Database::webRequests(const QStringList &statuses)
+{
+    QVector<WebRequest> out;
+    QSqlQuery q;
+    QString where;
+    if (!statuses.isEmpty()) {
+        QStringList quoted;
+        for (const QString &s : statuses) quoted << QLatin1Char('\'') + QString(s).remove(QLatin1Char('\'')) + QLatin1Char('\'');
+        where = QStringLiteral(" WHERE status IN (%1)").arg(quoted.join(QLatin1Char(',')));
+    }
+    if (!q.exec(QStringLiteral("SELECT %1 FROM web_requests%2 ORDER BY id").arg(kWebRequestColumns, where))) return out;
+    while (q.next()) out << readWebRequest(q);
+    return out;
+}
+
+void Database::setWebRequestStatus(int id, const QString &status, int entryId)
+{
+    QSqlQuery q;
+    q.prepare(entryId >= 0 ? "UPDATE web_requests SET status = ?, updated_at = ?, entry_id = ? WHERE id = ?"
+                           : "UPDATE web_requests SET status = ?, updated_at = ? WHERE id = ?");
+    q.addBindValue(status);
+    q.addBindValue(QDateTime::currentSecsSinceEpoch());
+    if (entryId >= 0) q.addBindValue(entryId);
+    q.addBindValue(id);
+    q.exec();
 }
 
 void Database::setSetting(const QString &key, const QString &value)

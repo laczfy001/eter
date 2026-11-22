@@ -204,6 +204,7 @@ MainWindow::MainWindow(Database *db, const QString &backendOverride, QWidget *pa
     logger_ = std::make_unique<ProgramLogger>();
     nowPlaying_ = new NowPlaying(this);
     nowPlaying_->configure(NowPlaying::loadConfig());
+    initWeb();
     configureLogger();
     analyzer_ = new LibraryAnalyzer(db_, this);
     if (qEnvironmentVariable("ETER_ANALYZE") == QLatin1String("0")) analyzer_->setPaused(true);
@@ -379,6 +380,15 @@ void MainWindow::buildUi()
                              TR("A következő elem betöltődik, de te indítod a szóközzel (F9)"));
     connect(modeAuto_, &QToolButton::clicked, this, [this] { setMode(Auto); });
     connect(modeAssist_, &QToolButton::clicked, this, [this] { setMode(Assist); });
+    // Számkérések a weboldalról (csak ha be van kapcsolva, vagy jóváhagyásra vár valami)
+    requestsBtn_ = new QToolButton;
+    requestsBtn_->setObjectName("requestsBtn");
+    requestsBtn_->setText(TR("Kérések"));
+    requestsBtn_->setFocusPolicy(Qt::NoFocus);
+    requestsBtn_->setVisible(false);
+    connect(requestsBtn_, &QToolButton::clicked, this, &MainWindow::openRequestsDialog);
+    tabs->addWidget(requestsBtn_, 0, Qt::AlignVCenter);
+    tabs->addSpacing(12);
     tabs->addWidget(modeLabel);
     tabs->addSpacing(6);
     tabs->addWidget(modeBox, 0, Qt::AlignVCenter);
@@ -1825,6 +1835,7 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     QStringList chips;
     QVector<QColor> chipColors;
     if (row.fixedAt.isValid()) { chips << QStringLiteral("FIX"); chipColors << theme::amber; }
+    if (requestEntries_.contains(row.id)) { chips << TR("KÉRÉS"); chipColors << QColor("#4cc38a"); }
     for (const FixInfo &f : fixes_)
         if (f.rowId == row.id && std::llabs(f.diffMs) >= 5000) {
             // Mennyit késik (+) vagy siet (−) a playlist ehhez a fix ponthoz.

@@ -1,9 +1,9 @@
 # What's new in Éter since 0.18
 
-This is a summary of the changes from 0.19.0 to 0.29.4, grouped by topic. The full list, version by version, is in
+This is a summary of the changes from 0.19.0 to 0.30.1, grouped by topic. The full list, version by version, is in
 [CHANGELOG.md](../CHANGELOG.md).
 
-Every database upgrade (schema 10 → 14) runs automatically at the first start. Update Éter on every computer that
+Every database upgrade (schema 10 → 15) runs automatically at the first start. Update Éter on every computer that
 uses remote editing or the backup playout, so they all run the same version.
 
 ## Playout
@@ -77,6 +77,24 @@ result is added to the library's "Mixdown" category.
 - Rendering runs faster than real time and does not affect the broadcast.
   - Options: MP3 128–320 kbps or WAV 16/24 bit, 48 or 44.1 kHz, with an optional peak limit at −1 dBFS.
   - Mixdown projects can be saved and reopened.
+
+## Website and song requests (new in 0.30)
+
+A WordPress plugin, *Éter Radio* (`eter-radio.zip`, attached to each release), connects the station's website to
+Éter.
+The plugin is in English by default; Dutch and Hungarian are included, and the language is chosen in WordPress under
+Settings → Éter Radio (0.30.1).
+
+- Three blocks: *Now playing* (with a progress bar), *Up next* (with start times) and *Song request*. They are also
+  available as shortcodes for classic themes and page builders.
+- Éter sends what is on air every 5 seconds and collects the requests on the same call. Éter always opens the
+  connection, signed with the plugin's key, so the studio computer does not have to be reachable from the internet.
+- Visitors search for an artist or title and request a track. The track goes into the playlist right after the item
+  on air, below any earlier requests. Without requests the playlist runs as scheduled.
+- In *Settings → Website*, requests can:
+  - go into the playlist automatically, or wait for approval in the studio (the *Requests* button in the top bar);
+  - be limited to selected categories;
+  - be limited to the hours of selected clocks.
 
 ## Other
 

@@ -38,10 +38,12 @@ cd "$ROOT/build"
 rm -f ./*.AppImage
 "$TOOLS/linuxdeploy-x86_64.AppImage" --appdir "$APPDIR" --plugin qt
 
-# Not used by Éter: TLS and network-information plugins (the remote editing protocol is plain TCP with its own
-# challenge-response login), and Qt's own translations (Éter carries its own). Without them the libraries they
-# pulled in (OpenSSL, GnuTLS, …) are dropped as well.
-rm -rf "$APPDIR/usr/plugins/tls" "$APPDIR/usr/plugins/networkinformation" "$APPDIR/usr/translations"
+# Not used by Éter: the network-information plugin and Qt's own translations (Éter carries its own). Of the TLS
+# plugins only the OpenSSL one stays, for HTTPS to the website (Settings → Website); it loads the system's OpenSSL
+# (libssl.so.3), which is not bundled.
+rm -rf "$APPDIR/usr/plugins/networkinformation" "$APPDIR/usr/translations"
+find "$APPDIR/usr/plugins/tls" -type f ! -name 'libqopensslbackend.so' -delete 2>/dev/null || true
+rm -f "$APPDIR"/usr/lib/libssl.so* "$APPDIR"/usr/lib/libcrypto.so*
 # libproxy (and libpxbackend, which Qt also lists) would bring curl and its TLS stack; see packaging/libproxy-stub.c.
 if [ -f "$APPDIR/usr/lib/libproxy.so.1" ]; then
     printf 'LIBPROXY_0.4.16 { global: px_proxy_factory_new; px_proxy_factory_get_proxies; px_proxy_factory_free_proxies; px_proxy_factory_free; local: *; };\n' > "$ROOT/build/libproxy.map"

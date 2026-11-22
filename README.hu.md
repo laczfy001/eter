@@ -40,6 +40,15 @@ tartalék playout egyetlen asztali alkalmazásban.
   (butt, Liquidsoap, Mixxx, OBS…), egy weboldal vagy egy képernyőfelirat. Jingle és más nem zenei elem alatt
   maradhat az előző zene címe, de kiírható a saját címe vagy egy állandó szöveg is. Ha kell, az Éter közvetlenül az
   Icecast szerver metaadatát is frissíti (admin/metadata). Beállítások → Most szól.
+- **Weboldal (WordPress)**: az Éter Radio bővítménnyel (`eter-radio.zip`, minden kiadás mellett) az oldalon
+  *Most szól*, *Következő számok* és *Számkérés* blokk használható (és a `[eter_now_playing]`, `[eter_up_next]`,
+  `[eter_request]` rövidkód). Az Éter néhány másodpercenként elküldi, mi szól, és begyűjti a kéréseket; a kapcsolatot
+  mindig ő kezdeményezi (aláírt HTTPS), így a stúdió gépét nem kell az internet felől elérhetővé tenni. A kért szám
+  a most szóló elem után kerül a playlistbe, a korábbi kérések alá, KÉRÉS jelöléssel; ha nincs kérés, a playlist a
+  szokásos módon megy. A kérés magától bekerülhet, vagy jóváhagyásra várhat (Kérések gomb a felső sávban), és
+  korlátozható kijelölt kategóriákra és kijelölt sémák óráira. Beállítások → Weboldal; a WordPressben:
+  Beállítások → Éter Radio (itt állítható a bővítmény nyelve is: alapból angol, választható holland, magyar, vagy
+  az oldal nyelve).
 - **Playlist** tervezett adásidővel és óraelválasztókkal. Minden sor mutatja a kezdést, a típusikont,
   a hosszt, a címet és az előadót, valamint az egyedi mix (MIX), a voice track (VT) és a fix időpont (FIX)
   jelzését. A nem zenei elemeket a kategóriájuk színe tölti ki; az adásban és a készenlétben lévő elem
@@ -225,7 +234,8 @@ megépíti az AppImage-et és a windowsos zipet, és egy kiadáshoz (release) cs
   hangmotor (miniaudio: kimenetek, útválasztás, keverés, felvétel)
 - `src/ui` – főablak, lejátszók, hangtár, ütemező, mix editor és mini mix editor, playlist szerkesztő,
   cartwall, időzítések, távoli szerkesztő
-- `src/net` – a távoli szerkesztés protokollja (soronkénti JSON TCP-n, HMAC-belépés), szerver és kliens
+- `src/net` – a távoli szerkesztés protokollja (soronkénti JSON TCP-n, HMAC-belépés), szerver és kliens; a weboldal-szinkron
+- `wordpress/eter-radio` – a WordPress-bővítmény (csomagolás: `scripts/build_wp_plugin.sh`)
 - `src/core` – hiányzó fájlok ellenőrzése, „most szól” kiírás (címfájl, Icecast-frissítés)
 - `src/db` – SQLite réteg és adatbázis-frissítések; `schema.sql` – az adatbázis sémája
 - `src/sched` – playlist-generálás

@@ -67,6 +67,9 @@ QFrame#panelFooter { border: 0; border-top: 1px solid #30353e; }
 QLabel#caption { color: #9aa3af; font-size: 11px; letter-spacing: 1px; }
 QToolButton#rulesToggle { color: #9aa3af; font-size: 11px; letter-spacing: 1px; border: 0; background: transparent; padding: 2px 0; }
 QToolButton#rulesToggle:hover { color: #e6e9ee; }
+QToolButton#requestsBtn { color: #c3c8d0; border: 1px solid #3a414b; border-radius: 6px; padding: 4px 10px; background: #1b1f24; }
+QToolButton#requestsBtn:hover { color: #ffffff; border-color: #59616c; }
+QToolButton#requestsBtn[pending="true"] { color: #101215; background: #f5a524; border-color: #f5a524; font-weight: 600; }
 QLabel#muted { color: #9aa3af; }
 QLabel#small { color: #9aa3af; font-size: 12px; }
 QLabel#panelTitle { font-size: 14px; font-weight: 600; }

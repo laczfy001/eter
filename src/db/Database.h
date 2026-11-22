@@ -47,6 +47,17 @@ struct AnalysisJob {
     bool needBpm = false, needKey = false;
 };
 
+// Számkérés a weboldalról (Beállítások → Weboldal).
+struct WebRequest {
+    int id = 0;
+    int remoteId = 0;               // az azonosítója a weboldalon
+    int itemId = 0;
+    QString title, artist;
+    qint64 requestedAt = 0;         // unix mp
+    QString status;                 // pending, queued, played, rejected, invalid, removed
+    int entryId = 0;                // a playlist sora, amíg benne van
+};
+
 struct Entry {
     int id = 0;
     int playlistId = 0;
@@ -155,7 +166,7 @@ public:
     explicit Database(QObject *parent = nullptr);
     ~Database() override;
 
-    static constexpr int kSchemaVersion = 14;   // a legújabb séma (PRAGMA user_version)
+    static constexpr int kSchemaVersion = 15;   // a legújabb séma (PRAGMA user_version)
     bool open(const QString &path, QString *err = nullptr);
     QString path() const { return path_; }
 
@@ -197,6 +208,12 @@ public:
     void beginBatch();
     void endBatch();
     void notifyItemsChanged() { emit itemsChanged(); }
+
+    // Számkérések a weboldalról
+    int addWebRequest(const WebRequest &r);     // 0: már megvan (ugyanaz a távoli azonosító)
+    WebRequest webRequestByRemote(int remoteId);
+    QVector<WebRequest> webRequests(const QStringList &statuses = {});
+    void setWebRequestStatus(int id, const QString &status, int entryId = -1);
 
     // Playlist
     int playlistFor(const QDate &date, int hour, int *key = nullptr);

@@ -31,6 +31,8 @@
 #include <QSettings>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QListWidget>
+#include "net/WebSync.h"
 
 SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
 {
@@ -422,6 +424,180 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
         connect(t, &QTimer::timeout, this, [this, status] { status->setText(TR("Állapot: %1").arg(main_->nowPlayingStatus())); });
         t->start(1000);
         status->setText(TR("Állapot: %1").arg(main_->nowPlayingStatus()));
+    }
+
+    root = newPage(TR("Weboldal"));
+    {
+        // Weboldal: „Most szól”, „Következő számok” és számkérés a WordPress-oldalon (Éter Radio bővítmény).
+        Database *db = main_->database();
+        const WebSync::Config cur = WebSync::loadConfig();
+        auto *cap = new QLabel(TR("WEBOLDAL (WORDPRESS)"));
+        cap->setObjectName("caption");
+        root->addWidget(cap);
+        auto *about = new QLabel(TR("Az Éter elküldi a WordPress-oldalnak, mi szól és mi következik, és onnan gyűjti a "
+                                    "látogatók számkéréseit. A kapcsolatot mindig a program kezdeményezi, ezért a stúdió "
+                                    "gépét nem kell az internet felől elérhetővé tenni. Az oldalra az Éter Radio "
+                                    "bővítményt kell telepíteni (eter-radio.zip, a program kiadása mellett); a címet és a kulcsot a "
+                                    "WordPressben a Beállítások → Éter Radio oldalon találod."));
+        about->setObjectName("small");
+        about->setWordWrap(true);
+        root->addWidget(about);
+        auto *on = new QCheckBox(TR("Kapcsolat a weboldallal"));
+        on->setObjectName("webOn");
+        on->setChecked(cur.enabled);
+        root->addWidget(on);
+        auto *g = new QGridLayout;
+        g->setHorizontalSpacing(10);
+        g->setVerticalSpacing(8);
+        g->setColumnStretch(1, 1);
+        auto *url = new QLineEdit(cur.url);
+        url->setObjectName("webUrl");
+        url->setPlaceholderText(QStringLiteral("https://radio.example.com"));
+        auto *key = new QLineEdit(cur.key);
+        key->setObjectName("webKey");
+        key->setEchoMode(QLineEdit::Password);
+        auto *showKey = new QCheckBox(TR("Megjelenítés"));
+        connect(showKey, &QCheckBox::toggled, key, [key](bool v) { key->setEchoMode(v ? QLineEdit::Normal : QLineEdit::Password); });
+        g->addWidget(new QLabel(TR("A weboldal címe")), 0, 0);
+        g->addWidget(url, 0, 1, 1, 2);
+        g->addWidget(new QLabel(TR("Kulcs")), 1, 0);
+        g->addWidget(key, 1, 1);
+        g->addWidget(showKey, 1, 2);
+        auto *nextCount = new QSpinBox;
+        nextCount->setObjectName("webNext");
+        nextCount->setRange(1, 20);
+        nextCount->setValue(cur.nextCount);
+        nextCount->setSuffix(TR(" szám"));
+        auto *musicOnly = new QCheckBox(TR("csak zenék (jingle, reklám, hírek és hasonlók nélkül)"));
+        musicOnly->setChecked(cur.musicOnly);
+        auto *nextRow = new QHBoxLayout;
+        nextRow->addWidget(nextCount);
+        nextRow->addSpacing(12);
+        nextRow->addWidget(musicOnly);
+        nextRow->addStretch(1);
+        g->addWidget(new QLabel(TR("Következő számok")), 2, 0);
+        g->addLayout(nextRow, 2, 1, 1, 2);
+        root->addLayout(g);
+
+        auto *reqCap = new QLabel(TR("SZÁMKÉRÉS"));
+        reqCap->setObjectName("caption");
+        root->addWidget(reqCap);
+        auto *reqOn = new QCheckBox(TR("A látogatók kérhetnek számot a weboldalon"));
+        reqOn->setObjectName("webRequests");
+        reqOn->setChecked(cur.requests);
+        root->addWidget(reqOn);
+        auto *reqAbout = new QLabel(TR("A kért szám a most szóló elem után kerül a playlistbe; ha már vannak kérések a "
+                                       "sorban, az utolsó alá. Ha nincs kérés, a playlist a szokásos módon megy tovább. A "
+                                       "kérések a felső sáv Kérések gombjával nézhetők meg."));
+        reqAbout->setObjectName("small");
+        reqAbout->setWordWrap(true);
+        root->addWidget(reqAbout);
+        auto *rg = new QGridLayout;
+        rg->setHorizontalSpacing(10);
+        rg->setVerticalSpacing(8);
+        rg->setColumnStretch(1, 1);
+        rg->setColumnStretch(3, 1);
+        auto *approve = new QComboBox;
+        approve->setObjectName("webApprove");
+        approve->addItem(TR("magától a playlistbe kerül"), false);
+        approve->addItem(TR("a stúdióban jóvá kell hagyni"), true);
+        approve->setCurrentIndex(cur.approve ? 1 : 0);
+        rg->addWidget(new QLabel(TR("A kérés")), 0, 0);
+        rg->addWidget(approve, 0, 1, 1, 3, Qt::AlignLeft);
+        auto *what = new QComboBox;
+        what->setObjectName("webWhat");
+        what->addItem(TR("minden zene"), true);
+        what->addItem(TR("a kijelölt kategóriák"), false);
+        what->setCurrentIndex(cur.allMusic ? 0 : 1);
+        auto *when = new QComboBox;
+        when->setObjectName("webWhen");
+        when->addItem(TR("mindig"), true);
+        when->addItem(TR("a kijelölt sémák óráiban"), false);
+        when->setCurrentIndex(cur.always ? 0 : 1);
+        rg->addWidget(new QLabel(TR("Kérhető")), 1, 0);
+        rg->addWidget(what, 1, 1);
+        rg->addWidget(new QLabel(TR("Mikor")), 1, 2);
+        rg->addWidget(when, 1, 3);
+        auto *cats = new QListWidget;
+        cats->setObjectName("webCategories");
+        for (const Category &c : db->itemCategories()) {
+            auto *it = new QListWidgetItem(c.name, cats);
+            it->setData(Qt::UserRole, c.id);
+            it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+            it->setCheckState(cur.categories.contains(c.id) ? Qt::Checked : Qt::Unchecked);
+        }
+        auto *clocks = new QListWidget;
+        clocks->setObjectName("webClocks");
+        for (const Clock &c : db->clocks()) {
+            auto *it = new QListWidgetItem(c.name, clocks);
+            it->setData(Qt::UserRole, c.id);
+            it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+            it->setCheckState(cur.clocks.contains(c.id) ? Qt::Checked : Qt::Unchecked);
+        }
+        cats->setMaximumHeight(130);
+        clocks->setMaximumHeight(130);
+        clocks->setToolTip(TR("Az órarácsban ezekhez a sémákhoz rendelt órákban lehet kérni"));
+        rg->addWidget(cats, 2, 1);
+        rg->addWidget(clocks, 2, 3);
+        root->addLayout(rg);
+
+        auto *applyRow = new QHBoxLayout;
+        auto *apply = new QPushButton(TR("Alkalmazás"));
+        apply->setObjectName("webApply");
+        applyRow->addWidget(apply);
+        applyRow->addStretch(1);
+        root->addLayout(applyRow);
+        auto *status = new QLabel;
+        status->setObjectName("small");
+        status->setWordWrap(true);
+        status->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        root->addWidget(status);
+        root->addStretch(1);
+
+        auto refresh = [=] {
+            for (QWidget *w : std::initializer_list<QWidget *>{url, key, showKey, nextCount, musicOnly, reqOn})
+                w->setEnabled(on->isChecked());
+            const bool r = on->isChecked() && reqOn->isChecked();
+            for (QWidget *w : std::initializer_list<QWidget *>{approve, what, when}) w->setEnabled(r);
+            cats->setEnabled(r && what->currentIndex() == 1);
+            clocks->setEnabled(r && when->currentIndex() == 1);
+        };
+        refresh();
+        connect(on, &QCheckBox::toggled, this, refresh);
+        connect(reqOn, &QCheckBox::toggled, this, refresh);
+        connect(what, &QComboBox::currentIndexChanged, this, refresh);
+        connect(when, &QComboBox::currentIndexChanged, this, refresh);
+        auto checked = [](QListWidget *l) {
+            QList<int> ids;
+            for (int i = 0; i < l->count(); ++i)
+                if (l->item(i)->checkState() == Qt::Checked) ids << l->item(i)->data(Qt::UserRole).toInt();
+            return ids;
+        };
+        auto showStatus = [this, status] {
+            WebSync *w = main_->webSync();
+            status->setText(TR("Állapot: %1").arg(w ? w->status() : QString()));
+        };
+        connect(apply, &QPushButton::clicked, this, [=, this] {
+            WebSync::Config c;
+            c.enabled = on->isChecked();
+            c.url = url->text().trimmed();
+            c.key = key->text().trimmed();
+            c.nextCount = nextCount->value();
+            c.musicOnly = musicOnly->isChecked();
+            c.requests = reqOn->isChecked();
+            c.approve = approve->currentData().toBool();
+            c.allMusic = what->currentData().toBool();
+            c.categories = checked(cats);
+            c.always = when->currentData().toBool();
+            c.clocks = checked(clocks);
+            WebSync::saveConfig(c);
+            main_->configureWeb();
+            showStatus();
+        });
+        auto *t = new QTimer(this);
+        connect(t, &QTimer::timeout, this, showStatus);
+        t->start(1000);
+        showStatus();
     }
 
     root = newPage(TR("Automatikus mix"));

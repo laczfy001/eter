@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.30.1
+- WordPress plugin *Éter Radio* 1.1.0:
+  - the language can be chosen in WordPress under Settings → Éter Radio → Language: English (the default), Dutch,
+    Hungarian, or the site's language;
+  - new Dutch translation.
+- Before, the plugin always followed the site's language; now it is English unless another language is chosen.
+
+## 0.30.0
+- **Website (WordPress).** A new plugin, *Éter Radio* (`eter-radio.zip`), adds three blocks to a WordPress site:
+  *Now playing* (with a progress bar), *Up next* (with start times) and *Song request*. Shortcodes for classic themes
+  and page builders: `[eter_now_playing]`, `[eter_up_next count="5"]`, `[eter_request]`. The blocks follow the
+  theme's fonts and colours and refresh themselves; the plugin is in English and Hungarian.
+- Éter sends the site what is on air and what comes next every 5 seconds (and at once when a track changes), and
+  collects the requests on the same call. Éter always opens the connection, signed with the plugin's key
+  (HMAC-SHA256), so the studio computer does not have to be reachable from the internet. If Éter stops updating, the
+  site shows the station as offline and closes requests.
+- **Song requests.** Visitors search the requestable tracks by artist or title and request one. The track goes into
+  the playlist right after the item on air; further requests go below the last request. Without requests the
+  playlist runs as scheduled. Request rows are marked REQUEST in the playlist and on the site, and the visitor sees
+  what happens to the request (in the playlist, played, rejected…).
+- New settings tab, **Settings → Website**:
+  - the site address, the key, how many upcoming tracks to show, music only or all items;
+  - requests on or off; automatically into the playlist or after approval in the studio (the new *Requests* button
+    in the top bar lists the requests, with Approve / Reject);
+  - requestable: all music or selected categories;
+  - when: always, or in the hours of selected clocks.
+- A request older than 30 minutes when Éter collects it (for example because Éter was not running) is not played.
+- The Linux AppImage now includes Qt's OpenSSL plugin (it uses the system's OpenSSL), for HTTPS to the website.
+- Database schema 15 (song requests), upgraded automatically.
+
 ## 0.29.4
 - The category used to fill before a fixed point can now be set **for each clock** (Scheduler → Clock → *Fill before
   fixed points from*). Before, *Fill from* in Rules was one setting for all clocks, so choosing "12 Inch" for a 12 Inch
