@@ -27,6 +27,7 @@ void WaveformWidget::clear()
     peaks_.clear();
     progress_ = 0.0;
     loading_ = false;
+    message_.clear();
     update();
 }
 
@@ -54,6 +55,16 @@ void WaveformWidget::paintEvent(QPaintEvent *)
     p.drawRoundedRect(rect(), 4, 4);
 
     const int w = width(), h = height();
+    if (peaks_.isEmpty() && !message_.isEmpty()) {
+        QColor fill = played_;
+        fill.setAlphaF(0.35);
+        p.setBrush(fill);
+        p.drawRoundedRect(QRectF(0, 0, progress_ * w, h), 4, 4);
+        p.setPen(theme::text);
+        p.drawText(rect().adjusted(8, 0, -8, 0), Qt::AlignCenter | Qt::TextSingleLine,
+                   fontMetrics().elidedText(message_, Qt::ElideRight, w - 16));
+        return;
+    }
     if (peaks_.isEmpty()) {
         if (loading_) {
             p.setPen(theme::muted);

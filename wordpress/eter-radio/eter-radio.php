@@ -1,12 +1,13 @@
 <?php
 /**
  * Plugin Name:       Éter Radio
- * Description:       Now playing, up next and song requests on your site, fed live by the Éter radio playout.
- * Version:           1.1.0
+ * Description:       Now playing, up next, most played and song requests on your site, fed live by the Éter radio playout.
+ * Version:           1.2.1
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            Éter
- * License:           GPL-2.0-or-later
+ * License:           GPL-3.0-or-later
+ * License URI:       https://www.gnu.org/licenses/gpl-3.0.html
  * Text Domain:       eter-radio
  * Domain Path:       /languages
  *
@@ -19,7 +20,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('ETER_RADIO_VERSION', '1.1.0');
+define('ETER_RADIO_VERSION', '1.2.1');
 define('ETER_RADIO_FILE', __FILE__);
 
 require_once __DIR__ . '/includes/class-store.php';

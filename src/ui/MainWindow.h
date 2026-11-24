@@ -192,6 +192,12 @@ private:
     void endVoiceTrack(const QString &reason);
     MixPlan planFor(int outPlayer, int inPlayer);
     QString rowPlayerStatus(const Row &row) const;   // „ADÁSBAN · B”, „KIÚSZIK · A”, „KÉSZENLÉT · C”
+    int autoMixMode(const Row *from, const Row *to, bool hasSaved) const;
+    MixPlan planForBase(int outPlayer, int inPlayer);
+    void guardDeadAir(const float *playerPeak, float otherPeak);
+    bool deadAirOn_ = true;
+    int deadAirMs_ = 3000;
+    qint64 deadSince_ = 0;
     bool autoMixApplies(const Row *from, const Row *to) const;   // automatikus mix érvényes erre a párra
     QSet<int> mixOff_;                    // ezekből a sorokból a mentett mix most nem érvényes (automatikus mix)
     void updateMixPairs();

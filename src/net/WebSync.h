@@ -9,6 +9,7 @@
 #include <QByteArray>
 #include <QDateTime>
 #include <QHash>
+#include <QJsonObject>
 #include <QList>
 #include <QObject>
 #include <QSet>
@@ -90,6 +91,15 @@ private:
     bool catalogDirty_ = true;
     bool sendCatalog_ = false;
     int failures_ = 0;
+    QString redirectBase_;               // ahová a weboldal átirányított (amíg a beállítás nem változik)
+    int redirects_ = 0;
+    qint64 clockOffset_ = 0;             // a weboldal órája mínusz ennek a gépnek az órája (mp)
+    // A legtöbbet játszott számok (24 óra, 7 nap, 30 nap): ötpercenként újraszámolva; csak változáskor (vagy
+    // tízpercenként) megy ki.
+    QJsonObject top_;
+    QByteArray topSentHash_, topHash_;
+    qint64 topBuiltAt_ = 0, topSentAt_ = 0;
+    void buildTop();
 
     void tick();
     void post(const QString &path, const QByteArray &body);

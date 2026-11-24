@@ -7,11 +7,17 @@ Plural-Forms: nplurals=2; plural=(n != 1);
 msgid "%1$s – last update %2$s ago, Éter %3$s."
 msgstr "%1$s – laatste update %2$s geleden, Éter %3$s."
 
+msgid "%d plays"
+msgstr "%d keer"
+
+msgid "1 play"
+msgstr "1 keer"
+
 msgid "A new key was created. Paste it into Éter, otherwise Éter can no longer update the site."
 msgstr "Er is een nieuwe sleutel gemaakt. Plak deze in Éter, anders kan Éter de site niet meer bijwerken."
 
-msgid "Add the Now playing, Up next and Song request blocks in the block editor (Widgets category). In classic themes and page builders use the shortcodes [eter_now_playing], [eter_up_next count=\"5\"] and [eter_request]."
-msgstr "Voeg de blokken Nu op de radio, Straks en Verzoeknummer toe in de blokeditor (categorie Widgets). Gebruik in klassieke thema's en paginabouwers de shortcodes [eter_now_playing], [eter_up_next count=\"5\"] en [eter_request]."
+msgid "Add the Now playing, Up next, Most played and Song request blocks in the block editor (Widgets category). In classic themes and page builders use the shortcodes [eter_now_playing], [eter_up_next count=\"5\"], [eter_most_played period=\"week\" count=\"10\"] and [eter_request]."
+msgstr "Voeg de blokken Nu op de radio, Straks, Meest gedraaid en Verzoeknummer toe in de blokeditor (categorie Widgets). Gebruik in klassieke thema's en paginabouwers de shortcodes [eter_now_playing], [eter_up_next count=\"5\"], [eter_most_played period=\"week\" count=\"10\"] en [eter_request]."
 
 msgid "Artist"
 msgstr "Artiest"
@@ -46,8 +52,23 @@ msgstr "Sleutel"
 msgid "Language"
 msgstr "Taal"
 
+msgid "Last 24 hours"
+msgstr "Afgelopen 24 uur"
+
+msgid "Last 30 days"
+msgstr "Afgelopen 30 dagen"
+
+msgid "Last 7 days"
+msgstr "Afgelopen 7 dagen"
+
+msgid "Most played"
+msgstr "Meest gedraaid"
+
 msgid "No matching tracks."
 msgstr "Geen nummers gevonden."
+
+msgid "No plays in this period yet."
+msgstr "In deze periode nog niets gedraaid."
 
 msgid "No requests yet."
 msgstr "Nog geen verzoeken."
@@ -69,6 +90,9 @@ msgstr "Offline"
 
 msgid "Online"
 msgstr "Online"
+
+msgid "Period"
+msgstr "Periode"
 
 msgid "Recent requests"
 msgstr "Recente verzoeken"
@@ -103,6 +127,9 @@ msgstr "Voortgangsbalk tonen"
 msgid "Show start times"
 msgstr "Begintijden tonen"
 
+msgid "Show the number of plays"
+msgstr "Aantal keer gedraaid tonen"
+
 msgid "Show the station as offline after"
 msgstr "Station als offline tonen na"
 
@@ -126,6 +153,9 @@ msgstr "Status"
 
 msgid "The language of the blocks on the site and of this page. With “The site’s language”, it follows Settings → General → Site Language (English if the plugin has no translation for it)."
 msgstr "De taal van de blokken op de site en van deze pagina. Met „Taal van de site” volgt hij Instellingen → Algemeen → Taal van de site (Engels als de plugin geen vertaling heeft voor die taal)."
+
+msgid "The most played songs of the last day, week or month."
+msgstr "De meest gedraaide nummers van de afgelopen dag, week of maand."
 
 msgid "The next tracks in the playlist."
 msgstr "De volgende nummers in de playlist."

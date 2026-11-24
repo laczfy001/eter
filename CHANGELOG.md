@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.31.1
+- Website connection (bug report from Windows: “the key does not match … or this computer’s clock is wrong”, even
+  with the right key):
+  - Éter now shows the website's own reason for a refusal. The site states whether the key is wrong, the clocks
+    differ (with both times) or the signature did not arrive. Before, every refusal showed the same general message.
+  - The signature time follows the website's clock (from the Date header of its replies). A computer whose clock or
+    time zone is set wrongly, even by hours, no longer causes a refusal. If the difference is a minute or more, the
+    status line says so.
+  - The signature is sent in the address as well as in the headers, for hosts, proxies and firewalls that remove
+    custom headers.
+  - Redirects (http → https, without www → with www) are followed with the request intact; the status line shows
+    the new address to enter.
+- WordPress plugin 1.2.1 and Éter Web 1.0.1 accept the signature from the address too, and give an exact reason
+  when they refuse. Both need Éter 0.31.1 for the clock correction; Éter 0.31.1 also works with the older versions.
+
+## 0.31.0
+- **Live streams on air.** An external audio stream can be a playlist item. Supported: Icecast and Shoutcast
+  streams (MP3, AAC or Ogg) over http or https; `.pls` and `.m3u` playlist files are resolved. Add one with
+  *Library → Import → Live stream…*: title, address, category and planned length, with a *Test the connection*
+  button that reports the format, the station name and the current title.
+  - In the playlist the stream plays for its planned length. It then fades out over 2 seconds while the next item
+    starts.
+  - It connects when it is cued. When it goes on air it starts close to live: the audio collected while it waited
+    is dropped.
+  - The player shows *● LIVE STREAM* with the stream's current title (ICY metadata) and the connection state, and
+    the playlist row is marked LIVE STREAM.
+  - If the stream drops, Éter reconnects. If no data arrives for 15 seconds (*Settings → General and audio*), the
+    next item starts. The dead-air guard leaves streams to this setting.
+  - A stream cannot go into a mixdown; the Mix editor has no waveform for it.
+- **Automatic mix for every item.** In automatic mix mode the program now also handles the transitions of jingles,
+  ads, news and voice tracks. Before, these used the settings saved in the Mix editor, and if there were none, the
+  silence at the start of the next item stayed in. Now:
+  - the silence is cut at the end of the outgoing item and at the start of the next one;
+  - the items follow each other back to back, with no crossfade (an optional gap can be set);
+  - from a song into a jingle, news or ad, the song's end follows the smart mix (a fading ending lets the next item
+    start during the fade).
+  Transitions saved in the Mix editor and an item's own mix point still apply by default; this can be turned off, so
+  that the program mixes every transition (a saved voice track is always kept).
+- **Hidden tracks.** When at least 4 seconds of silence in the second half of a track is followed by more sound, the
+  track ends at the silence.
+- **Dead-air guard.** In automatic mode, if the item on air stays silent (below −50 dBFS) for 3 seconds in its second
+  half, the next item starts. The level is checked before the mini mixer's faders, so a lowered or muted fader does
+  not trigger it.
+- All of these can be turned on or off, and their values set, in *Settings → Automatic mix*. The Mix editor shows the
+  plan for these transitions too.
+- The Settings pages scroll when they do not fit on the screen.
+- Mini mixer: a channel's label lights up in green while there is signal on it (above −50 dB).
+- **Most played.** Éter sends the website the most played songs of the last 24 hours, 7 days and 30 days (music
+  only, refreshed when a track changes). WordPress plugin 1.2.0 has a new *Most played* block (period, number of
+  songs, number of plays) and the shortcode `[eter_most_played period="week" count="10"]`.
+- **Éter Web**, a universal module (`eter-web.zip`) that does what the WordPress plugin does, on any website. It is
+  one folder for any PHP 7.4+ web host, with no database. The widgets go into any page with one script line and a
+  `<div data-eter="now|next|top|request">` for each, also on another address or on a site without PHP; for site
+  builders that only allow an iframe there are ready iframe pages. Its admin page (admin.php, password in
+  config.php) shows the address and the key for Éter, the embed codes ready to copy, the language (English,
+  Nederlands, Magyar) and the recent requests. Éter talks to it exactly as to the plugin, so in Éter only the
+  address and the key are entered.
+- Library panel: the title is now a drop-down that switches between the **Library** and the **Play log** (the items
+  that went on air, the most recent at the top, with start time and length; searchable; double-click adds the item to
+  the playlist).
+- Library: songs that went on air today have a red background (the tooltip shows when); it clears at midnight.
+- Cartwall: while a button plays, a hand sweeps round it clockwise from 12 o'clock, showing how far it has got; the
+  swept part turns from a dark to a light shade of the button's colour (it replaces the progress bar at the bottom).
+
 ## 0.30.1
 - WordPress plugin *Éter Radio* 1.1.0:
   - the language can be chosen in WordPress under Settings → Éter Radio → Language: English (the default), Dutch,

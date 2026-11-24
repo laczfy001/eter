@@ -6,8 +6,11 @@
 #include <QMessageBox>
 #include "Theme.h"
 #include "audio/Decoder.h"
+#include "audio/Stream.h"
+#include "net/StreamFetcher.h"
 
 #include <QCheckBox>
+#include <QTimeEdit>
 #include <QCollator>
 #include <QComboBox>
 #include <QDataStream>
@@ -251,6 +254,13 @@ QVariant LibraryModel::data(const QModelIndex &index, int role) const
         return swatch(QColor::fromHsv((mkey::camelotNumber(it->musicKey) - 1) * 30, mkey::isMinor(it->musicKey) ? 150 : 210, 235));
     if (role == Qt::ToolTipRole && c == 7 && mkey::valid(it->musicKey)) return mkey::both(it->musicKey);
     if (role == Qt::ForegroundRole && c == 8) return vocal::color(it->vocal);
+    // Ma adásba ment: piros háttér (éjfélkor magától lekerül).
+    if (role == Qt::BackgroundRole && it->lastPlayedAt > 0
+        && it->lastPlayedAt >= QDateTime(QDate::currentDate(), QTime(0, 0)).toSecsSinceEpoch())
+        return QColor("#5a1f24");
+    if (role == Qt::ToolTipRole && it->lastPlayedAt > 0
+        && it->lastPlayedAt >= QDateTime(QDate::currentDate(), QTime(0, 0)).toSecsSinceEpoch())
+        return TR("Ma adásba ment: %1\n%2").arg(QDateTime::fromSecsSinceEpoch(it->lastPlayedAt).toString("HH:mm"), it->path);
     if (role == Qt::ToolTipRole) return it->path;
     return {};
 }
@@ -293,8 +303,14 @@ LibraryPanel::LibraryPanel(Database *db, QWidget *parent) : QFrame(parent), db_(
     auto *h = new QHBoxLayout(head);
     h->setContentsMargins(10, 8, 10, 8);
     h->setSpacing(6);
-    auto *title = new QLabel(TR("Adatbázis"));
-    title->setObjectName("panelTitle");
+    // A cím helyén legördülő: a hangtár vagy a lejátszott elemek listája.
+    viewMode_ = new QComboBox;
+    viewMode_->setObjectName("libraryView");
+    viewMode_->addItem(TR("Adatbázis"));
+    viewMode_->addItem(TR("Lejátszott elemek"));
+    viewMode_->setFocusPolicy(Qt::NoFocus);
+    viewMode_->setToolTip(TR("Váltás a hangtár és az adásba ment elemek listája között"));
+    auto *title = viewMode_;
     category_ = new QComboBox;
     category_->setMinimumWidth(150);
     category_->setAccessibleName(TR("Kategória szűrő"));
@@ -308,6 +324,8 @@ LibraryPanel::LibraryPanel(Database *db, QWidget *parent) : QFrame(parent), db_(
     auto *menu = new QMenu(importBtn);
     menu->addAction(TR("Fájlok…"), this, &LibraryPanel::chooseFiles);
     menu->addAction(TR("Mappa…"), this, &LibraryPanel::chooseFolder);
+    menu->addSeparator();
+    menu->addAction(TR("Élő stream…"), this, [this] { editStream(0); });
     importBtn->setMenu(menu);
     auto *catBtn = catBtn_ = new QPushButton(TR("Kategóriák…"));
     catBtn->setFocusPolicy(Qt::NoFocus);
@@ -367,6 +385,43 @@ LibraryPanel::LibraryPanel(Database *db, QWidget *parent) : QFrame(parent), db_(
     layout_->addWidget(view_, 1);
     layout_->addWidget(empty_, 1);
 
+    // Lejátszott elemek: az adásnapló, a legutóbb játszott felül.
+    log_ = new QTableWidget(0, 5);
+    log_->setObjectName("playLog");
+    log_->setHorizontalHeaderLabels({TR("Kezdés"), TR("Cím"), TR("Előadó"), TR("Típus"), TR("Hossz")});
+    log_->verticalHeader()->hide();
+    log_->verticalHeader()->setDefaultSectionSize(30);
+    log_->setShowGrid(false);
+    log_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    log_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    log_->setFrameShape(QFrame::NoFrame);
+    log_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    log_->setToolTip(TR("Dupla kattintás: az elem a playlist végére kerül"));
+    {
+        auto *lh = log_->horizontalHeader();
+        lh->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        lh->setHighlightSections(false);
+        lh->setSectionResizeMode(1, QHeaderView::Stretch);
+        lh->setSectionResizeMode(2, QHeaderView::Stretch);
+        log_->setColumnWidth(0, 120);
+        log_->setColumnWidth(3, 90);
+        log_->setColumnWidth(4, 64);
+    }
+    log_->hide();
+    layout_->addWidget(log_, 1);
+    connect(log_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        if (row >= 0 && row < log_->rowCount())
+            if (const int id = log_->item(row, 0)->data(Qt::UserRole).toInt(); id > 0 && db_->item(id).id) emit addToPlaylist({id});
+    });
+    logTimer_ = new QTimer(this);
+    logTimer_->setInterval(10000);   // a hossz a lejátszás végén íródik be
+    connect(logTimer_, &QTimer::timeout, this, [this] {
+        if (logMode()) reloadLog();
+        view_->viewport()->update();    // éjfélkor a „ma játszott” jelölés eltűnik
+    });
+    logTimer_->start();
+    connect(viewMode_, &QComboBox::activated, this, [this](int i) { setLogMode(i == 1); });
+
     auto refilter = [this] {
         model_->setFilter(category_->currentData().toInt(), search_->text());
         const bool none = model_->totalCount() == 0;
@@ -381,9 +436,11 @@ LibraryPanel::LibraryPanel(Database *db, QWidget *parent) : QFrame(parent), db_(
     };
     connect(category_, &QComboBox::activated, this, refilter);
     connect(search_, &QLineEdit::textChanged, this, refilter);
+    connect(search_, &QLineEdit::textChanged, this, [this] { if (logMode()) reloadLog(); });
     connect(db_, &Database::itemsChanged, this, [this, refilter] {
         model_->reload();
         refilter();
+        if (logMode()) reloadLog();
     });
     connect(db_, &Database::categoriesChanged, this, [this, refilter] {
         reloadCategories();
@@ -479,6 +536,8 @@ void LibraryPanel::contextMenu(const QPoint &pos)
         menu.exec(view_->viewport()->mapToGlobal(pos));
         return;
     }
+    if (eter::isStreamUrl(db_->item(ids.first()).path.toStdString()))
+        menu.addAction(TR("Stream beállításai… (cím, tervezett hossz)"), this, [this, ids] { editStream(ids.first()); });
     menu.addAction(TR("Szerkesztés… (adatok, intro, outro)"), this, [this, ids] { emit editRequested(ids.first()); });
     menu.addAction(TR("Időzítés…"), this, [this, ids] { emit scheduleRequested(ids.first()); });
     menu.addSeparator();
@@ -1150,9 +1209,202 @@ void LibraryPanel::estimateTempo(const QVector<int> &ids, bool key)
     }).detach();
 }
 
+bool LibraryPanel::logMode() const { return viewMode_ && viewMode_->currentIndex() == 1; }
+
+void LibraryPanel::setLogMode(bool on)
+{
+    if (viewMode_->currentIndex() != (on ? 1 : 0)) viewMode_->setCurrentIndex(on ? 1 : 0);
+    category_->setVisible(!on);
+    if (importBtn_) importBtn_->setVisible(!on && !remote_);
+    if (catBtn_) catBtn_->setVisible(!on && !remote_);
+    search_->setPlaceholderText(on ? TR("Keresés a lejátszott elemek között…") : TR("Keresés cím, előadó szerint…"));
+    log_->setVisible(on);
+    if (on) {
+        view_->hide();
+        empty_->hide();
+        reloadLog();
+    } else {
+        const bool none = model_->totalCount() == 0;
+        view_->setVisible(!none);
+        empty_->setVisible(none);
+    }
+}
+
+void LibraryPanel::reloadLog()
+{
+    logRows_ = db_->log(500);
+    const QString q = search_->text().trimmed();
+    QVector<const LogRow *> shown;
+    for (const LogRow &l : logRows_)
+        if (q.isEmpty() || l.title.contains(q, Qt::CaseInsensitive) || l.artist.contains(q, Qt::CaseInsensitive)) shown << &l;
+    const int keepRow = log_->currentRow();
+    log_->setRowCount(shown.size());
+    const QDate today = QDate::currentDate();
+    for (int r = 0; r < shown.size(); ++r) {
+        const LogRow &l = *shown[r];
+        const QDateTime at = QDateTime::fromSecsSinceEpoch(l.startedAt);
+        const QString when = at.date() == today ? at.toString("HH:mm:ss") : at.toString(TR("MM.dd. HH:mm"));
+        const QString len = l.endedAt > 0 ? formatMs((l.endedAt - l.startedAt) * 1000) : (r == 0 ? TR("szól") : QString());
+        const QString cells[5] = {when, l.title, l.artist, kindLabel(l.kind), len};
+        for (int c = 0; c < 5; ++c) {
+            auto *it = log_->item(r, c);
+            if (!it) {
+                it = new QTableWidgetItem;
+                log_->setItem(r, c, it);
+            }
+            it->setText(cells[c]);
+            it->setTextAlignment(int((c == 4 ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter));
+            if (c == 0) it->setData(Qt::UserRole, l.itemId);
+            if (c == 0 || c == 4) it->setFont(QFont("IBM Plex Mono", 9));
+            it->setForeground(c == 2 || c == 3 ? QColor("#9aa3af") : QColor("#e6e9ee"));
+        }
+    }
+    if (keepRow >= 0 && keepRow < log_->rowCount()) log_->setCurrentCell(keepRow, 0);
+}
+
 void LibraryPanel::setRemoteMode(bool on)
 {
     remote_ = on;
     importBtn_->setVisible(!on);
     catBtn_->setVisible(!on);
+}
+
+// Élő stream (Icecast / Shoutcast, http vagy https) a hangtárban: cím, URL, kategória és tervezett hossz. Adásban a
+// tervezett hossz végén 2 mp alatt kiúszik, és jön a következő elem; ha a stream megszakad, a program újrapróbálja,
+// és ha 15 mp-ig nem jön adat, továbblép.
+void LibraryPanel::editStream(int itemId)
+{
+    const Item cur = itemId ? db_->item(itemId) : Item();
+    QDialog dlg(this);
+    dlg.setWindowTitle(itemId ? TR("Élő stream beállításai") : TR("Élő stream felvétele"));
+    auto *v = new QVBoxLayout(&dlg);
+    v->setSizeConstraint(QLayout::SetMinimumSize);   // a próba eredménye (több sor) se nyomja össze a mezőket
+    dlg.setMinimumWidth(600);
+    auto *note = new QLabel(TR("Icecast vagy Shoutcast stream (MP3, AAC vagy Ogg), http vagy https címmel; a .pls és .m3u "
+                               "lejátszási listát is feloldja. A playlistben a tervezett hossz végéig szól, ott kiúszik, és "
+                               "jön a következő elem. Ha a stream megszakad, a program újrakapcsolódik; ha sokáig nem jön adat "
+                               "(Beállítások → Általános és hang), továbblép a következő elemre."));
+    note->setObjectName("small");
+    note->setWordWrap(true);
+    v->addWidget(note);
+    auto *form = new QFormLayout;
+    auto *title = new QLineEdit(cur.title);
+    title->setPlaceholderText(TR("Például: Partnerrádió – esti műsor"));
+    auto *artist = new QLineEdit(cur.artist);
+    artist->setPlaceholderText(TR("nem kötelező (például az állomás neve)"));
+    auto *url = new QLineEdit(cur.path);
+    url->setPlaceholderText(QStringLiteral("https://stream.example.com/live.mp3"));
+    auto *cat = new QComboBox;
+    for (const Category &c : db_->itemCategories()) cat->addItem(swatch(QColor(c.color)), c.name, c.id);
+    if (itemId) cat->setCurrentIndex(std::max(0, cat->findData(cur.categoryId)));
+    else if (category_->currentData().toInt() > 0) cat->setCurrentIndex(std::max(0, cat->findData(category_->currentData())));
+    auto *len = new QTimeEdit(QTime(0, 0).addMSecs(int(itemId ? cur.durationMs : 3600000)));
+    len->setDisplayFormat(QStringLiteral("HH:mm:ss"));
+    len->setMinimumTime(QTime(0, 0, 10));
+    form->addRow(TR("Cím"), title);
+    form->addRow(TR("Előadó"), artist);
+    form->addRow(TR("Stream címe (URL)"), url);
+    form->addRow(TR("Kategória"), cat);
+    form->addRow(TR("Tervezett hossz"), len);
+    v->addLayout(form);
+    auto *testRow = new QHBoxLayout;
+    auto *test = new QPushButton(TR("Kapcsolat ellenőrzése"));
+    auto *result = new QLabel;
+    result->setObjectName("small");
+    result->setWordWrap(true);
+    testRow->addWidget(test);
+    testRow->addWidget(result, 1);
+    v->addLayout(testRow);
+    auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    bb->button(QDialogButtonBox::Ok)->setText(itemId ? TR("Mentés") : TR("Felvétel a hangtárba"));
+    bb->button(QDialogButtonBox::Cancel)->setText(TR("Mégse"));
+    v->addWidget(bb);
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    // Próba: kapcsolódás, a formátum felismerése és pár másodpercnyi dekódolás, a háttérben.
+    auto alive = std::make_shared<std::atomic<bool>>(true);
+    connect(&dlg, &QObject::destroyed, [alive] { alive->store(false); });
+    connect(test, &QPushButton::clicked, &dlg, [&dlg, url, result, test, alive] {
+        const QString u = url->text().trimmed();
+        if (!eter::isStreamUrl(u.toStdString())) {
+            result->setText(TR("A cím http:// vagy https:// kezdetű legyen."));
+            return;
+        }
+        test->setEnabled(false);
+        result->setText(TR("Kapcsolódás…"));
+        auto input = std::make_shared<QtStreamInput>(u, 10000);
+        input->setPlaying(true);              // 10 mp után feladja
+        QPointer<QDialog> guard(&dlg);
+        std::thread([input, guard, result, test, alive] {
+            eter::Decoder d;
+            std::string err;
+            QString text;
+            if (d.openStream(input, &err)) {
+                std::vector<float> buf(4800 * 2);
+                int got = 0;
+                for (int i = 0; i < 20 && got < 48000; ++i) {
+                    const int n = d.read(buf.data(), 4800);
+                    if (n <= 0) break;
+                    got += n;
+                }
+                QString codec = QString::fromStdString(d.codecName());
+                codec = codec.startsWith(QLatin1String("mp3")) ? QStringLiteral("MP3")
+                      : codec.startsWith(QLatin1String("aac")) ? QStringLiteral("AAC")
+                      : codec == QLatin1String("vorbis") ? QStringLiteral("Ogg Vorbis")
+                      : codec == QLatin1String("opus") ? QStringLiteral("Opus") : codec.toUpper();
+                const QString name = QString::fromStdString(input->stationName());
+                const QString now = QString::fromStdString(input->streamTitle());
+                text = got >= 24000 ? TR("Rendben: %1 stream szól.").arg(codec)
+                                    : TR("Kapcsolódott, de alig jön adat (%1).").arg(codec);
+                if (!name.isEmpty()) text += TR(" Állomás: %1.").arg(name);
+                if (!now.isEmpty()) text += TR(" Most: %1.").arg(now);
+            } else {
+                const QString state = QString::fromStdString(input->state());
+                text = TR("Nem sikerült: %1").arg(state.isEmpty() ? QString::fromStdString(err) : state);
+            }
+            input->abort();
+            QMetaObject::invokeMethod(qApp, [guard, result, test, alive, text] {
+                if (!alive->load() || !guard) return;
+                result->setText(text);
+                test->setEnabled(true);
+            });
+        }).detach();
+    });
+
+    connect(bb, &QDialogButtonBox::accepted, &dlg, [&] {
+        const QString u = url->text().trimmed();
+        if (!eter::isStreamUrl(u.toStdString())) {
+            result->setText(TR("A cím http:// vagy https:// kezdetű legyen."));
+            return;
+        }
+        if (title->text().trimmed().isEmpty()) {
+            result->setText(TR("Adj címet az elemnek."));
+            return;
+        }
+        const qint64 ms = QTime(0, 0).msecsTo(len->time());
+        QString err;
+        if (itemId) {
+            db_->updateItemDetails(itemId, cat->currentData().toInt(), title->text(), artist->text(), QString(), 0);
+            if (!db_->updateStream(itemId, u, ms, &err)) {
+                result->setText(TR("Nem menthető: %1").arg(err));
+                return;
+            }
+        } else {
+            Item it;
+            it.categoryId = cat->currentData().toInt();
+            it.title = title->text().trimmed();
+            it.artist = artist->text().trimmed();
+            it.path = u;
+            it.durationMs = ms;
+            if (!db_->addItem(it, &err)) {
+                result->setText(TR("Nem vehető fel: %1").arg(err));
+                return;
+            }
+        }
+        db_->notifyItemsChanged();
+        dlg.accept();
+    });
+    dlg.exec();
+    if (dlg.result() == QDialog::Accepted)
+        emit message(itemId ? TR("A stream beállításai elmentve.") : TR("Élő stream a hangtárban: %1").arg(title->text().trimmed()));
 }

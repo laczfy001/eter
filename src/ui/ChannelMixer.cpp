@@ -202,12 +202,14 @@ void ChannelMixer::paintEvent(QPaintEvent *)
         f.setStrikeOut(s.muted);
         p.setFont(f);
         const QRectF lr(sr.left(), 0, sr.width(), kLabelH);
-        if (s.onAir) {
+        // Van jel a csatornán (−50 dB fölött): a betűjel zöld kitöltéssel, sötét betűvel.
+        const bool signal = std::max(s.levelL, s.levelR) > -50.0;
+        if (signal) {
             p.setPen(Qt::NoPen);
-            p.setBrush(color(i).darker(260));
+            p.setBrush(QColor("#4cc38a"));
             p.drawRoundedRect(lr.adjusted(4, 1, -4, -1), 3, 3);
         }
-        p.setPen(s.muted ? QColor("#6b727c") : color(i));
+        p.setPen(signal ? QColor("#101215") : s.muted ? QColor("#6b727c") : color(i));
         p.drawText(lr, Qt::AlignCenter, label(i));
         f.setStrikeOut(false);
         // Jelszint: két sáv, a 0 dB fölött sárga, −6 fölött borostyán

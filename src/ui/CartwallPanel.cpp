@@ -17,10 +17,15 @@
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QConicalGradient>
+#include <QPainterPath>
 #include <QPushButton>
 #include <QSettings>
 #include <QToolButton>
 #include <QVBoxLayout>
+
+#include <cmath>
+#include <numbers>
 
 static QColor mix(const QColor &a, const QColor &b, double t)
 {
@@ -97,39 +102,65 @@ void CartButton::paintEvent(QPaintEvent *)
         return;
     }
 
-    QColor bg = playing_ ? color_ : mix(kPanel, color_, hover_ ? 0.42 : 0.30);
+    // Lejátszás közben a gomb a saját színének sötét árnyalata, és fölötte az óramutató járásával megegyezően,
+    // 12 órától körbefutó „mutató” jelzi, hol tart: a mögötte lévő rész a sötétből a világos árnyalatba vált.
+    QColor bg = playing_ ? mix(kPanel, color_, 0.38) : mix(kPanel, color_, hover_ ? 0.42 : 0.30);
     if (pressed_) bg = bg.lighter(115);
-    p.setPen(QPen(dropping_ ? theme::amber : (playing_ ? color_.lighter(135) : mix(kPanel, color_, 0.75)), dropping_ ? 2 : 1));
+    p.setPen(Qt::NoPen);
     p.setBrush(bg);
     p.drawRoundedRect(r, 6, 6);
-
-    const QColor fg = playing_ ? textOn(bg) : QColor("#eef0f3");
-    QColor dim = fg;
-    dim.setAlphaF(0.72);
-
-    // Haladás: az alsó szélen sáv
     if (playing_ && cart_.durationMs > 0) {
         const double f = std::clamp(double(posMs_) / double(cart_.durationMs), 0.0, 1.0);
-        QColor track = fg;
-        track.setAlphaF(0.22);
-        const QRectF barRect(r.left() + 8, r.bottom() - 9, r.width() - 16, 4);
-        p.setPen(Qt::NoPen);
-        p.setBrush(track);
-        p.drawRoundedRect(barRect, 2, 2);
-        p.setBrush(fg);
-        p.drawRoundedRect(QRectF(barRect.left(), barRect.top(), barRect.width() * f, barRect.height()), 2, 2);
+        QPainterPath clip;
+        clip.addRoundedRect(r, 6, 6);
+        p.save();
+        p.setClipPath(clip);
+        const QPointF c = r.center();
+        const double radius = std::hypot(r.width(), r.height());
+        // A kúpos színátmenet az óramutatóval ellentétesen halad: a mutató hegye (1 − f) a legvilágosabb.
+        QConicalGradient g(c, 90);
+        const QColor head = color_.lighter(118), tail = mix(kPanel, color_, 0.62);
+        g.setColorAt(0.0, head);
+        g.setColorAt(std::max(0.0, 1.0 - f), head);
+        g.setColorAt(1.0, tail);
+        p.setBrush(g);
+        p.drawPie(QRectF(c.x() - radius, c.y() - radius, 2 * radius, 2 * radius), 90 * 16, -int(std::lround(f * 360 * 16)));
+        // A mutató
+        if (f > 0 && f < 1) {
+            const double a = (90.0 - f * 360.0) * std::numbers::pi / 180.0;
+            p.setPen(QPen(color_.lighter(160), 1.6));
+            p.drawLine(c, QPointF(c.x() + radius * std::cos(a), c.y() - radius * std::sin(a)));
+        }
+        p.restore();
     }
+    p.setPen(QPen(dropping_ ? theme::amber : (playing_ ? color_.lighter(135) : mix(kPanel, color_, 0.75)), dropping_ ? 2 : 1));
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(r, 6, 6);
+
+    const QColor fg("#eef0f3");
+    QColor dim = fg;
+    dim.setAlphaF(0.72);
+    // Lejátszás közben a világos háttéren is olvasható legyen: halvány árnyék a szöveg alatt.
+    auto text = [&](const QRectF &rect, int flags, const QString &s) {
+        if (playing_) {
+            const QPen pen = p.pen();
+            p.setPen(QColor(0, 0, 0, 150));
+            p.drawText(rect.translated(1, 1), flags, s);
+            p.setPen(pen);
+        }
+        p.drawText(rect, flags, s);
+    };
 
     // Fent: sorszám és idő (lejátszás közben a hátralévő idő)
     p.setFont(small);
     p.setPen(dim);
-    p.drawText(r.adjusted(8, 6, -8, -6), Qt::AlignLeft | Qt::AlignTop, QString::number(slot_ + 1));
+    text(r.adjusted(8, 6, -8, -6), Qt::AlignLeft | Qt::AlignTop, QString::number(slot_ + 1));
     p.setFont(mono);
     p.setPen(playing_ ? fg : dim);
     const qint64 shown = playing_ ? std::max<qint64>(0, cart_.durationMs - posMs_) : cart_.durationMs;
     QString time = QStringLiteral("%1:%2").arg(shown / 60000).arg(shown / 1000 % 60, 2, 10, QLatin1Char('0'));
     if (playing_) time = QStringLiteral("−%1.%2").arg(time).arg(shown / 100 % 10);
-    p.drawText(r.adjusted(8, 5, -8, -6), Qt::AlignRight | Qt::AlignTop, time);
+    text(r.adjusted(8, 5, -8, -6), Qt::AlignRight | Qt::AlignTop, time);
 
     // Felirat: legfeljebb annyi sor, amennyi elfér
     QFont label = font();
@@ -161,7 +192,7 @@ void CartButton::paintEvent(QPaintEvent *)
     const double total = out.size() * fm.lineSpacing();
     double y = textRect.top() + std::max(0.0, (textRect.height() - total) / 2);
     for (const QString &l : out) {
-        p.drawText(QRectF(textRect.left(), y, textRect.width(), fm.lineSpacing()), Qt::AlignHCenter | Qt::AlignVCenter, l);
+        text(QRectF(textRect.left(), y, textRect.width(), fm.lineSpacing()), Qt::AlignHCenter | Qt::AlignVCenter, l);
         y += fm.lineSpacing();
     }
 }

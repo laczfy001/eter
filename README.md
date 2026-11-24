@@ -29,7 +29,11 @@ for Icecast and a backup playout in one desktop application.
   library), and limit how many of the same vocal play in a row.
 - **Smart automatic mix**: recognises fade-out and sudden endings, soft and strong intros, and (optionally) shortens the
   overlap when tempos or keys clash; every threshold is adjustable in *Settings → Automatic mix*, and the Mix editor
-  shows the plan for each transition.
+  shows the plan for each transition. Jingles, ads, news and voice tracks follow each other back to back with the
+  silence cut at both ends; a hidden track after a long silence is left out; a dead-air guard moves on when the item
+  on air stays silent.
+- **Live streams**: an Icecast/Shoutcast stream (MP3, AAC, Ogg; http or https; .pls/.m3u resolved) can be a
+  playlist item with a planned length; it reconnects when it drops and moves on if it stays down.
 - **Automatic mix / Mix editor** switch in the top bar: with *Automatic mix* the transitions between two songs are
   mixed by the program from the waveform (silence at the start of the next song is skipped); transitions where
   either side is not music (jingles, news, ads) still follow their saved Mix editor settings, and saved voice
@@ -49,7 +53,9 @@ for Icecast and a backup playout in one desktop application.
   without requests the playlist runs as usual. Requests can go in automatically or wait for approval (Requests
   button in the top bar), can be limited to selected categories and to the hours of selected clocks.
   Settings → Website; in WordPress: Settings → Éter Radio (also the plugin's language: English by default, Dutch,
-  Hungarian, or the site's language).
+  Hungarian, or the site's language). A *Most played* block shows the top songs of the last day, week or month.
+- **Éter Web** (`eter-web.zip`): the same widgets for any website without WordPress – one folder on any PHP web host,
+  embedded with a script line (or an iframe). See `web/eter-web/README.txt`.
 - **Playlist** with planned air times and hour separators. Each row shows the start time, a type icon,
   the length, title and artist, and marks for custom mixes (MIX), voice tracks (VT) and fixed times (FIX).
   Non-music items are filled with their category colour; the item on air and the one on standby stand out,
@@ -235,6 +241,7 @@ build the AppImage and the Windows zip and attach them to a release.
   cartwall, timed events, remote editor
 - `src/net` – remote editing protocol (JSON lines over TCP, HMAC login), server and client; website sync
 - `wordpress/eter-radio` – the WordPress plugin (pack it with `scripts/build_wp_plugin.sh`)
+- `web/eter-web` – the universal web module (pack it with `scripts/build_web_module.sh`)
 - `src/core` – missing file check, now playing output (title file, Icecast update)
 - `src/db` – SQLite layer and migrations; `schema.sql` – the database schema
 - `src/sched` – playlist generation

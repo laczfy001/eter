@@ -14,6 +14,7 @@ void Source::stopThread()
 {
     playing_.store(false);
     quit_.store(true);
+    if (stream_) stream_->abort();       // a stream olvasása ne tartsa fel a szálat
     if (thread_.joinable()) thread_.join();
     quit_.store(false);
 }
@@ -21,11 +22,22 @@ void Source::stopThread()
 bool Source::load(const std::string &path, std::string *err)
 {
     unload();
-    if (!dec_.open(path, err)) return false;
-    path_ = path;
-    title_ = dec_.title();
-    artist_ = dec_.artist();
-    duration_.store(dec_.durationFrames());
+    if (isStreamUrl(path)) {
+        stream_ = openStreamInput(path);
+        if (!stream_) {
+            if (err) *err = "stream";
+            return false;
+        }
+        openPending_.store(true);
+        path_ = path;
+        duration_.store(0);
+    } else {
+        if (!dec_.open(path, err)) return false;
+        path_ = path;
+        title_ = dec_.title();
+        artist_ = dec_.artist();
+        duration_.store(dec_.durationFrames());
+    }
     {
         std::lock_guard<std::mutex> lk(ringMtx_);
         wr_.store(0);
@@ -49,6 +61,9 @@ void Source::unload()
     stopThread();
     loaded_.store(false);
     dec_.close();
+    stream_.reset();
+    openPending_.store(false);
+    streamStarted_ = false;
     path_.clear();
     title_.clear();
     artist_.clear();
@@ -98,10 +113,21 @@ void Source::play(int fadeInMs, float fromGain, FadeCurve curve)
         fadeTotal_.store(frames);
     }
     finished_.store(false);
+    if (stream_ && !streamStarted_) {
+        // Élő stream első indítása: a betöltés óta dekódolt (régi) hang kimarad, az élő adáshoz közel indul.
+        streamStarted_ = true;
+        stream_->setPlaying(true);
+        seek(0);
+    }
     playing_.store(true);
+    if (stream_) stream_->setPlaying(true);
 }
 
-void Source::pause() { playing_.store(false); }
+void Source::pause()
+{
+    playing_.store(false);
+    if (stream_) stream_->setPlaying(false);
+}
 
 void Source::stop()
 {
@@ -149,6 +175,10 @@ void Source::decodeLoop()
 {
     constexpr int kChunk = 2048;
     std::vector<float> tmp(kChunk * kChannels);
+    if (openPending_.exchange(false)) {
+        // Stream: kapcsolódás és formátum-felismerés itt, a dekódoló szálon.
+        if (!dec_.openStream(stream_)) decodedEof_.store(true);
+    }
     while (!quit_.load()) {
         const int64_t s = seekReq_.load();
         if (s >= 0) {

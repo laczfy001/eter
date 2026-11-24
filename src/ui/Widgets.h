@@ -12,6 +12,8 @@ public:
     void setProgress(double fraction);          // 0..1
     void setPlayedColor(const QColor &c) { played_ = c; update(); }
     void setLoading(bool on) { loading_ = on; update(); }
+    // Hullámforma helyett felirat (élő stream): a haladás sávként látszik alatta.
+    void setMessage(const QString &text) { if (text != message_) { message_ = text; update(); } }
     void setMarker(double fraction);            // intro vége; negatív = nincs
     // A mix pont (ahol a következő elem indul) felirattal; negatív = nincs.
     void setMixMarker(double fraction, const QString &label, const QColor &color);
@@ -29,6 +31,7 @@ private:
     QVector<float> peaks_;
     double progress_ = 0.0;
     bool loading_ = false;
+    QString message_;
     double marker_ = -1.0;
     double mixMarker_ = -1.0;
     QString mixLabel_;

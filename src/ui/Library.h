@@ -78,6 +78,7 @@ public:
     // Fájlok és mappák beolvasása; kategóriát az importáló ablakban kell választani.
     void importPaths(const QStringList &paths, Done done = {});
     void openCategories();
+    void editStream(int itemId);          // élő stream felvétele (0) vagy módosítása
     // Távoli szerkesztő: a hangtár csak olvasható (nincs import, törlés, szerkesztés); a ráejtett fájlok feltöltésre mennek.
     void setRemoteMode(bool on);
 
@@ -112,6 +113,14 @@ private:
     QPointer<QDialog> importDialog_, categoriesDialog_;
     QPushButton *importBtn_ = nullptr, *catBtn_ = nullptr;
     bool remote_ = false;
+    // A fejléc legördülője: Adatbázis vagy Lejátszott elemek (az adásnapló, a legfrissebb felül).
+    QComboBox *viewMode_ = nullptr;
+    class QTableWidget *log_ = nullptr;
+    QTimer *logTimer_ = nullptr;
+    QVector<LogRow> logRows_;
+    void setLogMode(bool on);
+    void reloadLog();
+    bool logMode() const;
 };
 
 class ImportDialog : public QDialog {

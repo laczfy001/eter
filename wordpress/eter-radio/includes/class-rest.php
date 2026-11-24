@@ -5,7 +5,7 @@
 //   POST eter/v1/sync      Éter → site: on air, up next, whether requests are open, request status updates.
 //                          Answer: the new requests, and whether the catalogue should be sent again.
 //   POST eter/v1/catalog   Éter → site: the requestable tracks [[id, title, artist], …] and their revision.
-//   GET  eter/v1/status    the blocks: on air, up next, requests open.
+//   GET  eter/v1/status    the blocks: on air, up next, requests open, most played (24 h, 7 days, 30 days).
 //   GET  eter/v1/search    the request block: tracks matching ?q= (only while requests are open).
 //   POST eter/v1/request   the request block: {item: id}.
 //   GET  eter/v1/request/N the request block: the status of a request it placed.
@@ -53,18 +53,29 @@ class Eter_Radio_Rest
         ]);
     }
 
-    // X-Eter-Time: unix seconds; X-Eter-Signature: hex HMAC-SHA256 of "<time>\n<body>" with the shared key.
+    // X-Eter-Time: unix seconds; X-Eter-Signature: hex HMAC-SHA256 of "<time>\n<body>" with the shared key. Éter sends
+    // them as headers and also as the eter_time / eter_sig query parameters, because some hosts strip custom headers.
+    // Each refusal says exactly why, and Éter shows that message.
     public static function signed(WP_REST_Request $r)
     {
         $key = Eter_Radio_Store::key();
-        $time = (int) $r->get_header('x_eter_time');
-        $sig = strtolower((string) $r->get_header('x_eter_signature'));
-        if ($key === '' || $sig === '' || abs(time() - $time) > 300) {
-            return new WP_Error('eter_auth', 'Bad or expired signature (check the key and the computer clock).', ['status' => 401]);
+        $time = (int) ($r->get_header('x_eter_time') ?: $r->get_param('eter_time'));
+        $sig = strtolower((string) ($r->get_header('x_eter_signature') ?: $r->get_param('eter_sig')));
+        $now = time();
+        if ($key === '') {
+            return new WP_Error('eter_auth', 'No key is set on the site (Settings → Éter Radio).', ['status' => 401]);
+        }
+        if ($sig === '' || $time === 0) {
+            return new WP_Error('eter_auth', 'The signature did not arrive (the server removed it). Update Éter.', ['status' => 401]);
+        }
+        if (abs($now - $time) > 300) {
+            return new WP_Error('eter_auth', sprintf('Clock mismatch: the site says %d, Éter sent %d (%+d s). Check the date, time and time zone of both computers.',
+                $now, $time, $now - $time), ['status' => 401, 'server_time' => $now]);
         }
         $expect = hash_hmac('sha256', $time . "\n" . $r->get_body(), $key);
         if (!hash_equals($expect, $sig)) {
-            return new WP_Error('eter_auth', 'Bad signature (the key in Éter does not match this site).', ['status' => 401]);
+            return new WP_Error('eter_auth', sprintf('The key does not match (copy it again from Settings → Éter Radio; %d bytes received).',
+                strlen($r->get_body())), ['status' => 401]);
         }
         return true;
     }
@@ -118,6 +129,23 @@ class Eter_Radio_Rest
             ],
             'catalog_rev' => sanitize_text_field((string) ($in['catalog_rev'] ?? '')),
         ]);
+        if (isset($in['top']) && is_array($in['top'])) {
+            $top = [];
+            foreach (['day', 'week', 'month'] as $p) {
+                $top[$p] = [];
+                foreach (array_slice((array) ($in['top'][$p] ?? []), 0, 20) as $t) {
+                    if (!is_array($t)) {
+                        continue;
+                    }
+                    $top[$p][] = [
+                        'title' => sanitize_text_field((string) ($t['title'] ?? '')),
+                        'artist' => sanitize_text_field((string) ($t['artist'] ?? '')),
+                        'plays' => max(0, (int) ($t['plays'] ?? 0)),
+                    ];
+                }
+            }
+            update_option('eter_radio_top', $top, false);
+        }
         $rev = (string) ($in['catalog_rev'] ?? '');
         return self::no_cache(new WP_REST_Response([
             'ok' => true,
@@ -156,6 +184,8 @@ class Eter_Radio_Rest
                 'enabled' => $online && !empty($s['requests']['enabled']),
                 'open' => Eter_Radio_Store::requests_open($s),
             ],
+            // A legtöbbet játszott számok (24 óra, 7 nap, 30 nap); az adás szünetében is az utolsó ismert lista.
+            'top' => get_option('eter_radio_top', ['day' => [], 'week' => [], 'month' => []]),
         ];
     }
 

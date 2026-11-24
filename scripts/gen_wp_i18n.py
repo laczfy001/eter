@@ -3,9 +3,19 @@
 # Új szövegnél mindkét szótárba be kell írni.
 import os, struct
 HU = {
+ "Most played": "Legtöbbet játszott",
+ "The most played songs of the last day, week or month.": "Az elmúlt nap, hét vagy hónap legtöbbet játszott dalai.",
+ "Period": "Időszak",
+ "Last 24 hours": "Az elmúlt 24 óra",
+ "Last 7 days": "Az elmúlt 7 nap",
+ "Last 30 days": "Az elmúlt 30 nap",
+ "Show the number of plays": "A játszások száma",
+ "No plays in this period yet.": "Ebben az időszakban még nem szólt dal.",
+ "%d plays": "%d alkalommal",
+ "1 play": "1 alkalommal",
  "%1$s – last update %2$s ago, Éter %3$s.": "%1$s – utolsó frissítés %2$s ezelőtt, Éter %3$s.",
  "A new key was created. Paste it into Éter, otherwise Éter can no longer update the site.": "Új kulcs készült. Másold be az Éterbe, különben az Éter nem tudja tovább frissíteni az oldalt.",
- "Add the Now playing, Up next and Song request blocks in the block editor (Widgets category). In classic themes and page builders use the shortcodes [eter_now_playing], [eter_up_next count=\"5\"] and [eter_request].": "A Most szól, a Következő számok és a Számkérés blokkot a blokkszerkesztőben adhatod hozzá (Widgetek kategória). Klasszikus sablonokban és oldalépítőkben a rövidkódokat használd: [eter_now_playing], [eter_up_next count=\"5\"] és [eter_request].",
+ "Add the Now playing, Up next, Most played and Song request blocks in the block editor (Widgets category). In classic themes and page builders use the shortcodes [eter_now_playing], [eter_up_next count=\"5\"], [eter_most_played period=\"week\" count=\"10\"] and [eter_request].": "A Most szól, a Következő számok, a Legtöbbet játszott és a Számkérés blokkot a blokkszerkesztőben adhatod hozzá (Widgetek kategória). Klasszikus sablonokban és oldalépítőkben a rövidkódokat használd: [eter_now_playing], [eter_up_next count=\"5\"], [eter_most_played period=\"week\" count=\"10\"] és [eter_request].",
  "Artist": "Előadó",
  "Blocks": "Blokkok",
  "Clear finished requests": "A lezárt kérések törlése",
@@ -79,9 +89,19 @@ HU = {
 }
 
 NL = {
+ "Most played": "Meest gedraaid",
+ "The most played songs of the last day, week or month.": "De meest gedraaide nummers van de afgelopen dag, week of maand.",
+ "Period": "Periode",
+ "Last 24 hours": "Afgelopen 24 uur",
+ "Last 7 days": "Afgelopen 7 dagen",
+ "Last 30 days": "Afgelopen 30 dagen",
+ "Show the number of plays": "Aantal keer gedraaid tonen",
+ "No plays in this period yet.": "In deze periode nog niets gedraaid.",
+ "%d plays": "%d keer",
+ "1 play": "1 keer",
  "%1$s – last update %2$s ago, Éter %3$s.": "%1$s – laatste update %2$s geleden, Éter %3$s.",
  "A new key was created. Paste it into Éter, otherwise Éter can no longer update the site.": "Er is een nieuwe sleutel gemaakt. Plak deze in Éter, anders kan Éter de site niet meer bijwerken.",
- "Add the Now playing, Up next and Song request blocks in the block editor (Widgets category). In classic themes and page builders use the shortcodes [eter_now_playing], [eter_up_next count=\"5\"] and [eter_request].": "Voeg de blokken Nu op de radio, Straks en Verzoeknummer toe in de blokeditor (categorie Widgets). Gebruik in klassieke thema's en paginabouwers de shortcodes [eter_now_playing], [eter_up_next count=\"5\"] en [eter_request].",
+ "Add the Now playing, Up next, Most played and Song request blocks in the block editor (Widgets category). In classic themes and page builders use the shortcodes [eter_now_playing], [eter_up_next count=\"5\"], [eter_most_played period=\"week\" count=\"10\"] and [eter_request].": "Voeg de blokken Nu op de radio, Straks, Meest gedraaid en Verzoeknummer toe in de blokeditor (categorie Widgets). Gebruik in klassieke thema's en paginabouwers de shortcodes [eter_now_playing], [eter_up_next count=\"5\"], [eter_most_played period=\"week\" count=\"10\"] en [eter_request].",
  "Artist": "Artiest",
  "Blocks": "Blokken",
  "Clear finished requests": "Afgehandelde verzoeken wissen",
@@ -153,6 +173,44 @@ NL = {
  "Éter Radio": "Éter Radio",
  "Éter has not connected yet.": "Éter heeft nog geen verbinding gemaakt.",
 }
+# Az univerzális modul (web/eter-web) saját szövegei; a bővítmény szövegeivel együtt kerülnek a lang/<nyelv>.php fájlba.
+WEB_HU = {
+ "Add &theme=light or &theme=dark to the address for a white or dark background (transparent by default), and &heading=… for a title.": "Fehér vagy sötét háttérhez írd a cím végére: &theme=light vagy &theme=dark (alapból átlátszó); címhez: &heading=…",
+ "For site builders that only allow an iframe": "Oldalépítőkhöz, amelyek csak iframe-et engednek",
+ "Log in": "Belépés",
+ "Log out": "Kilépés",
+ "Now playing, up next, most played and song requests on any website, fed live by Éter.": "Most szól, következő számok, legtöbbet játszott és számkérés bármilyen weboldalon, az Éter élő adataival.",
+ "Options: data-count (1–20), data-period (day, week, month), data-times=\"0\" hides the start times, data-plays=\"0\" hides the number of plays, data-progress=\"0\" hides the progress bar.": "Beállítások: data-count (1–20), data-period (day, week, month); data-times=\"0\": kezdési idők nélkül, data-plays=\"0\": a játszások száma nélkül, data-progress=\"0\": folyamatjelző nélkül.",
+ "Password": "Jelszó",
+ "Paste the script line once into the page (or the site’s header), then a line for each widget where it should appear. The widgets take the fonts and colours of the page.": "A script sort egyszer tedd be az oldalba (vagy a weboldal fejlécébe), utána minden blokkhoz egy sort oda, ahol meg kell jelennie. A blokkok az oldal betűtípusát és színeit veszik át.",
+ "Putting the widgets on a website": "A blokkok elhelyezése egy weboldalon",
+ "Save": "Mentés",
+ "Script (once per page)": "Script (oldalanként egyszer)",
+ "Set the admin password in config.php ($ETER_ADMIN_PASSWORD), then reload this page.": "Állítsd be a jelszót a config.php fájlban ($ETER_ADMIN_PASSWORD), majd töltsd újra ezt az oldalt.",
+ "The data folder is not writable by the web server:": "Az adatmappába a webszerver nem tud írni:",
+ "The language of the widgets and of this page.": "A blokkok és ennek az oldalnak a nyelve.",
+ "Wrong password.": "Hibás jelszó.",
+ "Éter Web": "Éter Web",
+}
+WEB_NL = {
+ "Add &theme=light or &theme=dark to the address for a white or dark background (transparent by default), and &heading=… for a title.": "Voeg &theme=light of &theme=dark toe aan het adres voor een witte of donkere achtergrond (standaard transparant), en &heading=… voor een titel.",
+ "For site builders that only allow an iframe": "Voor sitebouwers die alleen een iframe toestaan",
+ "Log in": "Inloggen",
+ "Log out": "Uitloggen",
+ "Now playing, up next, most played and song requests on any website, fed live by Éter.": "Nu op de radio, straks, meest gedraaid en verzoeknummers op elke website, live gevoed door Éter.",
+ "Options: data-count (1–20), data-period (day, week, month), data-times=\"0\" hides the start times, data-plays=\"0\" hides the number of plays, data-progress=\"0\" hides the progress bar.": "Opties: data-count (1–20), data-period (day, week, month); data-times=\"0\" verbergt de begintijden, data-plays=\"0\" het aantal keer gedraaid, data-progress=\"0\" de voortgangsbalk.",
+ "Password": "Wachtwoord",
+ "Paste the script line once into the page (or the site’s header), then a line for each widget where it should appear. The widgets take the fonts and colours of the page.": "Plak de scriptregel één keer in de pagina (of de header van de site), en dan een regel voor elk blok waar het moet verschijnen. De blokken nemen de lettertypen en kleuren van de pagina over.",
+ "Putting the widgets on a website": "De blokken op een website plaatsen",
+ "Save": "Opslaan",
+ "Script (once per page)": "Script (één keer per pagina)",
+ "Set the admin password in config.php ($ETER_ADMIN_PASSWORD), then reload this page.": "Stel het beheerderswachtwoord in config.php in ($ETER_ADMIN_PASSWORD) en laad deze pagina opnieuw.",
+ "The data folder is not writable by the web server:": "De webserver kan niet schrijven in de gegevensmap:",
+ "The language of the widgets and of this page.": "De taal van de blokken en van deze pagina.",
+ "Wrong password.": "Verkeerd wachtwoord.",
+ "Éter Web": "Éter Web",
+}
+
 out = os.path.join(os.path.dirname(__file__), '..', 'wordpress', 'eter-radio', 'languages')
 def php(s): return "'" + s.replace('\\', '\\\\').replace("'", "\\'") + "'"
 def po(s): return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
@@ -183,3 +241,15 @@ write('hu_HU', HU, 'nplurals=2; plural=(n != 1);')
 write('nl_NL', NL, 'nplurals=2; plural=(n != 1);')
 missing = set(HU) ^ set(NL)
 if missing: print('ELTÉRÉS:', missing)
+
+# Az univerzális modul nyelvi fájljai
+wout = os.path.join(os.path.dirname(__file__), '..', 'web', 'eter-web', 'lang')
+os.makedirs(wout, exist_ok=True)
+for locale, T, W in (('hu_HU', HU, WEB_HU), ('nl_NL', NL, WEB_NL)):
+    M = dict(T); M.update(W)
+    with open(os.path.join(wout, f'{locale}.php'), 'w', encoding='utf-8') as f:
+        f.write(f"<?php\n// Generated by scripts/gen_wp_i18n.py\nreturn ['language'=>'{locale}','messages'=>[\n")
+        for k in sorted(M): f.write(f" {php(k)}=>{php(M[k])},\n")
+        f.write("]];\n")
+    print('eter-web', locale, len(M))
+if set(WEB_HU) ^ set(WEB_NL): print('ELTÉRÉS (web):', set(WEB_HU) ^ set(WEB_NL))

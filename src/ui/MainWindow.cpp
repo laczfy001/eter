@@ -1,5 +1,6 @@
 #include "i18n.h"
 #include "MainWindow.h"
+#include "audio/Stream.h"
 #include "net/Remote.h"
 #include "Library.h"
 #include "PlayerWidget.h"
@@ -1181,9 +1182,12 @@ bool MainWindow::changeBackend(const QString &backend)
 void MainWindow::tick()
 {
     float peakL = 0.f, peakR = 0.f;
+    float playerPeak[kPlayers] = {};
+    float otherPeak = 0.f;         // cartwall, voice track, ráfektetett elem
     for (int i = 0; i < kPlayers; ++i) {
         float l = 0.f, r = 0.f;
         players_[i]->tick(&l, &r);
+        playerPeak[i] = std::max(l, r);
         if (mixer_) {
             mixer_->feed(i, l, r);
             mixer_->setOnAir(i, i == onAirPlayer() && players_[i]->isPlaying());
@@ -1198,6 +1202,7 @@ void MainWindow::tick()
             mixer_->feed(ChannelMixer::Cart, cl, cr);
             mixer_->feed(ChannelMixer::Vt, vtPeak_[0], vtPeak_[1]);
         }
+        otherPeak = std::max({cl, cr, vtPeak_[0], vtPeak_[1], ovlPeak_[0], ovlPeak_[1]});
         peakL = std::max({peakL, cl, vtPeak_[0], ovlPeak_[0]});
         peakR = std::max({peakR, cr, vtPeak_[1], ovlPeak_[1]});
         vtPeak_[0] = vtPeak_[1] = ovlPeak_[0] = ovlPeak_[1] = 0.f;
@@ -1227,6 +1232,7 @@ void MainWindow::tick()
             }
         }
     }
+    guardDeadAir(playerPeak, otherPeak);
 
     runOutFades();
     runVoiceTrack();
@@ -1836,6 +1842,7 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     QVector<QColor> chipColors;
     if (row.fixedAt.isValid()) { chips << QStringLiteral("FIX"); chipColors << theme::amber; }
     if (requestEntries_.contains(row.id)) { chips << TR("KÉRÉS"); chipColors << QColor("#4cc38a"); }
+    if (eter::isStreamUrl(row.item.path.toStdString())) { chips << TR("ÉLŐ STREAM"); chipColors << QColor("#3fd0b5"); }
     for (const FixInfo &f : fixes_)
         if (f.rowId == row.id && std::llabs(f.diffMs) >= 5000) {
             // Mennyit késik (+) vagy siet (−) a playlist ehhez a fix ponthoz.
@@ -2236,7 +2243,7 @@ void MainWindow::updatePlayerView()
         p->setLeaving(p->isPlaying() && leaving(i), soundingOn(i));
         if (i == onAir && standby >= 0) {
             const MixPlan plan = planFor(onAir, standby);
-            const bool automatic = autoMixApplies(rowById(p->rowId), rowById(players_[standby]->rowId));
+            const bool automatic = autoMixMode(rowById(p->rowId), rowById(players_[standby]->rowId), planTransition_.toEntryId != 0) != 0;
             const QString label = automatic ? TR("AUTO MIX → %1").arg(playerLetter(standby))
                                   : planTransition_.toEntryId ? TR("MENTETT MIX → %1").arg(playerLetter(standby))
                                                               : TR("MIX → %1").arg(playerLetter(standby));
@@ -2303,6 +2310,22 @@ static bool isMusicKind(const QString &kind) { return kind.isEmpty() || kind == 
 bool MainWindow::autoMixApplies(const Row *from, const Row *to) const
 {
     return autoMix_ && from && to && isMusicKind(from->item.kind) && isMusicKind(to->item.kind);
+}
+
+// 0: a mentett beállítás (vagy az alapértelmezés) szól; 1: két zene, automatikus mix; 2: nem zenei elem is van az
+// átmenetben, és automatikus mix módban azt is a program keveri (Beállítások → Automatikus mix → Minden elem).
+int MainWindow::autoMixMode(const Row *from, const Row *to, bool hasSaved) const
+{
+    if (!autoMix_ || !from || !to) return 0;
+    if (isMusicKind(from->item.kind) && isMusicKind(to->item.kind)) return 1;
+    if (!smart_.allItems) return 0;
+    if (smart_.savedWins) {
+        // A kézzel mentett átmenet, és az elem saját (az elemszerkesztőben vagy a Mix editorban mentett) mix pontja
+        // és kezdőpontja érvényes marad.
+        if (hasSaved) return 0;
+        if (from->item.userMixOutMs > 0 || to->item.cueInMs > 0) return 0;
+    }
+    return 2;
 }
 
 QColor MainWindow::playerColor(int i)
@@ -2378,9 +2401,40 @@ void MainWindow::applyMixerGains()
     for (int v = 0; v < Engine::kOverlayVoices; ++v) engine_.source(static_cast<Engine::Channel>(Engine::Ovl1 + v)).setGain(out);
 }
 
+// Csendvédelem: automata módban, ha a szóló elem második felében hosszabb ideig nem szól semmi (rejtett szám,
+// hosszú csend a fájlban), indul a következő elem. A mini mixer faderje nem számít: a jelet a fader előtt nézi.
+void MainWindow::guardDeadAir(const float *playerPeak, float otherPeak)
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    bool quiet = false;
+    const int onAir = onAirPlayer();
+    if (mode_ == Auto && deadAirOn_ && onAir >= 0 && otherPeak < 0.003f && !vtPlaying_ && !players_[onAir]->isStream()) {
+        PlayerWidget *p = players_[onAir];   // (élő streamnél az újrakapcsolódás ideje dönt, lásd Beállítások)
+        const float gain = mixer_ ? mixer_->gain(onAir) * mixer_->gain(ChannelMixer::Out) : 1.f;
+        const bool othersSilent = std::none_of(std::begin(players_), std::end(players_), [&](PlayerWidget *q) {
+            const int k = int(std::find(std::begin(players_), std::end(players_), q) - std::begin(players_));
+            return k != onAir && q->isPlaying() && playerPeak[k] > 0.003f;
+        });
+        quiet = gain > 0.001f && othersSilent && p->isPlaying() && p->duration() > 0 && p->position() > p->duration() / 2
+                && playerPeak[onAir] / gain < 0.00316f;        // −50 dBFS
+    }
+    if (!quiet) {
+        deadSince_ = 0;
+        return;
+    }
+    if (!deadSince_) deadSince_ = now;
+    if (now - deadSince_ < deadAirMs_) return;
+    deadSince_ = 0;
+    if (standbyPlayer() < 0 || standbyIsEarlyFixed()) return;
+    say(TR("Csend az adásban (%1 mp): indul a következő elem.").arg(deadAirMs_ / 1000.0, 0, 'f', 1), 8000);
+    startStandby(onAir, 200);
+}
+
 void MainWindow::reloadMixSettings()
 {
     smart_ = loadSmartMix(db_);
+    deadAirOn_ = deadAirGuard(db_);
+    deadAirMs_ = deadAirMs(db_);
     const double mixDb = db_->setting("auto_mix_threshold_db", "-24").toDouble();
     for (auto *p : players_) p->autoMixDb = mixDb;
     ++mixVersion_;   // a terv újraszámolása
@@ -2398,7 +2452,30 @@ QString MainWindow::nowPlayingStatus() const
     return nowPlaying_ ? nowPlaying_->status() : QString();
 }
 
+// Élő stream az átmenetben: a kimenő stream a tervezett hossza végén 2 mp alatt kiúszik, a következő elem a kiúszás
+// elején indul; a bejövő streamben nem lehet ugrani (nincs kezdőpont). A mentett voice track marad.
 MainWindow::MixPlan MainWindow::planFor(int outPlayer, int inPlayer)
+{
+    MixPlan plan = planForBase(outPlayer, inPlayer);
+    if (outPlayer >= 0 && players_[outPlayer]->isStream()) {
+        const qint64 end = players_[outPlayer]->mixOutFrame();
+        const qint64 fade = 2 * eter::kRate;
+        if (end > 0) {
+            plan.mixOutFrames = std::max<qint64>(0, end - fade);
+            plan.outEndFrames = end;
+            plan.fadeOutMs = 2000;
+            plan.curve = eter::FadeCurve::SCurve;
+            plan.nonMusic = false;
+        }
+    }
+    if (inPlayer >= 0 && players_[inPlayer]->isStream()) {
+        plan.cueInFrames = -1;
+        plan.fadeInMs = 0;
+    }
+    return plan;
+}
+
+MainWindow::MixPlan MainWindow::planForBase(int outPlayer, int inPlayer)
 {
     MixPlan plan;
     const Row *outRow = outPlayer >= 0 ? rowById(players_[outPlayer]->rowId) : nullptr;
@@ -2412,24 +2489,26 @@ MainWindow::MixPlan MainWindow::planFor(int outPlayer, int inPlayer)
         planTransition_ = (from > 0 && to > 0) ? db_->transition(to) : Transition();
         if (planTransition_.fromEntryId != from) planTransition_ = Transition();
     }
-    // Automatikus mix: két zene között a hullámforma alapján, a mentett időzítéstől függetlenül.
-    // A mentett voice track megmarad. Ha bármelyik oldal nem zene, a mentett beállítás érvényes.
-    if (autoMixApplies(outRow, inRow)) {
-        // Okos mix: a kimenő szám végének és a bejövő elejének hangerő-képe, és (ha be van kapcsolva) a tempó és
-        // a hangnem alapján. Ha a kimenő szám elemzése még nincs kész, a régi, küszöb szerinti mix pont marad.
+    // Automatikus mix: két zene között a hullámforma alapján, a mentett időzítéstől függetlenül; a nem zenei elemek
+    // (jingle, reklám, hírek, voice track) átmeneteinél is, ha be van kapcsolva, és nincs rájuk mentett beállítás.
+    // A mentett voice track megmarad.
+    if (const int how = autoMixMode(outRow, inRow, planTransition_.toEntryId != 0)) {
         const eter::MixProfile &po = players_[outPlayer]->mixProfile();
-        if (smart_.enabled && po.valid) {
+        const bool outMusic = isMusicKind(outRow->item.kind), inMusic = isMusicKind(inRow->item.kind);
+        if ((smart_.enabled || how == 2) && po.valid) {
             const eter::MixProfile none;
-            const eter::SmartMixPlan sp = eter::planSmartMix(po, inPlayer >= 0 ? players_[inPlayer]->mixProfile() : none,
-                                                             outRow->item.bpm, inRow->item.bpm, outRow->item.musicKey,
-                                                             inRow->item.musicKey, smart_);
+            const eter::MixProfile &pi = inPlayer >= 0 ? players_[inPlayer]->mixProfile() : none;
+            const eter::SmartMixPlan sp = eter::planAutoMix(po, pi, outMusic, inMusic, outRow->item.bpm, inRow->item.bpm,
+                                                            outRow->item.musicKey, inRow->item.musicKey, smart_);
             if (sp.valid) {
                 plan.mixOutFrames = sp.mixOutMs * eter::kRate / 1000;
                 plan.outEndFrames = sp.outEndMs * eter::kRate / 1000;
                 plan.fadeOutMs = sp.fadeOutMs;
                 plan.curve = eter::FadeCurve::SCurve;
-                if (inPlayer >= 0 && inRow->item.cueInMs <= 0 && players_[inPlayer]->mixProfile().valid && sp.cueInMs > 0)
-                    plan.cueInFrames = sp.cueInMs * eter::kRate / 1000;
+                if (inPlayer >= 0 && inRow->item.cueInMs <= 0) {
+                    if (pi.valid && sp.cueInMs > 0) plan.cueInFrames = sp.cueInMs * eter::kRate / 1000;
+                    else if (!pi.valid && players_[inPlayer]->leadInFrame() > 0) plan.cueInFrames = players_[inPlayer]->leadInFrame();
+                }
                 if (planTransition_.toEntryId) {
                     plan.vtItemId = planTransition_.vtItemId;
                     plan.vtOffsetMs = planTransition_.vtOffsetMs;
@@ -2438,17 +2517,20 @@ MainWindow::MixPlan MainWindow::planFor(int outPlayer, int inPlayer)
                 return plan;
             }
         }
-        plan.mixOutFrames = players_[outPlayer]->mixOutFrame();
-        if (inPlayer >= 0 && inRow->item.cueInMs <= 0) {
-            const qint64 lead = players_[inPlayer]->leadInFrame();
-            if (lead > 0) plan.cueInFrames = lead;           // a szám elején lévő csend kimarad
+        if (how == 1) {
+            plan.mixOutFrames = players_[outPlayer]->mixOutFrame();
+            if (inPlayer >= 0 && inRow->item.cueInMs <= 0) {
+                const qint64 lead = players_[inPlayer]->leadInFrame();
+                if (lead > 0) plan.cueInFrames = lead;           // a szám elején lévő csend kimarad
+            }
+            if (planTransition_.toEntryId) {
+                plan.vtItemId = planTransition_.vtItemId;
+                plan.vtOffsetMs = planTransition_.vtOffsetMs;
+                plan.vtDuckDb = planTransition_.vtDuckDb;
+            }
+            return plan;
         }
-        if (planTransition_.toEntryId) {
-            plan.vtItemId = planTransition_.vtItemId;
-            plan.vtOffsetMs = planTransition_.vtOffsetMs;
-            plan.vtDuckDb = planTransition_.vtDuckDb;
-        }
-        return plan;
+        // nem zenei átmenet, amelynek a hullámképe még nem készült el: a régi szabály szerint (lent)
     }
     if (planTransition_.toEntryId) {
         const Transition &t = planTransition_;
@@ -2907,6 +2989,7 @@ bool MainWindow::loadIntoPlayer(Row &row, int player)
     }
     players_[player]->rowId = row.id;
     players_[player]->setMeta(row.item.title, row.item.artist);
+    if (players_[player]->isStream()) players_[player]->setStreamLength(row.item.durationMs);
     engine_.source(playerChannel(player)).setEnvelope(env::toSource(env::fromString(row.item.volumeEnv), eter::kRate));
     if (row.item.cueInMs > 0) players_[player]->cueTo(row.item.cueInMs * eter::kRate / 1000);
     players_[player]->setIntro(row.item.introMs * eter::kRate / 1000);
@@ -3217,7 +3300,7 @@ void MainWindow::refreshTable()
         for (auto it = pairs.begin(); it != pairs.end(); ++it) {
             customFrom_.insert(it.value());
             if (db_->transition(it.key()).vtItemId) vtFrom_.insert(it.value());
-            if (autoMixApplies(rowById(it.value()), rowById(it.key()))) mixOff_.insert(it.value());
+            if (autoMixMode(rowById(it.value()), rowById(it.key()), true)) mixOff_.insert(it.value());
         }
     }
     qint64 pendingFrames = 0;
@@ -3990,7 +4073,8 @@ QJsonObject MainWindow::remoteLibrary()
                          {"default_fade_out_ms", db_->setting("default_fade_out_ms", "2500")}};
     // Az okos mix beállításai is, hogy a távoli Mix editor ugyanazt a tervet mutassa.
     for (const char *k : {"smart_mix", "smart_end_depth_db", "smart_fade_depth_db", "smart_max_overlap_ms", "smart_intro_max_ms",
-                          "smart_tight_ms", "smart_flow", "smart_tempo_tol_pct", "smart_clash_overlap_ms"}) {
+                          "smart_tight_ms", "smart_flow", "smart_tempo_tol_pct", "smart_clash_overlap_ms", "smart_all_items",
+                          "smart_segue_gap_ms", "smart_saved_wins", "smart_hidden_track", "smart_hidden_silence_ms"}) {
         const QString v = db_->setting(k);
         if (!v.isEmpty()) settings.insert(QLatin1String(k), v);
     }

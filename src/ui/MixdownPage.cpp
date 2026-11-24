@@ -1,5 +1,6 @@
 #include "i18n.h"
 #include "MixdownPage.h"
+#include "audio/Stream.h"
 #include "Library.h"
 
 #include "audio/Engine.h"
@@ -818,6 +819,10 @@ void MixdownPage::addItems(const QVector<int> &ids, int at)
     for (int id : ids) {
         const Item it = db_->item(id);
         if (!it.id || it.path.isEmpty()) continue;
+        if (eter::isStreamUrl(it.path.toStdString())) {
+            emit message(TR("Élő stream nem tehető a mixdownba: %1").arg(it.title));
+            continue;
+        }
         Entry e;
         e.item = it;
         e.durMs = it.durationMs;

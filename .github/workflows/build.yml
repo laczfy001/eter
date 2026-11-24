@@ -36,8 +36,10 @@ jobs:
       - name: Build AppImage
         run: sh scripts/build_appimage.sh
 
-      - name: Pack the WordPress plugin
-        run: sh scripts/build_wp_plugin.sh
+      - name: Pack the WordPress plugin and the Éter Web module
+        run: |
+          sh scripts/build_wp_plugin.sh
+          sh scripts/build_web_module.sh
 
       - name: Audio engine self-test
         run: |
@@ -62,6 +64,7 @@ jobs:
           files: |
             build/Eter-*-x86_64.AppImage
             build/eter-radio.zip
+            build/eter-web.zip
           generate_release_notes: true
 
   windows:

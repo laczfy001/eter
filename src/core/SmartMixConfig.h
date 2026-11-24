@@ -17,5 +17,14 @@ inline eter::SmartMixSettings loadSmartMix(Database *db)
     s.flowAware = db->setting("smart_flow", "1") != QLatin1String("0");
     s.tempoTolPct = std::clamp(db->setting("smart_tempo_tol_pct", "6").toInt(), 0, 50);
     s.clashOverlapMs = std::clamp(db->setting("smart_clash_overlap_ms", "2000").toInt(), 0, 30000);
+    s.allItems = db->setting("smart_all_items", "1") != QLatin1String("0");
+    s.segueGapMs = std::clamp(db->setting("smart_segue_gap_ms", "0").toInt(), 0, 3000);
+    s.savedWins = db->setting("smart_saved_wins", "1") != QLatin1String("0");
+    s.hiddenTrack = db->setting("smart_hidden_track", "1") != QLatin1String("0");
+    s.hiddenSilenceMs = std::clamp(db->setting("smart_hidden_silence_ms", "4000").toInt(), 1000, 30000);
     return s;
 }
+
+// Csendvédelem (automata módban): ha a szóló elem ennyi ideig néma, indul a következő.
+inline bool deadAirGuard(Database *db) { return db->setting("dead_air_guard", "1") != QLatin1String("0"); }
+inline int deadAirMs(Database *db) { return std::clamp(db->setting("dead_air_ms", "3000").toInt(), 1000, 30000); }

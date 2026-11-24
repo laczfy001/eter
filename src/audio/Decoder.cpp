@@ -1,5 +1,6 @@
 #include "i18n.h"
 #include "Decoder.h"
+#include "Stream.h"
 
 #include <algorithm>
 #include <cmath>
@@ -43,6 +44,12 @@ void Decoder::close()
     if (swr_) swr_free(&swr_);
     if (ctx_) avcodec_free_context(&ctx_);
     if (fmt_) avformat_close_input(&fmt_);
+    if (avio_) {
+        av_freep(&avio_->buffer);
+        avio_context_free(&avio_);
+    }
+    input_.reset();
+    codec_.clear();
     if (frame_) av_frame_free(&frame_);
     if (pkt_) av_packet_free(&pkt_);
     stream_ = -1;
@@ -67,9 +74,60 @@ bool Decoder::open(const std::string &path, std::string *err)
         return false;
     };
 
+    if (isStreamUrl(path)) return fail(i18n::textStd("Stream: csak lejátszóban nyitható meg"));
     int r = avformat_open_input(&fmt_, path.c_str(), nullptr, nullptr);
     if (r < 0) return fail(i18n::textStd("Nem nyitható meg: ") + avErr(r));
-    r = avformat_find_stream_info(fmt_, nullptr);
+    return finishOpen(err);
+}
+
+static int streamRead(void *opaque, uint8_t *buf, int size)
+{
+    const int n = static_cast<StreamInput *>(opaque)->read(buf, size);
+    return n > 0 ? n : AVERROR_EOF;
+}
+
+bool Decoder::openStream(std::shared_ptr<StreamInput> input, std::string *err)
+{
+    close();
+    if (!input) {
+        if (err) *err = i18n::textStd("A stream nem indítható");
+        return false;
+    }
+    input_ = std::move(input);
+    constexpr int kBuf = 16384;
+    auto *buf = static_cast<unsigned char *>(av_malloc(kBuf));
+    avio_ = avio_alloc_context(buf, kBuf, 0, input_.get(), &streamRead, nullptr, nullptr);
+    fmt_ = avformat_alloc_context();
+    if (!avio_ || !fmt_) {
+        if (err) *err = i18n::textStd("Kevés a memória");
+        close();
+        return false;
+    }
+    avio_->seekable = 0;
+    fmt_->pb = avio_;
+    fmt_->flags |= AVFMT_FLAG_CUSTOM_IO;
+    fmt_->probesize = 64 * 1024;                 // gyors indulás: elég néhány képkocka a formátumhoz
+    fmt_->max_analyze_duration = 500000;
+    int r = avformat_open_input(&fmt_, nullptr, nullptr, nullptr);
+    if (r < 0) {
+        fmt_ = nullptr;                          // hibánál az FFmpeg már felszabadította
+        if (err) *err = i18n::textStd("A stream nem nyitható meg: ") + avErr(r);
+        close();
+        return false;
+    }
+    if (!finishOpen(err)) return false;
+    duration_ = 0;                               // élő adás: nincs hossza
+    return true;
+}
+
+bool Decoder::finishOpen(std::string *err)
+{
+    auto fail = [&](const std::string &msg) {
+        if (err) *err = msg;
+        close();
+        return false;
+    };
+    int r = avformat_find_stream_info(fmt_, nullptr);
     if (r < 0) return fail(i18n::textStd("Ismeretlen formátum: ") + avErr(r));
 
     const AVCodec *codec = nullptr;
@@ -77,6 +135,7 @@ bool Decoder::open(const std::string &path, std::string *err)
     if (stream_ < 0 || !codec) return fail(i18n::textStd("Nincs benne dekódolható hangsáv"));
 
     AVStream *st = fmt_->streams[stream_];
+    codec_ = codec->name ? codec->name : "";
     ctx_ = avcodec_alloc_context3(codec);
     avcodec_parameters_to_context(ctx_, st->codecpar);
     ctx_->pkt_timebase = st->time_base;
@@ -207,7 +266,7 @@ int Decoder::read(float *out, int frames)
 
 bool Decoder::seek(int64_t frame)
 {
-    if (!fmt_) return false;
+    if (!fmt_ || input_) return false;           // élő streamben nem lehet ugrani
     frame = std::max<int64_t>(0, frame);
     AVRational tb = fmt_->streams[stream_]->time_base;
     int64_t ts = av_rescale_q(frame, AVRational{1, kRate}, tb) + startPts_;

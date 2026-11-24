@@ -3,6 +3,9 @@
 // (mixInto) ebből olvas, zárolás és memóriafoglalás nélkül.
 #pragma once
 #include "Decoder.h"
+#include "Stream.h"
+
+#include <memory>
 
 #include <atomic>
 #include <mutex>
@@ -29,6 +32,11 @@ public:
     const std::string &path() const { return path_; }
     const std::string &title() const { return title_; }
     const std::string &artist() const { return artist_; }
+    // Külső stream (http/https cím): a kapcsolódás és a formátum felismerése a dekódoló szálon történik, így a
+    // load() nem blokkol. Ha a stream nem indul el (vagy végleg megszakad), az elem véget ér.
+    bool isStream() const { return stream_ != nullptr; }
+    std::string streamTitle() const { return stream_ ? stream_->streamTitle() : std::string(); }
+    std::string streamState() const { return stream_ ? stream_->state() : std::string(); }
 
     // fadeInMs > 0: a megadott szintről (lineáris erősítés) úszik be.
     void play(int fadeInMs = 0, float fromGain = 0.f, FadeCurve curve = FadeCurve::Linear);
@@ -63,6 +71,9 @@ private:
     static constexpr int64_t kRingFrames = kRate * 2;
 
     Decoder dec_;
+    std::shared_ptr<StreamInput> stream_;   // csak a felületi szál állítja (load / unload)
+    std::atomic<bool> openPending_{false};  // a dekódoló szál nyitja meg (stream)
+    bool streamStarted_ = false;            // a felületi szál használja
     std::string path_, title_, artist_;
     std::thread thread_;
     std::atomic<bool> quit_{false};

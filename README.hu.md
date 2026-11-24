@@ -28,7 +28,10 @@ tartalék playout egyetlen asztali alkalmazásban.
   egyszerre megadva korlátozható, hány azonos ének jöhet egymás után.
 - **Okos automatikus mix**: felismeri a lecsengő és a hirtelen véget, a lágy és az erős kezdést, és (ha kéred) ütköző
   tempónál vagy hangnemnél rövidebb az átfedés; minden küszöb állítható a *Beállítások → Automatikus mix* lapon, és a Mix
-  editor minden átmenetnél megmutatja a tervet.
+  editor minden átmenetnél megmutatja a tervet. A jingle, reklám, hírek és voice track szorosan, a csend levágásával
+  követik egymást; a hosszú csend utáni rejtett szám kimarad; a csendvédelem továbblép, ha a szóló elem sokáig néma.
+- **Élő stream**: Icecast/Shoutcast stream (MP3, AAC, Ogg; http vagy https; a .pls/.m3u listát is feloldja) a playlist
+  elemeként, tervezett hosszal; megszakadáskor újrakapcsolódik, és ha nem jön vissza, továbblép.
 - **Automatikus mix / Mix editor** kapcsoló a felső sávban: *Automatikus mix* állásban a két zene közti átmeneteket
   a program keveri a hullámforma alapján (a következő dal eleji csendje kimarad); ahol bármelyik oldal nem zene
   (jingle, hírek, reklám), ott a Mix editorban mentett beállítás érvényes, és a mentett voice track is megszólal.
@@ -48,7 +51,9 @@ tartalék playout egyetlen asztali alkalmazásban.
   szokásos módon megy. A kérés magától bekerülhet, vagy jóváhagyásra várhat (Kérések gomb a felső sávban), és
   korlátozható kijelölt kategóriákra és kijelölt sémák óráira. Beállítások → Weboldal; a WordPressben:
   Beállítások → Éter Radio (itt állítható a bővítmény nyelve is: alapból angol, választható holland, magyar, vagy
-  az oldal nyelve).
+  az oldal nyelve). A *Legtöbbet játszott* blokk az elmúlt nap, hét vagy hónap legtöbbet játszott dalait mutatja.
+- **Éter Web** (`eter-web.zip`): ugyanezek a blokkok bármilyen, WordPress nélküli weboldalra – egy mappa bármely PHP-s
+  tárhelyen, beágyazás egy script sorral (vagy iframe-mel). Lásd: `web/eter-web/README.txt`.
 - **Playlist** tervezett adásidővel és óraelválasztókkal. Minden sor mutatja a kezdést, a típusikont,
   a hosszt, a címet és az előadót, valamint az egyedi mix (MIX), a voice track (VT) és a fix időpont (FIX)
   jelzését. A nem zenei elemeket a kategóriájuk színe tölti ki; az adásban és a készenlétben lévő elem
@@ -236,6 +241,7 @@ megépíti az AppImage-et és a windowsos zipet, és egy kiadáshoz (release) cs
   cartwall, időzítések, távoli szerkesztő
 - `src/net` – a távoli szerkesztés protokollja (soronkénti JSON TCP-n, HMAC-belépés), szerver és kliens; a weboldal-szinkron
 - `wordpress/eter-radio` – a WordPress-bővítmény (csomagolás: `scripts/build_wp_plugin.sh`)
+- `web/eter-web` – az univerzális webes modul (csomagolás: `scripts/build_web_module.sh`)
 - `src/core` – hiányzó fájlok ellenőrzése, „most szól” kiírás (címfájl, Icecast-frissítés)
 - `src/db` – SQLite réteg és adatbázis-frissítések; `schema.sql` – az adatbázis sémája
 - `src/sched` – playlist-generálás

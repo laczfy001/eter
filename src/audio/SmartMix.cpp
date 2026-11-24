@@ -13,7 +13,7 @@ MixProfile analyzeMixProfile(const std::vector<float> &env, int64_t durMs)
 {
     MixProfile p;
     const int n = int(env.size());
-    if (n < 50) return p;   // 5 mp alatt nincs értelme (jingle-szerű)
+    if (n < 10) return p;   // 1 mp alatt nincs értelme
     p.durMs = durMs > 0 ? durMs : int64_t(n) * kStepMs;
     p.rawDb.resize(n);
     std::vector<double> pw(n);
@@ -33,7 +33,7 @@ MixProfile analyzeMixProfile(const std::vector<float> &env, int64_t durMs)
     std::vector<float> body;
     for (int i = n / 10; i < n * 9 / 10; ++i)
         if (p.smoothDb[i] > -60) body.push_back(p.smoothDb[i]);
-    if (body.size() < 20) return p;
+    if (body.size() < std::min<size_t>(20, size_t(n) / 2)) return p;
     std::nth_element(body.begin(), body.begin() + body.size() * 7 / 10, body.end());
     p.bodyDb = body[body.size() * 7 / 10];
     p.valid = true;
@@ -127,6 +127,89 @@ SmartMixPlan planSmartMix(const MixProfile &out, const MixProfile &in, double ou
     r.fadeOutMs = r.fadeEnding ? std::min(1000, r.overlapMs) : r.flowLimited ? r.overlapMs : std::min(1500, r.overlapMs);
     r.fadeOutMs = std::max(r.fadeOutMs, 100);
     r.valid = true;
+    return r;
+}
+
+int64_t hiddenTrackCut(const MixProfile &p, int minSilenceMs)
+{
+    if (!p.valid) return -1;
+    const int n = int(p.rawDb.size());
+    const int need = std::max(1, minSilenceMs / kStepMs);
+    // Csendnek a digitális csend közelében lévő jel számít (a szám szintje alatt legalább 45 dB, és −50 dBFS alatt).
+    const double silent = std::min(-50.0, p.bodyDb - 45);
+    const double sound = silent + 10;
+    int run = 0;
+    for (int i = n / 2; i < n; ++i) {
+        if (p.rawDb[i] < silent) {
+            ++run;
+            continue;
+        }
+        if (run >= need && p.rawDb[i] >= sound) return int64_t(i - run) * kStepMs;
+        run = 0;
+    }
+    return -1;
+}
+
+MixProfile trimProfile(const MixProfile &p, int64_t ms)
+{
+    MixProfile t = p;
+    if (!p.valid || ms <= 0) return t;
+    const size_t n = std::min(p.rawDb.size(), size_t((ms + kStepMs - 1) / kStepMs));
+    t.rawDb.resize(n);
+    t.smoothDb.resize(n);
+    t.durMs = std::min<int64_t>(p.durMs, ms);
+    return t;
+}
+
+int64_t leadSilenceMs(const MixProfile &in)
+{
+    if (!in.valid) return 0;
+    const int m = int(in.rawDb.size());
+    const double startThr = std::max(-45.0, in.bodyDb - 40);
+    int a = 0;
+    while (a < m - 1 && in.rawDb[a] < startThr) ++a;
+    return std::max<int64_t>(0, int64_t(a) * kStepMs - 50);
+}
+
+SmartMixPlan planAutoMix(const MixProfile &out, const MixProfile &in, bool outMusic, bool inMusic, double outBpm,
+                         double inBpm, int outKey, int inKey, const SmartMixSettings &s)
+{
+    MixProfile o = out;
+    int64_t hidden = -1;
+    if (s.hiddenTrack && out.valid) {
+        hidden = hiddenTrackCut(out, s.hiddenSilenceMs);
+        if (hidden > 0) o = trimProfile(out, hidden);
+    }
+    SmartMixPlan r;
+    if (outMusic && inMusic) {
+        r = planSmartMix(o, in, outBpm, inBpm, outKey, inKey, s);
+    } else if (!s.allItems || !o.valid) {
+        return r;
+    } else if (outMusic) {
+        // Zenéből jingle, hírek, reklám elé: a zene vége az okos mix szerint, a bejövő erős kezdésnek számít.
+        SmartMixSettings plain = s;
+        plain.flowAware = false;
+        r = planSmartMix(o, MixProfile(), 0, 0, -1, -1, plain);
+        r.cueInMs = leadSilenceMs(in);
+    } else {
+        // Nem zenei elem után: a hallható vég után szorosan (vagy a beállított szünettel) jön a következő.
+        const int n = int(o.rawDb.size());
+        const double endThr = std::max(-60.0, o.bodyDb - s.endDepthDb);
+        int e = n - 1;
+        while (e > 0 && o.rawDb[e] < endThr) --e;
+        const int64_t endMs = std::min<int64_t>(o.durMs, int64_t(e + 1) * kStepMs);
+        r.outEndMs = endMs;
+        r.mixOutMs = std::min<int64_t>(o.durMs, endMs + std::max(0, s.segueGapMs));
+        r.fadeOutMs = 100;        // csak a kattanás ellen (a jel itt már a hallható szint alatt van)
+        r.overlapMs = 0;
+        r.segue = true;
+        r.cueInMs = leadSilenceMs(in);
+        r.valid = true;
+    }
+    if (r.valid && hidden > 0) {
+        r.hiddenAtMs = hidden;
+        r.outEndMs = std::min(r.outEndMs, hidden);
+    }
     return r;
 }
 

@@ -29,6 +29,13 @@ class Eter_Radio_Blocks
             'count' => __('Number of tracks', 'eter-radio'),
             'showTimes' => __('Show start times', 'eter-radio'),
             'showProgress' => __('Show progress bar', 'eter-radio'),
+            'top' => __('Most played', 'eter-radio'),
+            'topDesc' => __('The most played songs of the last day, week or month.', 'eter-radio'),
+            'period' => __('Period', 'eter-radio'),
+            'day' => __('Last 24 hours', 'eter-radio'),
+            'week' => __('Last 7 days', 'eter-radio'),
+            'month' => __('Last 30 days', 'eter-radio'),
+            'showPlays' => __('Show the number of plays', 'eter-radio'),
         ]);
 
         $common = ['editor_script' => 'eter-radio-editor', 'style' => 'eter-radio'];
@@ -47,6 +54,15 @@ class Eter_Radio_Blocks
             ],
             'render_callback' => [__CLASS__, 'render_next'],
         ]);
+        register_block_type('eter/most-played', $common + [
+            'attributes' => [
+                'heading' => ['type' => 'string', 'default' => ''],
+                'period' => ['type' => 'string', 'default' => 'week'],
+                'count' => ['type' => 'number', 'default' => 10],
+                'showPlays' => ['type' => 'boolean', 'default' => true],
+            ],
+            'render_callback' => [__CLASS__, 'render_top'],
+        ]);
         register_block_type('eter/request', $common + [
             'attributes' => [
                 'heading' => ['type' => 'string', 'default' => ''],
@@ -61,6 +77,11 @@ class Eter_Radio_Blocks
         add_shortcode('eter_up_next', function ($a) {
             $a = shortcode_atts(['heading' => '', 'count' => 5, 'times' => 'yes'], $a);
             return self::render_next(['heading' => $a['heading'], 'count' => (int) $a['count'], 'showTimes' => $a['times'] !== 'no']);
+        });
+        add_shortcode('eter_most_played', function ($a) {
+            $a = shortcode_atts(['heading' => '', 'period' => 'week', 'count' => 10, 'plays' => 'yes'], $a);
+            return self::render_top(['heading' => $a['heading'], 'period' => $a['period'], 'count' => (int) $a['count'],
+                                     'showPlays' => $a['plays'] !== 'no']);
         });
         add_shortcode('eter_request', function ($a) {
             $a = shortcode_atts(['heading' => ''], $a);
@@ -95,6 +116,10 @@ class Eter_Radio_Blocks
                 'error' => __('Something went wrong, please try again.', 'eter-radio'),
                 'yourRequest' => __('Your request: %s', 'eter-radio'),
                 'requestBadge' => __('request', 'eter-radio'),
+                'noTop' => __('No plays in this period yet.', 'eter-radio'),
+                /* translators: %d: number of plays */
+                'plays' => __('%d plays', 'eter-radio'),
+                'play1' => __('1 play', 'eter-radio'),
                 'status' => [
                     'new' => __('received, waiting for the studio', 'eter-radio'),
                     'pending' => __('waiting for approval in the studio', 'eter-radio'),
@@ -156,6 +181,30 @@ class Eter_Radio_Blocks
             . (!empty($a['showTimes']) ? '1' : '0') . '">'
             . self::heading((string) ($a['heading'] ?? ''))
             . '<ol class="eter-list">' . $items . '</ol></div>';
+    }
+
+    public static function render_top($a)
+    {
+        self::enqueue();
+        $period = in_array($a['period'] ?? 'week', ['day', 'week', 'month'], true) ? $a['period'] : 'week';
+        $count = max(1, min(20, (int) ($a['count'] ?? 10)));
+        $plays = !empty($a['showPlays']);
+        $s = Eter_Radio_Rest::public_state();
+        $items = '';
+        foreach (array_slice((array) ($s['top'][$period] ?? []), 0, $count) as $t) {
+            $n = (int) $t['plays'];
+            $items .= '<li>' . self::line($t)
+                . ($plays ? '<span class="eter-plays">' . esc_html($n === 1 ? __('1 play', 'eter-radio')
+                                                                             : sprintf(__('%d plays', 'eter-radio'), $n)) . '</span>' : '')
+                . '</li>';
+        }
+        if ($items === '') {
+            $items = '<li class="eter-muted">' . esc_html__('No plays in this period yet.', 'eter-radio') . '</li>';
+        }
+        return '<div class="eter-block eter-top" data-eter="top" data-period="' . esc_attr($period) . '" data-count="' . $count
+            . '" data-plays="' . ($plays ? '1' : '0') . '">'
+            . self::heading((string) ($a['heading'] ?? ''))
+            . '<ol class="eter-list eter-ranked">' . $items . '</ol></div>';
     }
 
     public static function render_request($a)

@@ -1,0 +1,136 @@
+/* Éter Web widgets. Fonts and colours come from the page; only spacing and a few accents are set here. */
+.eter-block {
+    --eter-accent: currentColor;
+    margin: 0 0 1.5em;
+}
+.eter-block .eter-heading {
+    margin: 0 0 0.5em;
+}
+.eter-block .eter-muted {
+    opacity: 0.65;
+}
+.eter-block .eter-artist {
+    font-weight: 600;
+}
+.eter-block .eter-badge {
+    display: inline-block;
+    margin-left: 0.5em;
+    padding: 0 0.45em;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    font-size: 0.75em;
+    line-height: 1.5;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.8;
+    vertical-align: middle;
+}
+
+.eter-now .eter-body {
+    font-size: 1.15em;
+}
+.eter-now .eter-progress {
+    height: 4px;
+    margin-top: 0.6em;
+    background: rgba(127, 127, 127, 0.25);
+    border-radius: 2px;
+    overflow: hidden;
+}
+.eter-now .eter-progress span {
+    display: block;
+    height: 100%;
+    width: 0;
+    background: var(--eter-accent);
+    opacity: 0.7;
+    transition: width 1s linear;
+}
+
+.eter-top .eter-ranked {
+    margin: 0;
+    padding-left: 1.6em;
+}
+.eter-top .eter-ranked li {
+    padding: 0.35em 0;
+    border-bottom: 1px solid rgba(127, 127, 127, 0.2);
+}
+.eter-top .eter-ranked li:last-child {
+    border-bottom: 0;
+}
+.eter-top .eter-ranked li.eter-muted {
+    list-style: none;
+    margin-left: -1.6em;
+}
+.eter-top .eter-plays {
+    float: right;
+    margin-left: 0.8em;
+    opacity: 0.65;
+    font-size: 0.9em;
+    font-variant-numeric: tabular-nums;
+}
+.eter-next .eter-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.eter-next .eter-list li {
+    padding: 0.35em 0;
+    border-bottom: 1px solid rgba(127, 127, 127, 0.2);
+}
+.eter-next .eter-list li:last-child {
+    border-bottom: 0;
+}
+.eter-next .eter-time {
+    display: inline-block;
+    min-width: 3.5em;
+    opacity: 0.65;
+    font-variant-numeric: tabular-nums;
+}
+
+.eter-request .eter-search {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.5em 0.7em;
+    font: inherit;
+}
+.eter-request .eter-results {
+    list-style: none;
+    margin: 0.5em 0 0;
+    padding: 0;
+}
+.eter-request .eter-results li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5em;
+    padding: 0.4em 0;
+    border-bottom: 1px solid rgba(127, 127, 127, 0.2);
+}
+.eter-request .eter-result {
+    flex: 1 1 8em;
+    min-width: 0;
+}
+.eter-request .eter-button {
+    font: inherit;
+    padding: 0.25em 0.9em;
+    cursor: pointer;
+}
+.eter-request .eter-error {
+    flex-basis: 100%;
+    font-size: 0.9em;
+}
+.eter-request .eter-error:empty {
+    display: none;
+}
+.eter-request .eter-mine {
+    margin-top: 0.8em;
+    padding: 0.6em 0.8em;
+    border-left: 3px solid currentColor;
+    background: rgba(127, 127, 127, 0.08);
+}
+.eter-request .eter-mine-status {
+    opacity: 0.75;
+    font-size: 0.95em;
+}
+.eter-block [hidden] {
+    display: none !important;
+}

@@ -79,6 +79,9 @@ bool FileCheck::busy() const
 bool FileCheck::reachable(const QString &path)
 {
     if (path.isEmpty()) return false;
+    // Élő stream: a címét itt nem ellenőrizzük (ha adáskor nem érhető el, a lejátszó újrapróbálja, majd továbblép).
+    if (path.startsWith(QLatin1String("http://"), Qt::CaseInsensitive) || path.startsWith(QLatin1String("https://"), Qt::CaseInsensitive))
+        return true;
     const QFileInfo fi(path);
     return fi.exists() && fi.isFile() && fi.isReadable() && fi.size() > 0;
 }

@@ -2,6 +2,7 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -10,9 +11,11 @@ struct AVCodecContext;
 struct SwrContext;
 struct AVFrame;
 struct AVPacket;
+struct AVIOContext;
 
 namespace eter {
 
+class StreamInput;
 constexpr int kRate = 48000;
 constexpr int kChannels = 2;
 
@@ -23,8 +26,12 @@ public:
     Decoder(const Decoder &) = delete;
     Decoder &operator=(const Decoder &) = delete;
 
-    bool open(const std::string &path, std::string *err = nullptr);
+    bool open(const std::string &path, std::string *err = nullptr);   // stream címet nem nyit meg (lásd openStream)
+    // Külső stream: a bájtokat az `input` adja; blokkolhat, amíg az első adatok megérkeznek (a dekódoló szálon hívandó).
+    bool openStream(std::shared_ptr<StreamInput> input, std::string *err = nullptr);
     void close();
+    bool isStream() const { return input_ != nullptr; }
+    const std::string &codecName() const { return codec_; }
     bool isOpen() const { return fmt_ != nullptr; }
 
     // A konténer szerinti hossz képkockában (48 kHz); becslés lehet, 0 = ismeretlen.
@@ -56,7 +63,10 @@ private:
     int errors_ = 0;
     std::vector<float> fifo_;
     size_t fifoPos_ = 0;
-    std::string title_, artist_, key_, bpm_;
+    std::string title_, artist_, key_, bpm_, codec_;
+    std::shared_ptr<StreamInput> input_;
+    AVIOContext *avio_ = nullptr;
+    bool finishOpen(std::string *err);
 };
 
 // Teljes fájl végigolvasása a hullámformához: `bins` darab csúcsérték (0..1)

@@ -241,10 +241,25 @@ bool PlayerWidget::loadFile(const QString &path, QString *err)
     title_->setText(t);
     title_->setToolTip(path);
     artist_->setText(QString::fromStdString(src_->artist()));
-    startScan(path);
+    if (src_->isStream()) {
+        // Élő stream: nincs hullámforma; a hosszát a hangtárban megadott tervezett hossz adja (setStreamLength).
+        wave_->clear();
+        wave_->setMessage(TR("● ÉLŐ STREAM · kapcsolódás…"));
+        leadIn_ = 0;
+    } else {
+        startScan(path);
+    }
     refreshState();
     emit stateChanged();
     return true;
+}
+
+void PlayerWidget::setStreamLength(qint64 ms)
+{
+    if (!src_->isStream()) return;
+    const qint64 frames = std::max<qint64>(1, ms) * eter::kRate / 1000;
+    src_->setDuration(frames);
+    mixOut_ = frames;           // a tervezett hossz végén jön a következő (a stream kiúszik)
 }
 
 void PlayerWidget::eject()
@@ -372,6 +387,12 @@ void PlayerWidget::tick(float *peakL, float *peakR)
     }
 
     const qint64 dur = src_->duration();
+    if (src_->isStream()) {
+        const QString title = QString::fromStdString(src_->streamTitle());
+        const QString state = QString::fromStdString(src_->streamState());
+        wave_->setMessage(TR("● ÉLŐ STREAM") + (title.isEmpty() ? QString() : QStringLiteral(" · ") + title)
+                          + (state.isEmpty() ? QString() : QStringLiteral(" · ") + state));
+    }
     // Intro: amíg tart, visszaszámlál; előtte a hosszát mutatja.
     {
         const qint64 p = src_->position();

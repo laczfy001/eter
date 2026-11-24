@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(eter VERSION 0.30.1 LANGUAGES C CXX)
+project(eter VERSION 0.31.1 LANGUAGES C CXX)
 if(WIN32)
     enable_language(RC)
 endif()
@@ -34,6 +34,7 @@ add_executable(eter
     src/i18n_en.cpp
     src/audio/Decoder.cpp
     src/audio/Source.cpp
+    src/audio/Stream.cpp
     src/audio/Engine.cpp
     src/ui/Theme.cpp
     src/ui/Widgets.cpp
@@ -54,6 +55,7 @@ add_executable(eter
     src/ui/SettingsDialog.cpp
     src/net/Remote.cpp
     src/net/WebSync.cpp
+    src/net/StreamFetcher.cpp
     src/ui/RemoteEditor.cpp
     src/core/FileCheck.cpp
     src/core/NowPlaying.cpp

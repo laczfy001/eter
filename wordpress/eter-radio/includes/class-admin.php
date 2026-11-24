@@ -137,7 +137,7 @@ class Eter_Radio_Admin
             </table>
 
             <h2><?php esc_html_e('Blocks', 'eter-radio'); ?></h2>
-            <p><?php esc_html_e('Add the Now playing, Up next and Song request blocks in the block editor (Widgets category). In classic themes and page builders use the shortcodes [eter_now_playing], [eter_up_next count="5"] and [eter_request].', 'eter-radio'); ?></p>
+            <p><?php esc_html_e('Add the Now playing, Up next, Most played and Song request blocks in the block editor (Widgets category). In classic themes and page builders use the shortcodes [eter_now_playing], [eter_up_next count="5"], [eter_most_played period="week" count="10"] and [eter_request].', 'eter-radio'); ?></p>
             <form method="post" action="<?php echo $action; ?>">
                 <?php wp_nonce_field('eter_radio_save'); ?>
                 <input type="hidden" name="action" value="eter_radio_save">

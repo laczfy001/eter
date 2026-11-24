@@ -592,6 +592,20 @@ void Database::updateItemDetails(int id, int categoryId, const QString &title, c
     run(q);
 }
 
+bool Database::updateStream(int id, const QString &url, qint64 durationMs, QString *err)
+{
+    QSqlQuery q;
+    q.prepare("UPDATE items SET file_path = ?, duration_ms = ?, mix_out_ms = NULL WHERE id = ?");
+    q.addBindValue(url.trimmed());
+    q.addBindValue(std::max<qint64>(0, durationMs));
+    q.addBindValue(id);
+    if (!q.exec()) {
+        if (err) *err = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
 void Database::setItemFlow(const QVector<int> &ids, int energy, double bpm, int dayparts)
 {
     // energy / dayparts < 0, bpm < 0: az a mező nem változik.
@@ -1118,8 +1132,8 @@ QVector<LogRow> Database::log(int limit)
 {
     QVector<LogRow> out;
     QSqlQuery q;
-    q.prepare("SELECT started_at, COALESCE(ended_at, 0), kind, title, artist, mode, COALESCE(end_reason, ''), player "
-              "FROM play_log ORDER BY started_at DESC, id DESC LIMIT ?");
+    q.prepare("SELECT started_at, COALESCE(ended_at, 0), kind, title, artist, mode, COALESCE(end_reason, ''), player, "
+              "COALESCE(item_id, 0) FROM play_log ORDER BY started_at DESC, id DESC LIMIT ?");
     q.addBindValue(limit);
     if (!run(q)) return out;
     while (q.next()) {
@@ -1132,8 +1146,23 @@ QVector<LogRow> Database::log(int limit)
         r.mode = q.value(5).toString();
         r.endReason = q.value(6).toString();
         r.player = q.value(7).toInt();
+        r.itemId = q.value(8).toInt();
         out.push_back(r);
     }
+    return out;
+}
+
+QVector<Database::TopRow> Database::topPlayed(qint64 since, int limit)
+{
+    QVector<TopRow> out;
+    QSqlQuery q;
+    q.prepare("SELECT l.item_id, i.title, i.artist, COUNT(*) AS c FROM play_log l JOIN items i ON i.id = l.item_id "
+              "WHERE l.started_at >= ? AND (l.kind = 'music' OR l.kind = '') "
+              "GROUP BY l.item_id ORDER BY c DESC, MAX(l.started_at) DESC LIMIT ?");
+    q.addBindValue(since);
+    q.addBindValue(limit);
+    if (!run(q)) return out;
+    while (q.next()) out.push_back({q.value(0).toInt(), q.value(1).toString(), q.value(2).toString(), q.value(3).toInt()});
     return out;
 }
 

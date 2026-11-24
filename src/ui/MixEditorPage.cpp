@@ -1440,7 +1440,34 @@ MixParams MixEditorPage::resolveMix(const MixPair &pair, int *kind) const
     MixParams p;
     p.introMs = pair.to.introMs;
     const Transition t = db_->transition(pair.toEntry);
-    if (t.toEntryId && t.fromEntryId == pair.fromEntry) {
+    const bool saved = t.toEntryId && t.fromEntryId == pair.fromEntry;
+    // Automatikus mix módban a nem zenei elemek átmenetét is a program keveri (ha be van kapcsolva, és – a beállítástól
+    // függően – nincs rá mentett beállítás): ugyanaz a terv látszik, ami az adásban szól.
+    {
+        auto music = [](const Item &it) { return it.kind.isEmpty() || it.kind == QLatin1String("music"); };
+        const bool bothMusic = music(pair.from) && music(pair.to);
+        const bool savedHere = saved || pair.from.userMixOutMs > 0 || pair.to.cueInMs > 0;
+        const Wave wo = waves_.value(pair.from.id), wi = waves_.value(pair.to.id);
+        if (autoActive_ && !bothMusic && smart_.allItems && !(smart_.savedWins && savedHere) && wo.ready && wo.profile.valid) {
+            const eter::SmartMixPlan sp = eter::planAutoMix(wo.profile, wi.profile, music(pair.from), music(pair.to), pair.from.bpm,
+                                                            pair.to.bpm, pair.from.musicKey, pair.to.musicKey, smart_);
+            if (sp.valid) {
+                if (kind) *kind = 0;
+                p.mixOutMs = sp.mixOutMs;
+                p.outEndMs = sp.outEndMs;
+                p.fadeOutMs = sp.fadeOutMs;
+                p.curve = QStringLiteral("scurve");
+                p.cueInMs = pair.to.cueInMs > 0 ? pair.to.cueInMs : wi.ready && wi.profile.valid ? sp.cueInMs : 0;
+                if (saved) {
+                    p.vtItemId = t.vtItemId;
+                    p.vtOffsetMs = t.vtOffsetMs;
+                    p.vtDuckDb = t.vtDuckDb;
+                }
+                return p;
+            }
+        }
+    }
+    if (saved) {
         p.mixOutMs = t.mixOutMs;
         p.outEndMs = t.outEndMs > 0 ? t.outEndMs : t.mixOutMs + t.fadeOutMs;
         p.fadeOutMs = t.fadeOutMs;
@@ -1461,8 +1488,8 @@ MixParams MixEditorPage::resolveMix(const MixPair &pair, int *kind) const
     auto isMusic = [](const Item &it) { return it.kind.isEmpty() || it.kind == QLatin1String("music"); };
     if (autoActive_ && smart_.enabled && isMusic(pair.from) && isMusic(pair.to) && w.ready && w.profile.valid) {
         const Wave wi = waves_.value(pair.to.id);
-        const eter::SmartMixPlan sp = eter::planSmartMix(w.profile, wi.profile, pair.from.bpm, pair.to.bpm,
-                                                         pair.from.musicKey, pair.to.musicKey, smart_);
+        const eter::SmartMixPlan sp = eter::planAutoMix(w.profile, wi.profile, true, true, pair.from.bpm, pair.to.bpm,
+                                                        pair.from.musicKey, pair.to.musicKey, smart_);
         if (sp.valid) {
             if (kind) *kind = 0;
             p.mixOutMs = sp.mixOutMs;
@@ -2603,12 +2630,27 @@ QString MixEditorPage::smartPlanText() const
     if (i < 0 || !smart_.enabled) return {};
     const MixPair &pr = pairs_[i];
     auto music = [](const Item &it) { return it.kind.isEmpty() || it.kind == QLatin1String("music"); };
-    if (!music(pr.from) || !music(pr.to)) return {};
+    const bool bothMusic = music(pr.from) && music(pr.to);
+    if (!bothMusic) {
+        const Transition t = db_->transition(pr.toEntry);
+        const bool savedHere = (t.toEntryId && t.fromEntryId == pr.fromEntry) || pr.from.userMixOutMs > 0 || pr.to.cueInMs > 0;
+        if (!smart_.allItems) return {};
+        if (smart_.savedWins && savedHere) return TR("Ennél az átmenetnél a mentett beállítás szól (automatikus mix módban is).");
+    }
     const Wave wo = waves_.value(pr.from.id), wi = waves_.value(pr.to.id);
-    if (!wo.ready || !wo.profile.valid) return TR("Okos mix: a kimenő szám elemzése még folyik…");
-    const eter::SmartMixPlan sp = eter::planSmartMix(wo.profile, wi.profile, pr.from.bpm, pr.to.bpm, pr.from.musicKey,
-                                                     pr.to.musicKey, smart_);
+    if (!wo.ready || !wo.profile.valid) return TR("Okos mix: a kimenő elem elemzése még folyik…");
+    const eter::SmartMixPlan sp = eter::planAutoMix(wo.profile, wi.profile, music(pr.from), music(pr.to), pr.from.bpm,
+                                                    pr.to.bpm, pr.from.musicKey, pr.to.musicKey, smart_);
     if (!sp.valid) return {};
+    QString hidden;
+    if (sp.hiddenAtMs > 0)
+        hidden = TR(" A kimenő szám végén rejtett rész van: a szám a csendnél (%1) véget ér.").arg(clockText(sp.hiddenAtMs));
+    if (sp.segue) {
+        QString text = TR("Automatikus mix (nem zenei elem): a következő a hallható vége után indul (%1)").arg(clockText(sp.mixOutMs));
+        if (smart_.segueGapMs > 0) text += TR(", %1 mp szünettel").arg(secText(smart_.segueGapMs));
+        if (sp.cueInMs > 0) text += TR("; a következő elején %1 mp csend kimarad").arg(secText(int(sp.cueInMs)));
+        return text + QStringLiteral(".") + hidden;
+    }
     QStringList why;
     why << (sp.fadeEnding ? TR("lecsengő vég (%1 mp)").arg(secText(sp.fadeLenMs)) : TR("hirtelen vég"));
     if (wi.ready && wi.profile.valid)
@@ -2623,15 +2665,23 @@ QString MixEditorPage::smartPlanText() const
                          ? TR("szoros illesztés a hallható végén (%1)").arg(clockText(sp.mixOutMs))
                          : TR("a következő %1 mp-cel a hallható vége előtt indul (%2)").arg(secText(sp.overlapMs), clockText(sp.mixOutMs));
     if (sp.flowLimited) result += TR(", a tempó vagy a hangnem miatt rövidebb átfedéssel");
-    return TR("Okos mix ennél az átmenetnél: %1 → %2.").arg(why.join(QStringLiteral(" · ")), result);
+    return TR("Okos mix ennél az átmenetnél: %1 → %2.").arg(why.join(QStringLiteral(" · ")), result) + hidden;
 }
 
 void MixEditorPage::updateAutoBanner()
 {
     if (!autoBanner_ || !autoActive_) return;
-    QString text = TR("Automatikus mix van bekapcsolva: a két zene közti átmeneteket a program keveri, az itt mentett "
-                      "beállításuk most nem érvényes (a voice track igen). A nem zenei elemek (jingle, hírek, reklám) "
-                      "átmenetei a mentett beállítás szerint szólnak. A felső sáv „Mix editor” gombjával válthatsz.");
+    QString text = !smart_.allItems
+        ? TR("Automatikus mix van bekapcsolva: a két zene közti átmeneteket a program keveri, az itt mentett "
+             "beállításuk most nem érvényes (a voice track igen). A nem zenei elemek (jingle, hírek, reklám) "
+             "átmenetei a mentett beállítás szerint szólnak. A felső sáv „Mix editor” gombjával válthatsz.")
+        : smart_.savedWins
+        ? TR("Automatikus mix van bekapcsolva: az átmeneteket a program keveri (a nem zenei elemekét is: csend nélkül, "
+             "szorosan). A két zene közti átmenet itt mentett beállítása most nem érvényes; a jingle, hírek, reklám "
+             "átmenetének mentett beállítása igen. A voice track mindig marad. A felső sáv „Mix editor” gombjával válthatsz.")
+        : TR("Automatikus mix van bekapcsolva: minden átmenetet a program kever (a nem zenei elemekét is: csend nélkül, "
+             "szorosan); az itt mentett beállítás most nem érvényes, a voice track igen. A felső sáv „Mix editor” "
+             "gombjával válthatsz.");
     const QString plan = smartPlanText();
     if (!plan.isEmpty()) text += QStringLiteral("\n") + plan;
     autoBanner_->setText(text);

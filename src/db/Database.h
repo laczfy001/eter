@@ -154,6 +154,7 @@ struct LogRow {
     qint64 startedAt = 0, endedAt = 0;
     QString kind, title, artist, mode, endReason;
     int player = 0;
+    int itemId = 0;                 // 0: az elem azóta törölve
 };
 
 // A típusok (kind) felirata a felületen
@@ -191,6 +192,7 @@ public:
     // Az elem szerkesztőjéhez: album és év (ezek nincsenek az Item-ben), az adatok és a jelölőpontok mentése.
     void itemExtra(int id, QString *album, int *year);
     void updateItemDetails(int id, int categoryId, const QString &title, const QString &artist, const QString &album, int year);
+    bool updateStream(int id, const QString &url, qint64 durationMs, QString *err = nullptr);   // élő stream elem
     // Energia, tempó és napszakok (az ütemező szabályaihoz); negatív érték: az a mező marad.
     void setItemFlow(const QVector<int> &ids, int energy, double bpm, int dayparts);
     void setItemKey(const QVector<int> &ids, int key);   // 0 = nincs megadva
@@ -299,6 +301,9 @@ public:
     int logStart(const Item &item, int entryId, int player, const QString &mode);
     void logEnd(int logId, const QString &reason);
     QVector<LogRow> log(int limit);
+    struct TopRow { int itemId = 0; QString title, artist; int plays = 0; };
+    // A legtöbbet játszott zenék a megadott időpont (unix mp) óta, a játszások száma szerint csökkenően.
+    QVector<TopRow> topPlayed(qint64 since, int limit);
 
 signals:
     void categoriesChanged();

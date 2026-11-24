@@ -31,8 +31,10 @@
 #include <QSettings>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QScrollArea>
 #include <QListWidget>
 #include "net/WebSync.h"
+#include "net/StreamFetcher.h"
 
 SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
 {
@@ -45,12 +47,19 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
     auto *tabs = new QTabWidget;
     tabs->setObjectName("settingsTabs");
     outer->addWidget(tabs, 1);
+    // Minden lap görgethető (kisebb képernyőn vagy hosszabb lapnál ne nyomódjanak össze a sorok).
     auto newPage = [tabs](const QString &title) {
+        auto *scroll = new QScrollArea;
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         auto *page = new QWidget;
+        page->setObjectName("settingsPage");
         auto *l = new QVBoxLayout(page);
         l->setContentsMargins(14, 14, 14, 10);
         l->setSpacing(10);
-        tabs->addTab(page, title);
+        scroll->setWidget(page);
+        tabs->addTab(scroll, title);
         return l;
     };
     QVBoxLayout *root = newPage(TR("Általános és hang"));
@@ -170,6 +179,32 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
     note->setWordWrap(true);
     root->addWidget(note);
     root->addSpacing(8);
+
+    {
+        // Élő stream: meddig próbál újrakapcsolódni adásban, mielőtt továbblép a következő elemre.
+        auto *cap = new QLabel(TR("ÉLŐ STREAM"));
+        cap->setObjectName("caption");
+        root->addWidget(cap);
+        auto *row = new QHBoxLayout;
+        auto *giveUp = new QSpinBox;
+        giveUp->setObjectName("streamGiveUp");
+        giveUp->setRange(3, 120);
+        giveUp->setSuffix(TR(" mp"));
+        giveUp->setValue(QtStreamInput::giveUpMs() / 1000);
+        row->addWidget(new QLabel(TR("Ha a stream adásban megszakad, ennyi ideig próbál újrakapcsolódni:")));
+        row->addWidget(giveUp);
+        row->addStretch(1);
+        root->addLayout(row);
+        auto *sn = new QLabel(TR("Utána a playlist következő eleme indul. Az élő streamet a hangtárban az Importálás → Élő "
+                                 "stream… menüponttal lehet felvenni."));
+        sn->setObjectName("small");
+        sn->setWordWrap(true);
+        root->addWidget(sn);
+        connect(giveUp, &QSpinBox::valueChanged, this, [](int s) {
+            QtStreamInput::setGiveUpMs(s * 1000);
+            QSettings().setValue("stream/giveUpS", s);
+        });
+    }
 
     root->addStretch(1);
 
@@ -431,14 +466,15 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
         // Weboldal: „Most szól”, „Következő számok” és számkérés a WordPress-oldalon (Éter Radio bővítmény).
         Database *db = main_->database();
         const WebSync::Config cur = WebSync::loadConfig();
-        auto *cap = new QLabel(TR("WEBOLDAL (WORDPRESS)"));
+        auto *cap = new QLabel(TR("WEBOLDAL"));
         cap->setObjectName("caption");
         root->addWidget(cap);
-        auto *about = new QLabel(TR("Az Éter elküldi a WordPress-oldalnak, mi szól és mi következik, és onnan gyűjti a "
-                                    "látogatók számkéréseit. A kapcsolatot mindig a program kezdeményezi, ezért a stúdió "
-                                    "gépét nem kell az internet felől elérhetővé tenni. Az oldalra az Éter Radio "
-                                    "bővítményt kell telepíteni (eter-radio.zip, a program kiadása mellett); a címet és a kulcsot a "
-                                    "WordPressben a Beállítások → Éter Radio oldalon találod."));
+        auto *about = new QLabel(TR("Az Éter elküldi a weboldalnak, mi szól, mi következik és mi szólt a legtöbbször, és onnan "
+                                    "gyűjti a látogatók számkéréseit. A kapcsolatot mindig a program kezdeményezi, ezért a stúdió "
+                                    "gépét nem kell az internet felől elérhetővé tenni. WordPress-oldalra az Éter Radio "
+                                    "bővítményt kell telepíteni (eter-radio.zip): a címet és a kulcsot a WordPressben a "
+                                    "Beállítások → Éter Radio oldalon találod. Bármilyen más oldalhoz az Éter Web modul való "
+                                    "(eter-web.zip, egy mappa bármely PHP-s tárhelyen): a címet és a kulcsot az admin.php oldala mutatja."));
         about->setObjectName("small");
         about->setWordWrap(true);
         root->addWidget(about);
@@ -666,6 +702,49 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
         form2->addRow(TR("Ütköző tempónál vagy hangnemnél az átfedés legfeljebb"), clash);
         root->addLayout(form2);
 
+        caption(TR("MINDEN ELEM, REJTETT SZÁM, CSENDVÉDELEM"));
+        note(TR("Automatikus mix módban a jingle, reklám, hírek és voice track átmeneteit is a program kezelheti: levágja a "
+                "csendet a kimenő elem végéről és a következő elejéről, és szorosan egymás után indítja őket (átúsztatás "
+                "nélkül). A rejtett szám (a dal után hosszú csend, majd még valami) a csendnél véget ér. A csendvédelem "
+                "akkor is továbblép, ha bármi más miatt hosszabb ideig nem szól semmi."));
+        auto *allItems = new QCheckBox(TR("Automatikus mix a nem zenei elemeknél is (jingle, reklám, hírek, voice track)"));
+        allItems->setObjectName("smartAllItems");
+        allItems->setChecked(cur.allItems);
+        root->addWidget(allItems);
+        auto *savedWins = new QCheckBox(TR("A Mix editorban mentett átmenet és az elem saját mix pontja ilyenkor is érvényes"));
+        savedWins->setObjectName("smartSavedWins");
+        savedWins->setChecked(cur.savedWins);
+        savedWins->setToolTip(TR("Kikapcsolva automatikus mix módban minden átmenetet a program kever; a mentett voice track akkor is marad"));
+        root->addWidget(savedWins);
+        auto *hidden = new QCheckBox(TR("Rejtett szám felismerése"));
+        hidden->setObjectName("smartHidden");
+        hidden->setChecked(cur.hiddenTrack);
+        root->addWidget(hidden);
+        auto *deadOn = new QCheckBox(TR("Csendvédelem: ha a szóló elem hosszabb ideig néma, induljon a következő"));
+        deadOn->setObjectName("deadAirOn");
+        deadOn->setChecked(deadAirGuard(db));
+        root->addWidget(deadOn);
+        auto *form4 = new QFormLayout;
+        auto *gap = dbSpin(cur.segueGapMs / 1000.0, 0, 3, TR(" mp"), 2);
+        gap->setSingleStep(0.05);
+        gap->setToolTip(TR("Nem zenei elemnél ekkora szünet van az egyik hallható vége és a következő eleje között (0: azonnal)"));
+        auto *hiddenSil = dbSpin(cur.hiddenSilenceMs / 1000.0, 1, 30, TR(" mp"), 1);
+        hiddenSil->setToolTip(TR("Ilyen hosszú csend után a szám második felében a szám véget ér, ha utána még jön valami"));
+        auto *deadSec = dbSpin(deadAirMs(db) / 1000.0, 1, 30, TR(" mp"), 1);
+        deadSec->setToolTip(TR("Automata módban, ha a szóló elem második felében ennyi ideig −50 dB alatt van a jel"));
+        form4->addRow(TR("Szünet nem zenei elemnél"), gap);
+        form4->addRow(TR("Rejtett szám előtti csend legalább"), hiddenSil);
+        form4->addRow(TR("Csendvédelem ennyi néma idő után"), deadSec);
+        root->addLayout(form4);
+        auto syncEnabled = [=] {
+            gap->setEnabled(allItems->isChecked());
+            savedWins->setEnabled(allItems->isChecked());
+            hiddenSil->setEnabled(hidden->isChecked());
+            deadSec->setEnabled(deadOn->isChecked());
+        };
+        syncEnabled();
+        for (QCheckBox *c : {allItems, hidden, deadOn}) connect(c, &QCheckBox::toggled, this, syncEnabled);
+
         caption(TR("EGYSZERŰ MÓD"));
         note(TR("Ha az okos mix ki van kapcsolva (vagy a kimenő szám elemzése még nem készült el): a mix pont az utolsó "
                 "hely, ahol a jel még a küszöb fölött van, és a kimenő szám onnan úszik ki."));
@@ -698,6 +777,13 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
             clash->setValue(d.clashOverlapMs / 1000.0);
             thr->setValue(-24);
             defFade->setValue(2.5);
+            allItems->setChecked(d.allItems);
+            savedWins->setChecked(d.savedWins);
+            hidden->setChecked(d.hiddenTrack);
+            deadOn->setChecked(true);
+            gap->setValue(d.segueGapMs / 1000.0);
+            hiddenSil->setValue(d.hiddenSilenceMs / 1000.0);
+            deadSec->setValue(3.0);
         });
         connect(apply, &QPushButton::clicked, this, [=, this] {
             auto ms = [](QDoubleSpinBox *s) { return QString::number(qRound(s->value() * 1000)); };
@@ -712,6 +798,13 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
             db->setSetting("smart_clash_overlap_ms", ms(clash));
             db->setSetting("auto_mix_threshold_db", QString::number(thr->value()));
             db->setSetting("default_fade_out_ms", ms(defFade));
+            db->setSetting("smart_all_items", allItems->isChecked() ? "1" : "0");
+            db->setSetting("smart_saved_wins", savedWins->isChecked() ? "1" : "0");
+            db->setSetting("smart_hidden_track", hidden->isChecked() ? "1" : "0");
+            db->setSetting("smart_segue_gap_ms", ms(gap));
+            db->setSetting("smart_hidden_silence_ms", ms(hiddenSil));
+            db->setSetting("dead_air_guard", deadOn->isChecked() ? "1" : "0");
+            db->setSetting("dead_air_ms", ms(deadSec));
             main_->reloadMixSettings();
         });
     }

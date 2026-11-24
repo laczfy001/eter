@@ -45,6 +45,28 @@
     transition: width 1s linear;
 }
 
+.eter-top .eter-ranked {
+    margin: 0;
+    padding-left: 1.6em;
+}
+.eter-top .eter-ranked li {
+    padding: 0.35em 0;
+    border-bottom: 1px solid rgba(127, 127, 127, 0.2);
+}
+.eter-top .eter-ranked li:last-child {
+    border-bottom: 0;
+}
+.eter-top .eter-ranked li.eter-muted {
+    list-style: none;
+    margin-left: -1.6em;
+}
+.eter-top .eter-plays {
+    float: right;
+    margin-left: 0.8em;
+    opacity: 0.65;
+    font-size: 0.9em;
+    font-variant-numeric: tabular-nums;
+}
 .eter-next .eter-list {
     list-style: none;
     margin: 0;

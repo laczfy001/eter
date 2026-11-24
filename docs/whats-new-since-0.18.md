@@ -1,6 +1,6 @@
 # What's new in Éter since 0.18
 
-This is a summary of the changes from 0.19.0 to 0.30.1, grouped by topic. The full list, version by version, is in
+This is a summary of the changes from 0.19.0 to 0.31.0, grouped by topic. The full list, version by version, is in
 [CHANGELOG.md](../CHANGELOG.md).
 
 Every database upgrade (schema 10 → 15) runs automatically at the first start. Update Éter on every computer that
@@ -22,6 +22,10 @@ uses remote editing or the backup playout, so they all run the same version.
   - it uses a shorter overlap when the tempos or keys clash.
 
   Every value is adjustable in *Settings → Automatic mix*. The Mix editor shows the plan and explains it.
+- **Automatic mix for every item** (0.31). Jingles, ads, news and voice tracks follow each other back to back, with
+  the silence cut at both ends.
+  - A hidden track after a long silence at the end of a song is left out.
+  - A dead-air guard starts the next item if the one on air stays silent for 3 seconds.
 - **Volume curve** for every item (0.22). Draw points on the waveform in the Mix editor or the item editor; the curve
   applies wherever the item plays. For example, a news jingle at full level that drops 12 dB under the newsreader.
 - **Mini mixer** in the clock panel (0.28) with channels for the three players, the voice track, the cartwall and the
@@ -31,6 +35,11 @@ uses remote editing or the backup playout, so they all run the same version.
   - a mute button.
 
   Fader positions are kept after a restart. Mutes are not, so the station never starts silent.
+
+- **Live streams** (0.31). An Icecast or Shoutcast stream (MP3, AAC or Ogg, over http or https) can be a playlist
+  item with a planned length.
+  - It starts close to live and fades out at the end of its length.
+  - If it drops, Éter reconnects; if it stays down, the next item starts.
 
 ## Scheduler
 
@@ -84,6 +93,12 @@ A WordPress plugin, *Éter Radio* (`eter-radio.zip`, attached to each release), 
 Éter.
 The plugin is in English by default; Dutch and Hungarian are included, and the language is chosen in WordPress under
 Settings → Éter Radio (0.30.1).
+
+- A *Most played* block (0.31) shows the most played songs of the last 24 hours, 7 days or 30 days.
+- **Éter Web** (0.31, `eter-web.zip`) offers the same widgets for any website without WordPress.
+  - It is one folder on any PHP web host, with no database.
+  - The widgets go into a page with a script line, or as an iframe for site builders.
+  - Éter connects to it the same way as to the plugin.
 
 - Three blocks: *Now playing* (with a progress bar), *Up next* (with start times) and *Song request*. They are also
   available as shortcodes for classic themes and page builders.

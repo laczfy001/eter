@@ -83,9 +83,27 @@
             closed.textContent = state.online ? T.closed : T.offline;
         });
     }
+    function renderTop() {
+        blocks('top').forEach(function (b) {
+            var list = b.querySelector('.eter-list');
+            var period = b.getAttribute('data-period') || 'week';
+            var count = parseInt(b.getAttribute('data-count'), 10) || 10;
+            var plays = b.getAttribute('data-plays') === '1';
+            var items = ((state.top || {})[period] || []).slice(0, count);
+            list.textContent = '';
+            if (!items.length) { list.appendChild(el('li', 'eter-muted', T.noTop)); return; }
+            items.forEach(function (t) {
+                var li = el('li');
+                li.appendChild(line(t));
+                if (plays) li.appendChild(el('span', 'eter-plays', t.plays === 1 ? T.play1 : T.plays.replace('%d', t.plays)));
+                list.appendChild(li);
+            });
+        });
+    }
     function render() {
         renderNow();
         renderNext();
+        renderTop();
         renderRequestOpen();
     }
 

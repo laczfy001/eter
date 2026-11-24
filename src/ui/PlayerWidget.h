@@ -20,6 +20,8 @@ public:
     ~PlayerWidget() override;
 
     bool loadFile(const QString &path, QString *err = nullptr);
+    bool isStream() const { return src_->isStream(); }
+    void setStreamLength(qint64 ms);      // élő stream: a tervezett hossz (ennyi ideig szól, mielőtt továbblép)
     void eject();
     bool isLoaded() const { return src_->loaded(); }
     bool isPlaying() const { return src_->playing(); }
