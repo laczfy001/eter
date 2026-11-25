@@ -22,6 +22,7 @@ QString kindLabel(const QString &kind)
     if (kind == "news") return TR("Hírek");
     if (kind == "voicetrack") return TR("Voice track");
     if (kind == "playlist") return TR("Playlist");
+    if (kind == "note") return TR("Jegyzet");
     return TR("Egyéb");
 }
 
@@ -280,6 +281,70 @@ bool Database::open(const QString &path, QString *err)
             return false;
         }
         v = 15;
+    }
+    if (v == 15) {
+        // 16. séma: „Jegyzet” elem és sweeper az órasémákban, felirat a playlist sorai előtt, több heti rács.
+        // A clock_slots és a week_grid ellenőrzése, kulcsa csak a tábla újraépítésével bővíthető.
+        q.exec("PRAGMA foreign_keys = OFF");
+        bool ok = q.exec("BEGIN");
+        ok = ok && q.exec("CREATE TABLE clock_slots_new ("
+                          "id INTEGER PRIMARY KEY, clock_id INTEGER NOT NULL REFERENCES clocks(id) ON DELETE CASCADE, "
+                          "position INTEGER NOT NULL, "
+                          "slot_type TEXT NOT NULL CHECK (slot_type IN ('category','item','fill','note')), "
+                          "category_id INTEGER REFERENCES categories(id) ON DELETE RESTRICT, "
+                          "item_id INTEGER REFERENCES items(id) ON DELETE CASCADE, "
+                          "item_count INTEGER NOT NULL DEFAULT 1 CHECK (item_count >= 1), "
+                          "fixed_offset_s INTEGER CHECK (fixed_offset_s BETWEEN 0 AND 3599), "
+                          "optional INTEGER NOT NULL DEFAULT 0 CHECK (optional IN (0,1)), "
+                          "energy_min INTEGER NOT NULL DEFAULT 0, energy_max INTEGER NOT NULL DEFAULT 0, "
+                          "up_to_fit INTEGER NOT NULL DEFAULT 0, note_text TEXT NOT NULL DEFAULT '', "
+                          "sweeper_category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL, "
+                          "sweeper_duck_db REAL NOT NULL DEFAULT -6, "
+                          "UNIQUE (clock_id, position), "
+                          "CHECK ((slot_type = 'item' AND item_id IS NOT NULL) "
+                          "OR (slot_type IN ('category','fill') AND category_id IS NOT NULL) OR slot_type = 'note')) STRICT");
+        ok = ok && q.exec("INSERT INTO clock_slots_new (id, clock_id, position, slot_type, category_id, item_id, item_count, "
+                          "fixed_offset_s, optional, energy_min, energy_max, up_to_fit) SELECT id, clock_id, position, slot_type, "
+                          "category_id, item_id, item_count, fixed_offset_s, optional, energy_min, energy_max, up_to_fit "
+                          "FROM clock_slots");
+        ok = ok && q.exec("DROP TABLE clock_slots");
+        ok = ok && q.exec("ALTER TABLE clock_slots_new RENAME TO clock_slots");
+        ok = ok && q.exec("CREATE TABLE week_grids (id INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT '', "
+                          "position INTEGER NOT NULL DEFAULT 0) STRICT");
+        ok = ok && q.exec("INSERT INTO week_grids (id, name, position) VALUES (1, '', 1)");
+        ok = ok && q.exec("CREATE TABLE week_grid_periods (id INTEGER PRIMARY KEY, "
+                          "grid_id INTEGER NOT NULL REFERENCES week_grids(id) ON DELETE CASCADE, "
+                          "from_date TEXT NOT NULL, to_date TEXT NOT NULL, yearly INTEGER NOT NULL DEFAULT 0) STRICT");
+        ok = ok && q.exec("CREATE TABLE week_grid_new (grid_id INTEGER NOT NULL DEFAULT 1 REFERENCES week_grids(id) ON DELETE CASCADE, "
+                          "weekday INTEGER NOT NULL CHECK (weekday BETWEEN 0 AND 6), "
+                          "hour INTEGER NOT NULL CHECK (hour BETWEEN 0 AND 23), "
+                          "clock_id INTEGER NOT NULL REFERENCES clocks(id) ON DELETE RESTRICT, "
+                          "PRIMARY KEY (grid_id, weekday, hour)) STRICT, WITHOUT ROWID");
+        ok = ok && q.exec("INSERT INTO week_grid_new (grid_id, weekday, hour, clock_id) SELECT 1, weekday, hour, clock_id FROM week_grid");
+        ok = ok && q.exec("DROP TABLE week_grid");
+        ok = ok && q.exec("ALTER TABLE week_grid_new RENAME TO week_grid");
+        ok = ok && q.exec("ALTER TABLE playlist_entries ADD COLUMN note TEXT NOT NULL DEFAULT ''");
+        ok = ok && q.exec("PRAGMA user_version = 16");
+        if (ok) ok = q.exec("COMMIT");
+        if (!ok) {
+            const QString text = q.lastError().text();
+            q.exec("ROLLBACK");
+            q.exec("PRAGMA foreign_keys = ON");
+            if (err) *err = TR("Az adatbázis frissítése nem sikerült: %1").arg(text);
+            return false;
+        }
+        q.exec("PRAGMA foreign_keys = ON");
+        v = 16;
+    }
+    if (v == 16) {
+        // 17. séma: online adatok gyorsítótára (TheAudioDB: előadói adatlapok, számok keresése).
+        if (!q.exec("CREATE TABLE online_meta (key TEXT PRIMARY KEY, found INTEGER NOT NULL DEFAULT 0, "
+                    "data TEXT NOT NULL DEFAULT '', fetched_at INTEGER NOT NULL) STRICT")
+            || !q.exec("PRAGMA user_version = 17")) {
+            if (err) *err = TR("Az adatbázis frissítése nem sikerült: %1").arg(q.lastError().text());
+            return false;
+        }
+        v = 17;
     }
     housekeeping();
     return true;
@@ -736,6 +801,15 @@ void Database::setEntryOverlay(int entryId, bool on, qint64 offsetMs, double duc
     run(q);
 }
 
+void Database::setEntryNote(int entryId, const QString &note)
+{
+    QSqlQuery q;
+    q.prepare("UPDATE playlist_entries SET note = ? WHERE id = ?");
+    q.addBindValue(note.isNull() ? QStringLiteral("") : note);
+    q.addBindValue(entryId);
+    run(q);
+}
+
 void Database::setEntryGroup(int entryId, int groupId, const QString &groupName)
 {
     QSqlQuery q;
@@ -1018,6 +1092,18 @@ void Database::deleteSchedulerEntriesFrom(int fromKey)
     run(q);
 }
 
+void Database::deleteSchedulerEntriesAt(int key)
+{
+    QSqlQuery q;
+    q.prepare(QStringLiteral("DELETE FROM playlist_entries WHERE source = 'scheduler' AND status = 'pending' "
+                             "AND playlist_id IN (SELECT id FROM playlists WHERE %1 = ?)").arg(kKeyExpr));
+    q.addBindValue(key);
+    run(q);
+    q.prepare(QStringLiteral("UPDATE playlists SET generated_at = NULL WHERE %1 = ?").arg(kKeyExpr));
+    q.addBindValue(key);
+    run(q);
+}
+
 void Database::purgeSchedulerEntriesBefore(int beforeKey)
 {
     QSqlQuery q;
@@ -1069,7 +1155,7 @@ QVector<Entry> Database::pendingEntries()
     QSqlQuery q(QStringLiteral(
         "SELECT e.id, e.playlist_id, CAST(REPLACE(p.air_date, '-', '') AS INTEGER) * 100 + p.hour, "
         ETER_ITEM_COLS ", e.source, COALESCE(e.fixed_start_s, -1), COALESCE(e.group_id, 0), COALESCE(e.group_name, ''), "
-        "e.overlay_offset_ms, e.overlay_duck_db "
+        "e.overlay_offset_ms, e.overlay_duck_db, e.note "
         "FROM playlist_entries e JOIN playlists p ON p.id = e.playlist_id "
         "JOIN items i ON i.id = e.item_id JOIN categories c ON c.id = i.category_id "
         "WHERE e.status = 'pending' ORDER BY p.air_date, p.hour, e.position"));
@@ -1086,6 +1172,7 @@ QVector<Entry> Database::pendingEntries()
         e.overlay = !q.value(7 + kItemColumns).isNull();
         e.overlayOffsetMs = q.value(7 + kItemColumns).toLongLong();
         e.overlayDuckDb = q.value(8 + kItemColumns).toDouble();
+        e.note = q.value(9 + kItemColumns).toString();
         out.push_back(e);
     }
     return out;
@@ -1245,7 +1332,8 @@ QVector<ClockSlot> Database::clockSlots(int clockId)
     QVector<ClockSlot> out;
     QSqlQuery q;
     q.prepare("SELECT s.id, s.position, s.slot_type, COALESCE(s.category_id, 0), COALESCE(s.item_id, 0), s.item_count, "
-              "COALESCE(s.fixed_offset_s, -1), c.name, c.kind, c.color, i.title, i.artist, ic.kind, ic.color, s.energy_min, s.energy_max, s.up_to_fit "
+              "COALESCE(s.fixed_offset_s, -1), c.name, c.kind, c.color, i.title, i.artist, ic.kind, ic.color, s.energy_min, s.energy_max, s.up_to_fit, "
+              "s.note_text, COALESCE(s.sweeper_category_id, 0), s.sweeper_duck_db "
               "FROM clock_slots s LEFT JOIN categories c ON c.id = s.category_id "
               "LEFT JOIN items i ON i.id = s.item_id LEFT JOIN categories ic ON ic.id = i.category_id "
               "WHERE s.clock_id = ? ORDER BY s.position");
@@ -1264,7 +1352,13 @@ QVector<ClockSlot> Database::clockSlots(int clockId)
         s.energyMin = q.value(14).toInt();
         s.energyMax = q.value(15).toInt();
         s.upToFit = q.value(16).toInt() != 0;
-        if (s.type == "item") {
+        s.note = q.value(17).toString();
+        s.sweeperCategoryId = q.value(18).toInt();
+        s.sweeperDuckDb = q.value(19).toDouble();
+        if (s.type == "note") {
+            s.label = s.note;
+            s.kind = QStringLiteral("note");
+        } else if (s.type == "item") {
             const QString artist = q.value(11).toString();
             s.label = q.value(10).toString() + (artist.isEmpty() ? QString() : QStringLiteral(" – ") + artist);
             s.kind = q.value(12).toString();
@@ -1282,8 +1376,9 @@ QVector<ClockSlot> Database::clockSlots(int clockId)
 int Database::addSlot(const ClockSlot &slot)
 {
     QSqlQuery q;
-    q.prepare("INSERT INTO clock_slots (clock_id, position, slot_type, category_id, item_id, item_count, fixed_offset_s, energy_min, energy_max, up_to_fit) "
-              "VALUES (?, (SELECT COALESCE(MAX(position), 0) + 1 FROM clock_slots WHERE clock_id = ?), ?, ?, ?, ?, ?, ?, ?, ?)");
+    q.prepare("INSERT INTO clock_slots (clock_id, position, slot_type, category_id, item_id, item_count, fixed_offset_s, energy_min, energy_max, up_to_fit, "
+              "note_text, sweeper_category_id, sweeper_duck_db) "
+              "VALUES (?, (SELECT COALESCE(MAX(position), 0) + 1 FROM clock_slots WHERE clock_id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     q.addBindValue(slot.clockId);
     q.addBindValue(slot.clockId);
     q.addBindValue(slot.type);
@@ -1294,6 +1389,9 @@ int Database::addSlot(const ClockSlot &slot)
     q.addBindValue(std::clamp(slot.energyMin, 0, 5));
     q.addBindValue(std::clamp(slot.energyMax, 0, 5));
     q.addBindValue(slot.upToFit ? 1 : 0);
+    q.addBindValue(slot.type == "note" ? (slot.note.isNull() ? QStringLiteral("") : slot.note) : QStringLiteral(""));
+    q.addBindValue(slot.sweeperCategoryId > 0 ? QVariant(slot.sweeperCategoryId) : QVariant());
+    q.addBindValue(std::clamp(slot.sweeperDuckDb, -30.0, 0.0));
     if (!run(q)) return 0;
     return q.lastInsertId().toInt();
 }
@@ -1302,7 +1400,7 @@ void Database::updateSlot(const ClockSlot &slot)
 {
     QSqlQuery q;
     q.prepare("UPDATE clock_slots SET slot_type = ?, category_id = ?, item_id = ?, item_count = ?, fixed_offset_s = ?, "
-              "energy_min = ?, energy_max = ?, up_to_fit = ? WHERE id = ?");
+              "energy_min = ?, energy_max = ?, up_to_fit = ?, note_text = ?, sweeper_category_id = ?, sweeper_duck_db = ? WHERE id = ?");
     q.addBindValue(slot.type);
     q.addBindValue(slot.type != "item" && slot.categoryId ? QVariant(slot.categoryId) : QVariant());
     q.addBindValue(slot.type == "item" && slot.itemId ? QVariant(slot.itemId) : QVariant());
@@ -1311,6 +1409,9 @@ void Database::updateSlot(const ClockSlot &slot)
     q.addBindValue(std::clamp(slot.energyMin, 0, 5));
     q.addBindValue(std::clamp(slot.energyMax, 0, 5));
     q.addBindValue(slot.upToFit ? 1 : 0);
+    q.addBindValue(slot.type == "note" ? (slot.note.isNull() ? QStringLiteral("") : slot.note) : QStringLiteral(""));
+    q.addBindValue(slot.sweeperCategoryId > 0 ? QVariant(slot.sweeperCategoryId) : QVariant());
+    q.addBindValue(std::clamp(slot.sweeperDuckDb, -30.0, 0.0));
     q.addBindValue(slot.id);
     run(q);
 }
@@ -1339,29 +1440,190 @@ void Database::reorderSlots(int clockId, const QVector<int> &slotIds)
     endBatch();
 }
 
-QHash<int, int> Database::weekGrid()
+QHash<int, int> Database::weekGrid() { return weekGrid(gridFor(QDate::currentDate())); }
+
+QHash<int, int> Database::weekGrid(int gridId)
 {
     QHash<int, int> out;
-    QSqlQuery q("SELECT weekday, hour, clock_id FROM week_grid");
+    QSqlQuery q;
+    q.prepare("SELECT weekday, hour, clock_id FROM week_grid WHERE grid_id = ?");
+    q.addBindValue(gridId);
+    if (!run(q)) return out;
     while (q.next()) out.insert(q.value(0).toInt() * 100 + q.value(1).toInt(), q.value(2).toInt());
     return out;
 }
 
-void Database::setGrid(int weekday, int hour, int clockId)
+int Database::clockAt(const QDate &date, int hour)
+{
+    QSqlQuery q;
+    q.prepare("SELECT clock_id FROM week_grid WHERE grid_id = ? AND weekday = ? AND hour = ?");
+    q.addBindValue(gridFor(date));
+    q.addBindValue(date.dayOfWeek() - 1);
+    q.addBindValue(hour);
+    return run(q) && q.next() ? q.value(0).toInt() : 0;
+}
+
+bool Database::hasWeekGrid()
+{
+    QSqlQuery q("SELECT 1 FROM week_grid LIMIT 1");
+    return q.next();
+}
+
+void Database::setGrid(int weekday, int hour, int clockId) { setGrid(activeWeekGrid(), weekday, hour, clockId); }
+
+void Database::setGrid(int gridId, int weekday, int hour, int clockId)
 {
     QSqlQuery q;
     if (clockId > 0) {
-        q.prepare("INSERT INTO week_grid (weekday, hour, clock_id) VALUES (?, ?, ?) "
-                  "ON CONFLICT(weekday, hour) DO UPDATE SET clock_id = excluded.clock_id");
+        q.prepare("INSERT INTO week_grid (grid_id, weekday, hour, clock_id) VALUES (?, ?, ?, ?) "
+                  "ON CONFLICT(grid_id, weekday, hour) DO UPDATE SET clock_id = excluded.clock_id");
+        q.addBindValue(gridId);
         q.addBindValue(weekday);
         q.addBindValue(hour);
         q.addBindValue(clockId);
     } else {
-        q.prepare("DELETE FROM week_grid WHERE weekday = ? AND hour = ?");
+        q.prepare("DELETE FROM week_grid WHERE grid_id = ? AND weekday = ? AND hour = ?");
+        q.addBindValue(gridId);
         q.addBindValue(weekday);
         q.addBindValue(hour);
     }
     run(q);
+}
+
+QString Database::gridDisplayName(const WeekGrid &g)
+{
+    return g.name.trimmed().isEmpty() ? (g.id == 1 ? TR("Alap") : TR("Rács %1").arg(g.id)) : g.name;
+}
+
+QVector<WeekGrid> Database::weekGrids()
+{
+    QVector<WeekGrid> out;
+    QSqlQuery q("SELECT id, name, position FROM week_grids ORDER BY position, id");
+    while (q.next()) out.push_back({q.value(0).toInt(), q.value(1).toString(), q.value(2).toInt()});
+    if (out.isEmpty()) {
+        // Nem fordulhat elő, de az 1-es rácsnak mindig lennie kell.
+        q.exec("INSERT OR IGNORE INTO week_grids (id, name, position) VALUES (1, '', 1)");
+        out.push_back({1, QString(), 1});
+    }
+    return out;
+}
+
+int Database::addWeekGrid(const QString &name, int copyFrom)
+{
+    QSqlQuery q;
+    q.prepare("INSERT INTO week_grids (name, position) VALUES (?, (SELECT COALESCE(MAX(position), 0) + 1 FROM week_grids))");
+    q.addBindValue(name.trimmed());
+    if (!run(q)) return 0;
+    const int id = q.lastInsertId().toInt();
+    if (copyFrom > 0) {
+        q.prepare("INSERT INTO week_grid (grid_id, weekday, hour, clock_id) SELECT ?, weekday, hour, clock_id FROM week_grid WHERE grid_id = ?");
+        q.addBindValue(id);
+        q.addBindValue(copyFrom);
+        run(q);
+    }
+    emit weekGridsChanged();
+    return id;
+}
+
+void Database::renameWeekGrid(int id, const QString &name)
+{
+    QSqlQuery q;
+    q.prepare("UPDATE week_grids SET name = ? WHERE id = ?");
+    q.addBindValue(name.trimmed());
+    q.addBindValue(id);
+    run(q);
+    emit weekGridsChanged();
+}
+
+bool Database::deleteWeekGrid(int id)
+{
+    const QVector<WeekGrid> all = weekGrids();
+    if (all.size() <= 1) return false;
+    QSqlQuery q;
+    for (const char *sql : {"DELETE FROM week_grid WHERE grid_id = ?", "DELETE FROM week_grid_periods WHERE grid_id = ?",
+                            "DELETE FROM week_grids WHERE id = ?"}) {
+        q.prepare(sql);
+        q.addBindValue(id);
+        run(q);
+    }
+    if (activeWeekGrid() == id) setActiveWeekGrid(weekGrids().value(0).id);
+    emit weekGridsChanged();
+    return true;
+}
+
+int Database::activeWeekGrid()
+{
+    const int id = setting("active_week_grid", "1").toInt();
+    for (const WeekGrid &g : weekGrids())
+        if (g.id == id) return id;
+    return weekGrids().value(0).id;
+}
+
+void Database::setActiveWeekGrid(int id)
+{
+    setSetting("active_week_grid", QString::number(id));
+    emit weekGridsChanged();
+}
+
+int Database::gridFor(const QDate &date)
+{
+    // A később felvett időszak az erősebb (például a nyári rácson belül egy ünnepi hét).
+    const QVector<WeekGridPeriod> periods = weekGridPeriods();
+    for (int i = int(periods.size()) - 1; i >= 0; --i)
+        if (periods[i].contains(date)) return periods[i].gridId;
+    return activeWeekGrid();
+}
+
+QVector<WeekGridPeriod> Database::weekGridPeriods()
+{
+    QVector<WeekGridPeriod> out;
+    QSqlQuery q("SELECT p.id, p.grid_id, p.from_date, p.to_date, p.yearly FROM week_grid_periods p "
+                "JOIN week_grids g ON g.id = p.grid_id ORDER BY p.id");
+    while (q.next()) {
+        WeekGridPeriod p;
+        p.id = q.value(0).toInt();
+        p.gridId = q.value(1).toInt();
+        p.from = QDate::fromString(q.value(2).toString(), Qt::ISODate);
+        p.to = QDate::fromString(q.value(3).toString(), Qt::ISODate);
+        p.yearly = q.value(4).toInt() != 0;
+        if (p.from.isValid() && p.to.isValid()) out.push_back(p);
+    }
+    return out;
+}
+
+int Database::addWeekGridPeriod(const WeekGridPeriod &p)
+{
+    QSqlQuery q;
+    q.prepare("INSERT INTO week_grid_periods (grid_id, from_date, to_date, yearly) VALUES (?, ?, ?, ?)");
+    q.addBindValue(p.gridId);
+    q.addBindValue(p.from.toString(Qt::ISODate));
+    q.addBindValue(p.to.toString(Qt::ISODate));
+    q.addBindValue(p.yearly ? 1 : 0);
+    if (!run(q)) return 0;
+    emit weekGridsChanged();
+    return q.lastInsertId().toInt();
+}
+
+void Database::updateWeekGridPeriod(const WeekGridPeriod &p)
+{
+    QSqlQuery q;
+    q.prepare("UPDATE week_grid_periods SET grid_id = ?, from_date = ?, to_date = ?, yearly = ? WHERE id = ?");
+    q.addBindValue(p.gridId);
+    q.addBindValue(p.from.toString(Qt::ISODate));
+    q.addBindValue(p.to.toString(Qt::ISODate));
+    q.addBindValue(p.yearly ? 1 : 0);
+    q.addBindValue(p.id);
+    run(q);
+    emit weekGridsChanged();
+}
+
+void Database::deleteWeekGridPeriod(int id)
+{
+    QSqlQuery q;
+    q.prepare("DELETE FROM week_grid_periods WHERE id = ?");
+    q.addBindValue(id);
+    run(q);
+    emit weekGridsChanged();
 }
 
 // -------------------------------------------------------------------- mix
@@ -1688,7 +1950,7 @@ bool Database::mirrorState(const QVector<MirrorRow> &rows, const QVector<Transit
     QSqlQuery pl, en;
     ok = ok && pl.prepare("INSERT OR IGNORE INTO playlists (id, air_date, hour) VALUES (?, ?, ?)");
     ok = ok && en.prepare("INSERT INTO playlist_entries (id, playlist_id, position, item_id, fixed_start_s, source, status, "
-                          "group_id, group_name, overlay_offset_ms, overlay_duck_db) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                          "group_id, group_name, overlay_offset_ms, overlay_duck_db, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     QHash<int, int> position;
     QSet<int> playlists;
     for (const MirrorRow &r : rows) {
@@ -1714,6 +1976,7 @@ bool Database::mirrorState(const QVector<MirrorRow> &rows, const QVector<Transit
         en.addBindValue(e.groupId > 0 ? QVariant(e.groupName) : QVariant());
         en.addBindValue(e.overlay ? QVariant(e.overlayOffsetMs) : QVariant());
         en.addBindValue(e.overlay ? e.overlayDuckDb : 0.0);
+        en.addBindValue(e.note.isNull() ? QStringLiteral("") : e.note);
         ok = en.exec();
     }
     if (!ok) {
@@ -1728,4 +1991,77 @@ bool Database::mirrorState(const QVector<MirrorRow> &rows, const QVector<Transit
     for (const Transition &t : transitions) saveTransition(t);
     remoteHook = std::move(hook);
     return true;
+}
+
+// ---- Online adatok (TheAudioDB) ----
+
+Database::OnlineMeta Database::onlineMeta(const QString &key)
+{
+    OnlineMeta m;
+    QSqlQuery q;
+    q.prepare("SELECT found, data, fetched_at FROM online_meta WHERE key = ?");
+    q.addBindValue(key);
+    if (run(q) && q.next()) {
+        m.known = true;
+        m.found = q.value(0).toInt() != 0;
+        m.data = q.value(1).toString();
+        m.fetchedAt = q.value(2).toLongLong();
+    }
+    return m;
+}
+
+void Database::setOnlineMeta(const QString &key, bool found, const QString &data)
+{
+    QSqlQuery q;
+    q.prepare("INSERT INTO online_meta (key, found, data, fetched_at) VALUES (?, ?, ?, ?) "
+              "ON CONFLICT(key) DO UPDATE SET found = excluded.found, data = excluded.data, fetched_at = excluded.fetched_at");
+    q.addBindValue(key);
+    q.addBindValue(found ? 1 : 0);
+    q.addBindValue(data.isNull() ? QStringLiteral("") : data);
+    q.addBindValue(QDateTime::currentSecsSinceEpoch());
+    run(q);
+}
+
+QHash<QString, qint64> Database::onlineMetaTimes(const QString &prefix, bool found)
+{
+    QHash<QString, qint64> out;
+    QSqlQuery q;
+    q.prepare("SELECT key, fetched_at FROM online_meta WHERE substr(key, 1, ?) = ? AND found = ?");
+    q.addBindValue(int(prefix.size()));
+    q.addBindValue(prefix);
+    q.addBindValue(found ? 1 : 0);
+    if (run(q))
+        while (q.next()) out.insert(q.value(0).toString(), q.value(1).toLongLong());
+    return out;
+}
+
+void Database::clearOnlineMeta()
+{
+    QSqlQuery q;
+    q.exec("DELETE FROM online_meta");
+}
+
+void Database::fillAlbumYear(int itemId, const QString &album, int year)
+{
+    QSqlQuery q;
+    if (!album.trimmed().isEmpty()) {
+        q.prepare("UPDATE items SET album = ? WHERE id = ? AND album = ''");
+        q.addBindValue(album.trimmed());
+        q.addBindValue(itemId);
+        run(q);
+    }
+    if (year > 1800 && year < 3000) {
+        q.prepare("UPDATE items SET year = ? WHERE id = ? AND (year IS NULL OR year = 0)");
+        q.addBindValue(year);
+        q.addBindValue(itemId);
+        run(q);
+    }
+}
+
+QHash<int, QPair<QString, int>> Database::albumYears()
+{
+    QHash<int, QPair<QString, int>> out;
+    QSqlQuery q("SELECT id, album, COALESCE(year, 0) FROM items");
+    while (q.next()) out.insert(q.value(0).toInt(), {q.value(1).toString(), q.value(2).toInt()});
+    return out;
 }

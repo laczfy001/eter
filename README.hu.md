@@ -27,8 +27,8 @@ tartalék playout egyetlen asztali alkalmazásban.
 - **Ének-szabály**: a számok énekét (férfi, női, együttes, vegyes, instrumentális) egyenként vagy a hangtárban sokat
   egyszerre megadva korlátozható, hány azonos ének jöhet egymás után.
 - **Okos automatikus mix**: felismeri a lecsengő és a hirtelen véget, a lágy és az erős kezdést, és (ha kéred) ütköző
-  tempónál vagy hangnemnél rövidebb az átfedés; minden küszöb állítható a *Beállítások → Automatikus mix* lapon, és a Mix
-  editor minden átmenetnél megmutatja a tervet. A jingle, reklám, hírek és voice track szorosan, a csend levágásával
+  tempónál vagy hangnemnél rövidebb az átfedés; minden küszöb állítható a *Beállítások → Automatikus mix* lapon (élő ábrával
+  arról, hogyan keveredik két mintaelem), és a Mix editor minden átmenetnél megmutatja a tervet. A jingle, reklám, hírek és voice track szorosan, a csend levágásával
   követik egymást; a hosszú csend utáni rejtett szám kimarad; a csendvédelem továbblép, ha a szóló elem sokáig néma.
 - **Élő stream**: Icecast/Shoutcast stream (MP3, AAC, Ogg; http vagy https; a .pls/.m3u listát is feloldja) a playlist
   elemeként, tervezett hosszal; megszakadáskor újrakapcsolódik, és ha nem jön vissza, továbblép.
@@ -65,8 +65,23 @@ tartalék playout egyetlen asztali alkalmazásban.
 - **Ráfektetés**: egy elem az előtte és utána álló elem átmenetére fektethető, így mindhárom egyszerre szól
   (például egy szignál egy átúsztatás fölött). A saját csatornáján szól; várakozó elemen jobb gomb →
   „Ráfektetés az átmenetre”, vagy húzással a Mix editorban (lásd lent).
-- **Cartwall** a playlist helyén: színes gombfalak azonnal induló hangokkal, a hangtárból vagy fájlból
+- **Cartwall** a hangtár helyén (a hangtár fölötti nézetváltóval): színes gombfalak azonnal induló hangokkal, a hangtárból vagy fájlból
   feltöltve, saját kimenettel (alapból az A lejátszóét követi).
+- **Előadói adatok** a MusicBrainzből (ingyenes), a Wikipédiából és a TheAudioDB-ből (*Beállítások → Előadói
+  adatok*, mind kikapcsolható): fotó, ország, évek, műfaj és életrajz a lejátszóban; az üres album és év kitöltése.
+  A külön **Infó ablak** (a hangtár fejlécének *Infó* gombja, *Eszközök → Infó ablak*, Ctrl+I) a kijelölt vagy az
+  adásban lévő elem minden ismert adatát mutatja.
+- **MIDI-vezérlés** (*Beállítások → MIDI*): MIDI-keverőpult (például RØDECaster Pro) vagy kontroller, tanuló móddal: a
+  gombok indítják és leállítják a lejátszókat, a Következő, a kiúsztatás és a cartwall gombjai; a faderek hangerőt
+  állítanak, vagy fader-indításként működnek.
+- **Külső SQL szerver** (MySQL / MariaDB, *Beállítások → SQL szerver*): a szerver a fő tároló, helyi tartalékkal,
+  így az adás sosem függ a hálózattól; a meglévő adatbázis átvihető (migrálás).
+- **Saját elrendezés**: a nem használt lapok elrejthetők (*Beállítások → Lapok*); minden lista oszlopai
+  átméretezhetők, a szélességeket a program megjegyzi. A felület mérete a *Beállítások → Megjelenés* lapon állítható.
+- **Színsémák** (*Beállítások → Megjelenés*): öt beépített séma (Éter sötét, Grafit, Éjkék, Nagy kontraszt, Világos)
+  és témaszerkesztő az alapszínekhez (háttér, panelek, gombok, keretek, szöveg, halvány szöveg, kiemelő szín,
+  információ, rendben, hiba, a három lejátszó). A változás azonnal látszik; a saját sémák név szerint menthetők, és
+  JSON-fájlba exportálhatók, illetve onnan importálhatók.
 - **Pontos időre igazítás**: minden fix idejű elem (például az óra eleji hírek) előtt látszik, mennyi hiányzik vagy
   mennyivel lóg túl a playlist, és a program javítást javasol: beszúrandó számokat, vagy az ütemező által betett számok
   kivételét, illetve jobban illőre cseréjét, hogy a fix elem néhány másodpercen belül érkezzen (kis túllógás inkább
@@ -80,8 +95,8 @@ tartalék playout egyetlen asztali alkalmazásban.
 
 - **Hangtár** SQLite adatbázisban, saját kategóriákkal, fájlok és egész mappák importálásával,
   elemszerkesztővel (cím, előadó, album, év, kategória, kezdőpont, intro és outro jelölő).
-- **Ütemező** (1920×1080-nál kisebb képernyőn külön ablakban nyílik): órasémák kategóriákból, fix idejű elemekkel és kitöltéssel, heti rács,
-  előadó- és számismétlési szabályok, automatikus előre generálás. Az elemeknek energiája (1–5), tempója (a hangból
+- **Ütemező** (1920×1080-nál kisebb képernyőn külön ablakban nyílik): órasémák kategóriákból, fix idejű elemekkel, kitöltéssel, jegyzet sorokkal és soronkénti sweeperrel,
+  több heti rács kézi vagy időszak szerinti váltással, előadó- (az „A and B” két előadó) és számismétlési szabályok, automatikus előre generálás. Az elemeknek energiája (1–5), tempója (a hangból
   becsülve vagy kopogtatva), hangneme és napszakai lehetnek; a szabályok szétválasztják a lassú számokat, korlátozzák
   az energiaugrást és a tempóváltást, és egy séma-hely energiasávot is kérhet. A kitöltés a következő fix pont közelében
   ér véget (az utolsó 1–3 számot együtt választja ki).

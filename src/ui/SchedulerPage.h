@@ -21,7 +21,8 @@ class SchedulerPage : public QWidget {
     Q_OBJECT
 public:
     SchedulerPage(Database *db, Scheduler *scheduler, QWidget *parent = nullptr);
-    void generateNow();
+    void generateNow();             // mostantól a beállított óraszámra (újra) generál
+    void generateDialog();          // a „Playlistek generálása” gomb: melyik napok, melyik órák
     QString generateInfo() const;   // a legutóbbi generálás összegzése (fejlesztéshez)
     void refreshAll() { categoryAvgMs_.clear(); reloadGrid(); reloadClocks(); }   // kívülről változott adatok után
 
@@ -29,10 +30,20 @@ signals:
     void generated(const GenerateResult &result);
     void message(const QString &text);
 
+protected:
+    bool eventFilter(QObject *o, QEvent *e) override;
+
 private:
     QWidget *buildGridPanel();
     QWidget *buildClockPanel();
     void reloadGrid();
+    void reloadGridList();
+    void reportGenerated(const GenerateResult &r, int firstKey);                // a heti rácsok listája (előbeállítások)
+    void editPeriods();                   // időszakok: mikor melyik rács érvényes
+    int editGrid_ = 1;                    // a szerkesztett heti rács
+    class QComboBox *gridSel_ = nullptr;
+    QLabel *gridState_ = nullptr;
+    QPushButton *gridActive_ = nullptr, *gridDelete_ = nullptr;
     void reloadClocks(int selectId = 0);
     void reloadSlots(int selectSlotId = 0);
     void showSlot();
@@ -42,6 +53,7 @@ private:
     int currentSlotRow() const;
     void pickItem();
     void moveSlot(int delta);
+    void moveSlotTo(int from, int to);     // húzással: a sor a „to” helyre kerül (a többi előtt)
 
     Database *db_;
     Scheduler *scheduler_;
@@ -72,6 +84,10 @@ private:
     QCheckBox *slotFixed_;
     QTimeEdit *slotTime_;
     QLabel *slotHint_;
+    class QLineEdit *slotNote_ = nullptr;           // „Jegyzet”: a felirat
+    QComboBox *slotSweeper_ = nullptr;              // sweeper az ide vezető átmenetre
+    class QDoubleSpinBox *slotSweeperDuck_ = nullptr;
+    QLabel *slotSweeperLabel_ = nullptr, *slotSweeperDuckLabel_ = nullptr;
     bool loading_ = false;
 
     QSpinBox *artistGap_, *titleGap_, *ahead_;

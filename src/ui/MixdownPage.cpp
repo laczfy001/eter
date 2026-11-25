@@ -1,3 +1,4 @@
+#include "Theme.h"
 #include "i18n.h"
 #include "MixdownPage.h"
 #include "audio/Stream.h"
@@ -228,10 +229,10 @@ private:
 void MdTimeline::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
-    p.fillRect(rect(), QColor("#14161b"));
+    p.fillRect(rect(), theme::c("#14161b"));
     const auto &es = page_->entries();
     // Vonalzó
-    p.fillRect(QRect(0, 0, width(), kRuler), QColor("#1a1d23"));
+    p.fillRect(QRect(0, 0, width(), kRuler), theme::c("#1a1d23"));
     QFont f = font();
     f.setPixelSize(10);
     p.setFont(f);
@@ -244,30 +245,30 @@ void MdTimeline::paintEvent(QPaintEvent *)
     const qint64 first = (offset / 1000 / qint64(stepS)) * qint64(stepS);
     for (qint64 s = first; xOf(s * 1000) < width(); s += qint64(stepS)) {
         const double x = xOf(s * 1000);
-        p.setPen(QColor("#3a404b"));
+        p.setPen(theme::c("#3a404b"));
         p.drawLine(QPointF(x, kRuler - 8), QPointF(x, height()));
-        p.setPen(QColor("#8a919b"));
+        p.setPen(theme::c("#8a919b"));
         p.drawText(QPointF(x + 3, 14), mmss(s * 1000));
     }
     const double lh = laneH();
-    p.setPen(QColor("#1f232a"));
+    p.setPen(theme::c("#1f232a"));
     p.drawLine(QPointF(0, kRuler + lh), QPointF(width(), kRuler + lh));
     p.drawLine(QPointF(0, height() - kVtLane), QPointF(width(), height() - kVtLane));
     f.setBold(true);
     p.setFont(f);
-    p.setPen(QColor("#c79bff"));
+    p.setPen(theme::c("#c79bff"));
     p.drawText(QPointF(6, height() - kVtLane + 14), TR("VOICE TRACK"));
     // Elemek
-    static const QColor fills[2] = {QColor("#3a2c10"), QColor("#1d2f47")};
-    static const QColor lines[2] = {QColor("#7a5418"), QColor("#2f5a8a")};
-    static const QColor fgs[2] = {QColor("#ffd58a"), QColor("#9fd0ff")};
+    const QColor fills[2] = {theme::c("#3a2c10"), theme::c("#1d2f47")};
+    const QColor lines[2] = {theme::c("#7a5418"), theme::c("#2f5a8a")};
+    const QColor fgs[2] = {theme::c("#ffd58a"), theme::c("#9fd0ff")};
     for (int i = 0; i < es.size(); ++i) {
         const auto &e = es[i];
         const QRectF r = clipRect(i);
         if (r.right() < 0 || r.left() > width()) continue;
         const int c = page_->laneOf(i);
         { const bool csel = i == page_->selected() && !page_->vtSelected();
-        p.setPen(QPen(csel ? QColor("#f5a524") : lines[c], csel ? 2 : 1)); }
+        p.setPen(QPen(csel ? theme::c("#f5a524") : lines[c], csel ? 2 : 1)); }
         p.setBrush(fills[c]);
         p.drawRoundedRect(r, 4, 4);
         // Hullámforma
@@ -285,7 +286,7 @@ void MdTimeline::paintEvent(QPaintEvent *)
         // Kiúsztatás
         if (e.fadeOut > 0) {
             const double fx = r.right() - e.fadeOut / 1000.0 * pps;
-            p.setPen(QPen(QColor("#ffffff"), 1.5));
+            p.setPen(QPen(theme::c("#ffffff"), 1.5));
             p.drawLine(QPointF(fx, r.top() + 16), QPointF(r.right(), r.bottom() - 2));
         }
         p.setPen(fgs[c]);
@@ -298,10 +299,10 @@ void MdTimeline::paintEvent(QPaintEvent *)
             for (int k = 0; k < e.env.size(); ++k)
                 if (e.env[k].ms >= e.cueIn && e.env[k].ms <= e.end) poly << envPoint(i, k);
             poly << QPointF(r.right(), envY(i, env::dbAt(e.env, e.end)));
-            p.setPen(QPen(QColor("#ffffff"), envMode ? 2 : 1.2));
+            p.setPen(QPen(theme::c("#ffffff"), envMode ? 2 : 1.2));
             p.drawPolyline(poly);
             if (envMode) {
-                p.setBrush(QColor("#ffffff"));
+                p.setBrush(theme::c("#ffffff"));
                 for (int k = 0; k < e.env.size(); ++k)
                     if (e.env[k].ms >= e.cueIn && e.env[k].ms <= e.end) p.drawRect(QRectF(envPoint(i, k) - QPointF(4, 4), QSizeF(8, 8)));
             }
@@ -311,10 +312,10 @@ void MdTimeline::paintEvent(QPaintEvent *)
         if (!e.vtPath.isEmpty()) {
             const QRectF v = vtRect(i);
             const bool vsel = page_->vtSelected() && i == page_->selected();
-            p.setPen(QPen(vsel ? QColor("#f5a524") : QColor("#6a4fa0"), vsel ? 2 : 1));
-            p.setBrush(QColor("#2a1f40"));
+            p.setPen(QPen(vsel ? theme::c("#f5a524") : theme::c("#6a4fa0"), vsel ? 2 : 1));
+            p.setBrush(theme::c("#2a1f40"));
             p.drawRoundedRect(v, 3, 3);
-            p.setPen(QColor("#d7b8ff"));
+            p.setPen(theme::c("#d7b8ff"));
             p.drawText(v.adjusted(4, 2, -2, 0), Qt::AlignLeft | Qt::AlignTop, e.vtTitle);
         }
     }
@@ -322,14 +323,14 @@ void MdTimeline::paintEvent(QPaintEvent *)
     if (dropX_ >= 0) {
         const double y0 = dropLane_ == 2 ? height() - kVtLane : kRuler + dropLane_ * lh;
         const double h = dropLane_ == 2 ? kVtLane : lh;
-        p.fillRect(QRectF(dropX_ - 1.5, y0, 3, h), QColor("#f5a524"));
+        p.fillRect(QRectF(dropX_ - 1.5, y0, 3, h), theme::c("#f5a524"));
         p.fillRect(QRectF(dropX_, y0 + 2, 60, h - 4), QColor(245, 165, 36, 40));
     }
     // Lejátszási pozíció
     const double hx = xOf(page_->playheadMs());
-    p.fillRect(QRectF(hx - 1, 0, 2, height()), QColor("#ff5a4f"));
+    p.fillRect(QRectF(hx - 1, 0, 2, height()), theme::c("#ff5a4f"));
     if (es.isEmpty()) {
-        p.setPen(QColor("#8a919b"));
+        p.setPen(theme::c("#8a919b"));
         p.drawText(rect(), Qt::AlignCenter, TR("Húzz ide elemeket a hangtárból (jobb oldalt) vagy a főablak hangtárából."));
     }
 }

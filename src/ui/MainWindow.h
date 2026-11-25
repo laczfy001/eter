@@ -1,4 +1,5 @@
 #pragma once
+#include "core/SmartMixConfig.h"
 #include "net/WebSync.h"
 #include "audio/SmartMix.h"
 #include "audio/Engine.h"
@@ -26,6 +27,7 @@ class QToolButton;
 class PlayerWidget;
 class MeterWidget;
 class SettingsDialog;
+class InfoWindow;
 class LibraryPanel;
 class PlaylistTable;
 class SchedulerPage;
@@ -90,7 +92,12 @@ public:
     CartwallPanel *cartwall() { return cartPanel_; }
     // A hangtárelem szerkesztője; itemId <= 0: a kijelölt elem.
     ItemEditorDialog *openItemEditor(int itemId = 0);
-    void showLeft(int view);          // 0: playlist, 1: cartwall
+    void showRight(int view);         // 0: hangtár, 1: lejátszott elemek, 2: cartwall
+    // A főablak lapjainak (füleinek) elrejtése (Beállítások → Lapok)
+    static QVector<std::pair<QString, QString>> tabList();
+    static QStringList hiddenTabs();
+    static void setHiddenTabs(const QStringList &keys);
+    void applyTabVisibility();
     PlaylistTable *playlistTable() { return table_; }
     TimedEventsPage *eventsPage() { return eventsPage_; }
     bool following() const { return follow_; }
@@ -114,6 +121,7 @@ signals:
     void devicesChanged();
 
 protected:
+    void changeEvent(QEvent *e) override;   // stílusváltás (Beállítások → Megjelenés): a lejátszók színei
     void closeEvent(QCloseEvent *) override;
 
 private:
@@ -136,12 +144,13 @@ private:
         qint64 overlayOffsetMs = 0;
         double overlayDuckDb = 0;
         int overlayVoice = -1;            // szóló ráfektetett elem csatornája (0 vagy 1), különben −1
+        QString note;                     // felirat a sor fölött (az órasémák „Jegyzet” eleme)
     };
     // A táblázat egy sora: playlist-sor, vagy egy blokk fejléce (row < 0; first/count: a blokk sorai).
     // Item: playlist-sor (row); Header: blokk fejléce (first, count); Hour: óraelválasztó (first: az óra első sora);
-    // Wave: a fölötte lévő sor (row) lenyitott mini mix editora.
+    // Wave: a fölötte lévő sor (row) lenyitott mini mix editora; Note: felirat az alatta lévő sor (first) előtt.
     struct ViewRow {
-        enum Kind { Item, Header, Hour, Wave };
+        enum Kind { Item, Header, Hour, Wave, Note };
         int row = -1, first = 0, count = 0;
         Kind kind = Item;
         int hourKey = 0;
@@ -214,6 +223,7 @@ private:
     void updateClock();
     void stopAll();
     void openSettings();
+
     void openLog();
     void about();
 
@@ -260,6 +270,11 @@ private:
     QPushButton *toPlayer_[kPlayers] = {nullptr, nullptr, nullptr};
     bool autoMix_ = true;
     eter::SmartMixSettings smart_;
+    mutable MixSettingsCache mixCache_;   // kategóriánként a mix sablon szerinti beállítások
+    const eter::SmartMixSettings &smartFor(const Row *outRow) const
+    {
+        return outRow ? mixCache_.get(db_, outRow->item.categoryId).smart : smart_;
+    }
     class ChannelMixer *mixer_ = nullptr;
     class MixdownPage *mixdownPage_ = nullptr;
     float vtPeak_[2] = {0.f, 0.f}, ovlPeak_[2] = {0.f, 0.f};   // a voice track és a ráfektetett elemek csúcsa (a mixerhez)
@@ -287,6 +302,10 @@ private:
     int clockDivider_ = 0;
     QDateTime chainBase_;                 // a várakozó elemek becsült kezdésének alapja
     QPointer<SettingsDialog> settings_;
+    InfoWindow *info_ = nullptr;
+    class MidiControl *midi_ = nullptr;
+    void setupMidi();
+    class QAction *infoAction_ = nullptr;
     QPointer<QDialog> logDialog_;
     QPointer<ItemEditorDialog> itemEditor_;
     Scheduler scheduler_;
@@ -324,9 +343,11 @@ private:
     MixEditorPage *mixPage_ = nullptr;
     PlaylistEditorPage *plPage_ = nullptr;
     CartwallPanel *cartPanel_ = nullptr;
-    QStackedWidget *leftStack_ = nullptr;
-    QVector<QToolButton *> viewButtons_[2];
-    QWidget *makeViewSwitch();
+    QStackedWidget *rightStack_ = nullptr;
+    class ServerSync *sync_ = nullptr;
+    class ArtistInfoService *artistInfo_ = nullptr;
+    QLabel *sqlStatus_ = nullptr;
+    QToolButton *tabSettings_ = nullptr;
     QToolButton *tabPl_ = nullptr;
     int mixVersion_ = 0, planVersion_ = -1, planFrom_ = -2, planTo_ = -2;
     Transition planTransition_;
@@ -456,6 +477,16 @@ public:
     void importDatabase(QWidget *parent);
     QString databaseSummary() const;
     Database *database() const { return db_; }
+    // Külső SQL szerver (fő tároló, helyi tartalékkal): a háttérszál, és az állapota az állapotsorban.
+    void setServerSync(class ServerSync *sync);
+    class ServerSync *serverSync() const { return sync_; }
+    class ArtistInfoService *artistInfo() const { return artistInfo_; }
+    void openSettingsPage(const QString &title);   // a Beállítások egy lapja (a fül felirata)
+    void toggleInfoWindow();
+    class MidiControl *midiControl() const { return midi_; }
+    PlayerWidget *playerWidget(int i) const { return i >= 0 && i < kPlayers ? players_[i] : nullptr; }   // fejlesztéshez
+    InfoWindow *infoWindow(bool create = true);
+    void refreshPlayersArtistInfo();     // a lejátszók előadói adatai újra (be- vagy kikapcsolás után)
     // A program indulásakor: ha importálásra váró fájl van, az lép az adatbázis helyére. Üres: rendben (vagy nem volt).
     static QString applyPendingImport(const QString &dbPath);
     // A párbeszédablakok nélküli lépések (a tesztek is ezeket hívják).

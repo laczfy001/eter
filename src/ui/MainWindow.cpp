@@ -1,5 +1,7 @@
 #include "i18n.h"
 #include "MainWindow.h"
+#include "db/ServerSync.h"
+#include "net/ArtistInfo.h"
 #include "audio/Stream.h"
 #include "net/Remote.h"
 #include "Library.h"
@@ -19,6 +21,8 @@
 #include "PlaylistTable.h"
 #include "SchedulerPage.h"
 #include "SettingsDialog.h"
+#include "InfoWindow.h"
+#include "midi/MidiControl.h"
 #include "core/LibraryAnalyzer.h"
 #include "core/SmartMixConfig.h"
 #include "core/MusicKey.h"
@@ -147,10 +151,13 @@ MainWindow::MainWindow(Database *db, const QString &backendOverride, QWidget *pa
     fadeMs_ = std::clamp(db_->setting("default_fade_out_ms", "2500").toInt(), 100, 15000);
 
     autoMix_ = db_->setting("mix_mode", "auto") != QLatin1String("editor");
+    // Előadói adatok (Beállítások → Előadói adatok). A lejátszók előtt: a létrejöttükkor feliratkoznak a frissítéseire.
+    artistInfo_ = new ArtistInfoService(db_, this);
     buildUi();
     buildMenus();
     startAudio();
     setAutoMix(autoMix_);
+    setupMidi();
     reloadMixSettings();
 
     // Az előző futásból megmaradt, még le nem játszott sorok
@@ -188,7 +195,12 @@ MainWindow::MainWindow(Database *db, const QString &backendOverride, QWidget *pa
         if (remote_->count(remote::Server::Backups) && snapshotTimer_ && !snapshotTimer_->isActive()) snapshotTimer_->start();
     });
     connect(db_, &Database::itemsChanged, this, [this] { if (remote_ && remote_->clientCount()) remoteLibTimer_->start(); });
-    connect(db_, &Database::categoriesChanged, this, [this] { if (remote_ && remote_->clientCount()) remoteLibTimer_->start(); });
+    connect(db_, &Database::categoriesChanged, this, [this] {
+        if (remote_ && remote_->clientCount()) remoteLibTimer_->start();
+        mixCache_.clear();      // a kategóriák mix sablonja változhatott
+        ++mixVersion_;
+        if (mixPage_) mixPage_->reloadSmartMix();
+    });
     configureRemote();
 
     // Hiányzó fájlok: változás után rövid késleltetéssel, és percenként újra (a hálózati meghajtó eltűnhet).
@@ -324,6 +336,7 @@ void MainWindow::buildUi()
     auto *settingsTab = addTab(TR("Beállítások"), true, TR("Hangkimenetek beállítása"));
     settingsTab->setCheckable(false);
     connect(settingsTab, &QToolButton::clicked, this, &MainWindow::openSettings);
+    tabSettings_ = settingsTab;
     tabs->addStretch(1);
 
     // Átmenetek: automatikus mix vagy a Mix editor mentett beállításai
@@ -410,7 +423,11 @@ void MainWindow::buildUi()
         showPage(4);
         eventsPage_->newForItem(id);
     });
-    connect(library_, &LibraryPanel::selectionTouched, this, [this] { lastSelectionInLibrary_ = true; });
+    connect(library_, &LibraryPanel::selectionTouched, this, [this] {
+        lastSelectionInLibrary_ = true;
+        if (info_) info_->selectionChanged();
+    });
+    connect(library_, &LibraryPanel::infoRequested, this, &MainWindow::toggleInfoWindow);
     connect(library_, &LibraryPanel::previewRequested, this, [this] {
         lastSelectionInLibrary_ = true;
         if (pflActive_) stopPfl();
@@ -420,15 +437,25 @@ void MainWindow::buildUi()
     auto *split = new QSplitter(Qt::Horizontal);
     split->setHandleWidth(8);
     split->setChildrenCollapsible(false);
-    // A bal oldalon a playlist vagy a cartwall látszik; a fejlécükben lévő váltóval cserélhetők.
-    leftStack_ = new QStackedWidget;
-    leftStack_->addWidget(buildPlaylistPanel());
+    // Bal oldalon a playlist; jobb oldalon a hangtár, a lejátszott elemek vagy a cartwall (a fejlécük legördülőjével).
+    split->addWidget(buildPlaylistPanel());
     cartPanel_ = new CartwallPanel(db_, &engine_);
-    cartPanel_->setHeaderWidget(makeViewSwitch());
+    {
+        auto *view = new QComboBox;
+        view->setObjectName("cartView");
+        view->addItems({TR("Adatbázis"), TR("Lejátszott elemek"), TR("Cartwall")});
+        view->setCurrentIndex(2);
+        view->setFocusPolicy(Qt::NoFocus);
+        view->setToolTip(TR("Váltás a hangtár, az adásba ment elemek és a cartwall között"));
+        connect(view, &QComboBox::activated, this, [this](int i) { showRight(i); });
+        cartPanel_->setHeaderWidget(view);
+    }
     connect(cartPanel_, &CartwallPanel::message, this, [this](const QString &m) { say(m, 8000); });
-    leftStack_->addWidget(cartPanel_);
-    split->addWidget(leftStack_);
-    split->addWidget(library_);
+    connect(library_, &LibraryPanel::viewRequested, this, [this](int v) { showRight(v); });
+    rightStack_ = new QStackedWidget;
+    rightStack_->addWidget(library_);
+    rightStack_->addWidget(cartPanel_);
+    split->addWidget(rightStack_);
     split->setStretchFactor(0, 11);
     split->setStretchFactor(1, 10);
     split->setSizes({740, 680});
@@ -488,7 +515,8 @@ void MainWindow::buildUi()
     bodyLayout->addWidget(stack_, 1);
     root->addWidget(body, 1);
     showPage(0);
-    showLeft(db_->setting("left_view", "0").toInt());
+    applyTabVisibility();
+    showRight(db_->setting("right_view", db_->setting("left_view", "0") == QLatin1String("1") ? "2" : "0").toInt());
     // A legutóbb nyitva hagyott külön ablakok újra megnyílnak (a főablak megjelenése után).
     QTimer::singleShot(0, this, [this] {
         if (!separatePageWindows()) return;
@@ -502,6 +530,9 @@ void MainWindow::buildUi()
 
     dbStatus_ = new QLabel;
     statusBar()->addPermanentWidget(dbStatus_);
+    sqlStatus_ = new QLabel;
+    sqlStatus_->hide();
+    statusBar()->addPermanentWidget(sqlStatus_);
     schedStatus_ = new QLabel;
     statusBar()->addPermanentWidget(schedStatus_);
     audioStatus_ = new QLabel;
@@ -646,36 +677,93 @@ QWidget *MainWindow::buildDeck()
     return deck;
 }
 
-QWidget *MainWindow::makeViewSwitch()
+// A lapok (fülek) listája a Beállítások → Lapok oldalhoz: kulcs, felirat. A „Beállítások” fül elrejtése után is
+// elérhető az Eszközök → Beállítások menüből (Ctrl+,).
+QVector<std::pair<QString, QString>> MainWindow::tabList()
 {
-    auto *box = new QWidget;
-    box->setObjectName("viewSwitch");
-    box->setAttribute(Qt::WA_StyledBackground);
-    auto *l = new QHBoxLayout(box);
-    l->setContentsMargins(2, 2, 2, 2);
-    l->setSpacing(2);
-    const QString texts[2] = {TR("Playlist"), TR("Cartwall")};
-    const QString tips[2] = {TR("A playlist megjelenítése"), TR("A cartwall megjelenítése a playlist helyén")};
-    for (int i = 0; i < 2; ++i) {
-        auto *b = new QToolButton;
-        b->setText(texts[i]);
-        b->setToolTip(tips[i]);
-        b->setCheckable(true);
-        b->setFocusPolicy(Qt::NoFocus);
-        connect(b, &QToolButton::clicked, this, [this, i] { showLeft(i); });
-        l->addWidget(b);
-        viewButtons_[i] << b;
-    }
-    return box;
+    return {{"live", TR("Adás")},          {"scheduler", TR("Ütemező")},  {"mix", TR("Mix editor")},
+            {"playlists", TR("Playlist szerkesztő")}, {"mixdown", TR("Mixdown")}, {"events", TR("Időzítések")},
+            {"settings", TR("Beállítások")}};
 }
 
-void MainWindow::showLeft(int view)
+QStringList MainWindow::hiddenTabs()
 {
-    view = view == 1 ? 1 : 0;
-    if (leftStack_) leftStack_->setCurrentIndex(view);
-    for (int i = 0; i < 2; ++i)
-        for (QToolButton *b : viewButtons_[i]) b->setChecked(i == view);
-    if (db_->setting("left_view", "0").toInt() != view) db_->setSetting("left_view", QString::number(view));
+    return QSettings().value("ui/hiddenTabs").toStringList();
+}
+
+void MainWindow::setHiddenTabs(const QStringList &keys)
+{
+    QSettings().setValue("ui/hiddenTabs", keys);
+}
+
+// A rejtett lap gombja eltűnik; a lap a háttérben tovább működik (például az időzítések lefutnak). Ha éppen az
+// látszott, az Adás lap jön elő.
+void MainWindow::applyTabVisibility()
+{
+    const QStringList hidden = hiddenTabs();
+    const std::pair<const char *, QToolButton *> tabs[] = {{"live", tabLive_},   {"scheduler", tabSched_},
+                                                           {"mix", tabMix_},     {"playlists", tabPl_},
+                                                           {"mixdown", tabMixdown_}, {"events", tabEvents_},
+                                                           {"settings", tabSettings_}};
+    for (const auto &[key, button] : tabs)
+        if (button) button->setVisible(!hidden.contains(QLatin1String(key)));
+    if (hidden.contains(QLatin1String("scheduler")) && schedWindow_) schedWindow_->hide();
+    if (hidden.contains(QLatin1String("mix")) && mixWindow_) mixWindow_->hide();
+    static const char *pageKeys[] = {"live", "scheduler", "mix", "playlists", "events", "mixdown"};
+    const int cur = stack_ ? stack_->currentIndex() : 0;
+    if (cur > 0 && cur < 6 && hidden.contains(QLatin1String(pageKeys[cur]))) showPage(0);
+}
+
+void MainWindow::refreshPlayersArtistInfo()
+{
+    for (PlayerWidget *p : players_) p->refreshArtistInfo();
+    // Bekapcsoláskor a már betöltött elemek előadói is sorra kerülnek.
+    if (artistInfo_)
+        for (PlayerWidget *p : players_)
+            if (p->rowId >= 0)
+                if (const Row *r = rowById(p->rowId)) artistInfo_->requestForPlayer(r->item.id);
+}
+
+void MainWindow::setServerSync(ServerSync *sync)
+{
+    sync_ = sync;
+    if (!sync_) return;
+    auto update = [this] {
+        const ServerSync::State st = sync_->state();
+        sqlStatus_->setVisible(st != ServerSync::Off);
+        const bool bad = st == ServerSync::Offline || st == ServerSync::LostLock || st == ServerSync::Failed;
+        sqlStatus_->setText(bad ? TR("SQL szerver: nem ír") : st == ServerSync::Online ? TR("SQL szerver: rendben") : TR("SQL szerver: …"));
+        sqlStatus_->setStyleSheet(bad ? QStringLiteral("color: #ff8f85;") : QString());
+        sqlStatus_->setToolTip(TR("SQL szerver: %1").arg(sync_->statusText()));
+    };
+    connect(sync_, &ServerSync::statusChanged, this, update);
+    update();
+}
+
+void MainWindow::changeEvent(QEvent *e)
+{
+    if (e->type() == QEvent::StyleChange)
+        for (int i = 0; i < kPlayers; ++i)
+            if (toPlayer_[i]) {
+                theme::rawCss(toPlayer_[i]);
+                toPlayer_[i]->setStyleSheet(QStringLiteral("QPushButton { color: %1; font-weight: 600; padding: 0 8px; }").arg(playerColor(i).name()));
+            }
+    QMainWindow::changeEvent(e);
+}
+
+// A jobb oldali panel: 0 hangtár, 1 lejátszott elemek, 2 cartwall.
+void MainWindow::showRight(int view)
+{
+    view = std::clamp(view, 0, 2);
+    if (!rightStack_) return;
+    if (view == 2) {
+        rightStack_->setCurrentWidget(cartPanel_);
+        if (auto *c = cartPanel_->findChild<QComboBox *>("cartView")) c->setCurrentIndex(2);
+    } else {
+        library_->setView(view);
+        rightStack_->setCurrentWidget(library_);
+    }
+    if (db_->setting("right_view", "0").toInt() != view) db_->setSetting("right_view", QString::number(view));
 }
 
 QWidget *MainWindow::buildPlaylistPanel()
@@ -700,6 +788,7 @@ QWidget *MainWindow::buildPlaylistPanel()
     };
     for (int i = 0; i < kPlayers; ++i) {
         toPlayer_[i] = mk(QStringLiteral("→") + playerLetter(i), TR("A kijelölt sor betöltése a(z) %1 lejátszóba").arg(playerLetter(i)));
+        theme::rawCss(toPlayer_[i]);
         toPlayer_[i]->setStyleSheet(QStringLiteral("QPushButton { color: %1; font-weight: 600; padding: 0 8px; }").arg(playerColor(i).name()));
         connect(toPlayer_[i], &QPushButton::clicked, this, [this, i] { loadRowInto(selectedRowId(), i); });
     }
@@ -727,8 +816,7 @@ QWidget *MainWindow::buildPlaylistPanel()
         plMenu->addSeparator();
         plMenu->addAction(TR("Playlist szerkesztő megnyitása…"), this, [this] { showPage(3); });
     });
-    delete title;
-    h->addWidget(makeViewSwitch());
+    h->addWidget(title);
     h->addStretch(1);
     h->addWidget(plBtn);
     for (QPushButton *b : toPlayer_) h->addWidget(b);
@@ -983,6 +1071,13 @@ void MainWindow::buildMenus()
     auto *tools = menuBar()->addMenu(TR("&Eszközök"));
     tools->addAction(TR("Beállítások…"), QKeySequence(Qt::CTRL | Qt::Key_Comma), this,
                      &MainWindow::openSettings);
+    infoAction_ = tools->addAction(TR("Infó ablak"), QKeySequence(Qt::CTRL | Qt::Key_I), this, &MainWindow::toggleInfoWindow);
+    infoAction_->setCheckable(true);
+    // Ha a program bezárásakor nyitva volt, újra megnyílik (a helyén és a méretében).
+    if (QSettings().value(QStringLiteral("ui/info/open"), false).toBool())
+        QTimer::singleShot(800, this, [this] {
+            if (isVisible()) infoWindow()->show();
+        });
 
     auto *help = menuBar()->addMenu(TR("&Súgó"));
     help->addAction(TR("Névjegy"), this, &MainWindow::about);
@@ -1596,9 +1691,10 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     // A sorok listája és a nézet egy pillanatra eltérhet (a frissítés előtt): ilyenkor nincs mit rajzolni.
     if ((vr.kind == ViewRow::Item || vr.kind == ViewRow::Wave) && (vr.row < 0 || vr.row >= rows_.size())) return;
     if (vr.kind == ViewRow::Header && (vr.first < 0 || vr.first + vr.count > rows_.size() || vr.count <= 0)) return;
+    if (vr.kind == ViewRow::Note && (vr.first < 0 || vr.first >= rows_.size())) return;
     const QRect r = opt.rect;
     const bool selected = opt.state & QStyle::State_Selected;
-    static const QColor panel("#1b1e24"), line("#0f1114");
+    const QColor panel = theme::c("#1b1e24"), line = theme::c("#0f1114");
     QFont sans = opt.font, sansBold = opt.font, small = opt.font, mono("IBM Plex Mono"), monoBig("IBM Plex Mono"), monoSmall("IBM Plex Mono");
     sans.setPixelSize(12);
     sansBold.setPixelSize(14);
@@ -1613,21 +1709,39 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     p->setClipRect(r);
 
     if (vr.kind == ViewRow::Hour) {
-        p->fillRect(r, QColor("#121418"));
-        p->fillRect(QRect(r.left(), r.bottom(), r.width(), 1), QColor("#30353e"));
+        p->fillRect(r, theme::c("#121418"));
+        p->fillRect(QRect(r.left(), r.bottom(), r.width(), 1), theme::c("#30353e"));
         const int key = vr.hourKey;
         const QDate d = QDate::fromString(QString::number(key / 100), "yyyyMMdd");
         const int hr = key % 100;
         QString text = QStringLiteral("%1:00 – %2:00").arg(hr, 2, 10, QLatin1Char('0')).arg((hr + 1) % 24, 2, 10, QLatin1Char('0'));
         if (d.isValid() && d != eter::now().date()) text += QStringLiteral("  ·  ") + i18n::locale().toString(d, TR("MMM d., dddd"));
         p->setFont(monoSmall);
-        p->setPen(QColor("#c9ced6"));
+        p->setPen(theme::c("#c9ced6"));
         p->drawText(r.adjusted(12, 0, -12, 0), Qt::AlignLeft | Qt::AlignVCenter, text);
         p->restore();
         return;
     }
     if (vr.kind == ViewRow::Wave) {
-        p->fillRect(r, QColor("#101215"));
+        p->fillRect(r, theme::c("#101215"));
+        p->restore();
+        return;
+    }
+    if (vr.kind == ViewRow::Note) {
+        // Az órasémák „Jegyzet” eleme: csak felirat az alatta álló elem előtt.
+        const Row &next = rows_[vr.first];
+        const bool done = next.state != Row::Pending && next.state != Row::Cued && next.state != Row::Playing;
+        p->fillRect(r, theme::c("#1d1a12"));
+        p->fillRect(QRect(r.left(), r.top(), 5, r.height()), theme::c("#c9a04a"));
+        p->fillRect(QRect(r.left(), r.bottom(), r.width(), 1), theme::c("#30353e"));
+        if (done) p->setOpacity(0.5);
+        QFont f = sans;
+        f.setItalic(true);
+        p->setFont(f);
+        p->setPen(theme::c("#e8d6a8"));
+        const QString text = QStringLiteral("✎  ") + QString(next.note).replace(QLatin1Char('\n'), QStringLiteral("  ·  "));
+        p->drawText(r.adjusted(14, 0, -12, 0), Qt::AlignLeft | Qt::AlignVCenter,
+                    QFontMetrics(f).elidedText(text, Qt::ElideRight, r.width() - 26));
         p->restore();
         return;
     }
@@ -1647,18 +1761,18 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
             else if (m.state != Row::Pending) ++done;
             if (!foundLive && (m.state == Row::Playing || m.state == Row::Cued || m.state == Row::Pending)) { firstLive = i; foundLive = true; }
         }
-        QColor bg("#262b34"), stripe("#8a93a0"), statusColor("#c9ced6");
+        QColor bg = theme::c("#262b34"), stripe = theme::c("#8a93a0"), statusColor = theme::c("#c9ced6");
         QString status;
-        if (playing >= 0) { status = TR("ADÁSBAN · %1/%2").arg(done + 1).arg(vr.count); bg = mixColor(panel, theme::amber, 0.42); stripe = theme::amber; statusColor = Qt::white; }
+        if (playing >= 0) { status = TR("ADÁSBAN · %1/%2").arg(done + 1).arg(vr.count); bg = mixColor(panel, theme::amber, 0.42); stripe = theme::amber; statusColor = theme::c(QColor(Qt::white)); }
         else if (done == vr.count) { status = TR("lejátszva"); p->setOpacity(0.55); }
-        else if (cued >= 0) { status = TR("KÉSZENLÉT · %1").arg(cued + 1); bg = mixColor(panel, theme::blue, 0.30); stripe = theme::blue; statusColor = Qt::white; }
+        else if (cued >= 0) { status = TR("KÉSZENLÉT · %1").arg(cued + 1); bg = mixColor(panel, theme::blue, 0.30); stripe = theme::blue; statusColor = theme::c(QColor(Qt::white)); }
         else if (done > 0) status = TR("%1/%2 lejátszva").arg(done).arg(vr.count);
         p->fillRect(r, bg);
         p->fillRect(QRect(r.left(), r.top(), 5, r.height()), stripe);
         p->fillRect(QRect(r.left(), r.bottom(), r.width(), 1), line);
         int x = r.left() + 13;
         p->setFont(mono);
-        p->setPen(QColor("#e8eaed"));
+        p->setPen(theme::c("#e8eaed"));
         p->drawText(QRect(x, r.top(), 74, r.height()), Qt::AlignVCenter, firstLive < startText_.size() ? startText_[firstLive] : QString());
         x += 82;
         const int right = r.right() - 10;
@@ -1666,21 +1780,21 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
         p->setPen(statusColor);
         p->drawText(QRect(right - 118, r.top(), 118, r.height()), Qt::AlignVCenter, status);
         p->setFont(monoBig);
-        p->setPen(QColor("#e8eaed"));
+        p->setPen(theme::c("#e8eaed"));
         p->drawText(QRect(right - 118 - 70, r.top(), 64, r.height()), Qt::AlignVCenter | Qt::AlignRight, theme::formatTime(frames));
         p->setFont(sans);
-        p->setPen(QColor("#9aa3af"));
+        p->setPen(theme::c("#9aa3af"));
         p->drawText(QRect(right - 118 - 70 - 80, r.top(), 74, r.height()), Qt::AlignVCenter | Qt::AlignRight, TR("%1 elem").arg(vr.count));
         QString title = QStringLiteral("%1  %2").arg(open ? QStringLiteral("▾") : QStringLiteral("▸"), head.groupName);
         if (!open && !nowTitle.isEmpty()) title += TR("  –  most: %1").arg(nowTitle);
         p->setFont(sansBold);
-        p->setPen(QColor("#f3f4f6"));
+        p->setPen(theme::c("#f3f4f6"));
         const int tw = right - 118 - 70 - 80 - x - 8;
         p->drawText(QRect(x, r.top(), tw, r.height()), Qt::AlignVCenter, QFontMetrics(sansBold).elidedText(title, Qt::ElideRight, tw));
         if (selected) {
             p->setOpacity(1.0);
-            p->fillRect(r, QColor(255, 255, 255, 26));
-            p->setPen(QColor(255, 255, 255, 170));
+            p->fillRect(r, theme::c(QColor(255, 255, 255, 26)));
+            p->setPen(theme::c(QColor(255, 255, 255, 170)));
             p->setBrush(Qt::NoBrush);                      // a típusikon ecsetje ne töltse ki a sort
         p->drawRect(r.adjusted(0, 0, -1, -1));
         }
@@ -1693,7 +1807,7 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     const Row &row = rows_[i];
     const bool member = row.groupId && vr.count > 0;
     QColor cat(row.item.color);
-    if (!cat.isValid()) cat = QColor("#8a93a0");
+    if (!cat.isValid()) cat = theme::c("#8a93a0");
     const bool strong = row.item.kind != QLatin1String("music");
     QColor bg = mixColor(panel, cat, strong ? 0.34 : 0.16), stripe = cat, statusColor("#c9ced6");
     QString status;
@@ -1704,7 +1818,7 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
         bg = mixColor(panel, theme::amber, out ? 0.20 : 0.42);
         stripe = row.player >= 0 ? playerColor(row.player) : theme::amber;
         status = rowPlayerStatus(row);
-        statusColor = out ? theme::amberSoft : QColor(Qt::white);
+        statusColor = out ? theme::amberSoft : theme::c(QColor(Qt::white));
         break;
     }
     case Row::Cued: {
@@ -1712,7 +1826,7 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
         bg = mixColor(panel, theme::blue, standby ? 0.30 : 0.14);
         stripe = row.player >= 0 ? playerColor(row.player) : theme::blue;
         status = rowPlayerStatus(row);
-        statusColor = standby ? QColor(Qt::white) : theme::blueSoft;
+        statusColor = standby ? theme::c(QColor(Qt::white)) : theme::blueSoft;
         break;
     }
     case Row::Pending:
@@ -1721,37 +1835,37 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     case Row::Played: status = TR("lejátszva"); dim = true; break;
     case Row::Skipped: status = TR("kihagyva"); dim = true; break;
     case Row::Failed:
-        bg = mixColor(panel, QColor("#e5484d"), 0.22);
-        stripe = QColor("#e5484d");
+        bg = mixColor(panel, theme::c("#e5484d"), 0.22);
+        stripe = theme::c("#e5484d");
         status = TR("hibás fájl");
-        statusColor = QColor("#ffb4ae");
+        statusColor = theme::c("#ffb4ae");
         break;
     }
     if (rowMissing(row)) {
         // A fájl nem érhető el: adásba kerülésekor kimaradna.
-        bg = mixColor(panel, QColor("#e5484d"), 0.30);
-        stripe = QColor("#e5484d");
+        bg = mixColor(panel, theme::c("#e5484d"), 0.30);
+        stripe = theme::c("#e5484d");
         status = TR("HIÁNYZÓ FÁJL");
-        statusColor = QColor("#ffb4ae");
+        statusColor = theme::c("#ffb4ae");
     }
-    static const QColor purple("#b99cff");
+    const QColor purple = theme::c("#b99cff");
     const bool ovlActive = row.overlay && (row.overlayVoice >= 0 || overlayActive(i));
     if (ovlActive && row.state == Row::Playing) {
         bg = mixColor(panel, purple, 0.45);
         stripe = purple;
         status = TR("RÁFEKTETVE · SZÓL");
-        statusColor = Qt::white;
+        statusColor = theme::c(QColor(Qt::white));
     } else if (ovlActive) {
         bg = mixColor(panel, purple, 0.20);
         stripe = purple;
         status = TR("RÁFEKTETVE");
-        statusColor = QColor("#ddd2ff");
+        statusColor = theme::c("#ddd2ff");
     }
     if (dim) p->setOpacity(0.55);
     p->fillRect(r, bg);
     int x = r.left();
     if (member) {                                       // blokk tagja: szürke sáv és behúzás
-        p->fillRect(QRect(x, r.top(), 3, r.height()), QColor("#8a93a0"));
+        p->fillRect(QRect(x, r.top(), 3, r.height()), theme::c("#8a93a0"));
         x += 8;
     }
     if (row.overlay && (ovlActive || dim)) {                // ráfektetett elem: behúzva, a két szomszédja közé kötve
@@ -1761,10 +1875,10 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     p->fillRect(QRect(x, r.top(), 5, r.height()), stripe);
     p->fillRect(QRect(r.left(), r.bottom(), r.width(), 1), line);
     x += 13;
-    const QColor sub("#c3c8d0");
+    const QColor sub = theme::c("#c3c8d0");
     // 1. kezdés és jelölő
     p->setFont(mono);
-    p->setPen(QColor("#e8eaed"));
+    p->setPen(theme::c("#e8eaed"));
     p->drawText(QRect(x, r.top() + 7, 80, 18), Qt::AlignLeft | Qt::AlignVCenter, i < startText_.size() ? startText_[i] : QString());
     p->setFont(monoSmall);
     p->setPen(sub);
@@ -1788,7 +1902,7 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
         QFont g = sansBold;
         g.setPixelSize(15);
         p->setFont(g);
-        p->setPen(QColor("#101215"));
+        p->setPen(theme::c("#101215"));
         p->drawText(box, Qt::AlignCenter, glyph);
         p->setBrush(Qt::NoBrush);
         p->setRenderHint(QPainter::Antialiasing, false);
@@ -1796,7 +1910,7 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     x += 36;
     // 3. hossz és hátralévő idő
     p->setFont(monoBig);
-    p->setPen(Qt::white);
+    p->setPen(theme::c(QColor(Qt::white)));
     p->drawText(QRect(x, r.top() + 5, 64, 22), Qt::AlignLeft | Qt::AlignVCenter, row.frames > 0 ? theme::formatTime(row.frames) : QStringLiteral("?"));
     double progress = -1;
     if (row.state == Row::Playing && row.overlayVoice >= 0) {
@@ -1805,7 +1919,7 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
         if (dur > 0) {
             progress = std::clamp(double(pos) / double(dur), 0.0, 1.0);
             p->setFont(monoSmall);
-            p->setPen(QColor("#ece6ff"));
+            p->setPen(theme::c("#ece6ff"));
             p->drawText(QRect(x, r.top() + 27, 64, 14), Qt::AlignLeft | Qt::AlignVCenter,
                         QStringLiteral("−") + mmss((dur - pos) * 1000 / eter::kRate));
         }
@@ -1815,7 +1929,7 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
         if (dur > 0) {
             progress = std::clamp(double(pos) / double(dur), 0.0, 1.0);
             p->setFont(monoSmall);
-            p->setPen(QColor("#ffe7b8"));
+            p->setPen(theme::c("#ffe7b8"));
             p->drawText(QRect(x, r.top() + 27, 64, 14), Qt::AlignLeft | Qt::AlignVCenter,
                         QStringLiteral("−") + mmss((dur - pos) * 1000 / eter::kRate));
         }
@@ -1827,7 +1941,7 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     if (canExpand) {
         const bool open = row.id == expandedRowId_;
         p->setFont(sansBold);
-        p->setPen(open ? Qt::white : QColor("#9aa3af"));
+        p->setPen(open ? theme::c(QColor(Qt::white)) : theme::c("#9aa3af"));
         p->drawText(QRect(right - 26, r.top(), 26, r.height()), Qt::AlignCenter, open ? QStringLiteral("▾") : QStringLiteral("▸"));
     }
     right -= 30;
@@ -1841,17 +1955,17 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     QStringList chips;
     QVector<QColor> chipColors;
     if (row.fixedAt.isValid()) { chips << QStringLiteral("FIX"); chipColors << theme::amber; }
-    if (requestEntries_.contains(row.id)) { chips << TR("KÉRÉS"); chipColors << QColor("#4cc38a"); }
-    if (eter::isStreamUrl(row.item.path.toStdString())) { chips << TR("ÉLŐ STREAM"); chipColors << QColor("#3fd0b5"); }
+    if (requestEntries_.contains(row.id)) { chips << TR("KÉRÉS"); chipColors << theme::c("#4cc38a"); }
+    if (eter::isStreamUrl(row.item.path.toStdString())) { chips << TR("ÉLŐ STREAM"); chipColors << theme::c("#3fd0b5"); }
     for (const FixInfo &f : fixes_)
         if (f.rowId == row.id && std::llabs(f.diffMs) >= 5000) {
             // Mennyit késik (+) vagy siet (−) a playlist ehhez a fix ponthoz.
             chips << (f.diffMs > 0 ? QStringLiteral("−") : QStringLiteral("+")) + mmss(std::llabs(f.diffMs));
-            chipColors << (f.diffMs > 0 ? QColor("#e5484d") : theme::amber);
+            chipColors << (f.diffMs > 0 ? theme::c("#e5484d") : theme::amber);
         }
-    if (vtFrom_.contains(row.id)) { chips << QStringLiteral("VT"); chipColors << QColor("#f472b6"); }
+    if (vtFrom_.contains(row.id)) { chips << QStringLiteral("VT"); chipColors << theme::c("#f472b6"); }
     const bool mixOff = mixOff_.contains(row.id);
-    if (customFrom_.contains(row.id)) { chips << QStringLiteral("MIX"); chipColors << QColor("#9aa3af"); }
+    if (customFrom_.contains(row.id)) { chips << QStringLiteral("MIX"); chipColors << theme::c("#9aa3af"); }
     if (row.overlay && !ovlActive && !dim) { chips << TR("RÁF"); chipColors << purple; }   // jelölve, de nincs mire ráfeküdnie
     p->setFont(monoSmall);
     for (int c = 0; c < chips.size(); ++c) {
@@ -1859,8 +1973,8 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
         const QRect box(right - w, r.center().y() - 8, w, 16);
         // Automatikus mixnél a két zene közti mentett mix nem érvényes: szürkén, áthúzva.
         const bool off = mixOff && chips[c] == QLatin1String("MIX");
-        p->fillRect(box, off ? mixColor(panel, QColor("#4a5160"), 0.5) : mixColor(panel, chipColors[c], 0.55));
-        p->setPen(off ? QColor("#8a93a0") : QColor(Qt::white));
+        p->fillRect(box, off ? mixColor(panel, theme::c("#4a5160"), 0.5) : mixColor(panel, chipColors[c], 0.55));
+        p->setPen(off ? theme::c("#8a93a0") : theme::c(QColor(Qt::white)));
         p->drawText(box, Qt::AlignCenter, chips[c]);
         if (off) p->drawLine(box.left() + 4, box.center().y(), box.right() - 4, box.center().y());
         right -= w + 4;
@@ -1868,7 +1982,7 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     // 4. cím és előadó
     const int tw = std::max(40, right - 8 - x);
     p->setFont(sansBold);
-    p->setPen(QColor("#f3f4f6"));
+    p->setPen(theme::c("#f3f4f6"));
     p->drawText(QRect(x, r.top() + 6, tw, 20), Qt::AlignLeft | Qt::AlignVCenter, QFontMetrics(sansBold).elidedText(row.item.title, Qt::ElideRight, tw));
     // A második sor jobb végén a tempó és a hangnem; ha az előző zenéhez képest sérül egy szabály, figyelmeztetéssel.
     int artistW = tw;
@@ -1886,7 +2000,7 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
             const int fw = QFontMetrics(f).horizontalAdvance(text) + 4;
             if (fw < tw / 2) {
                 p->setFont(f);
-                p->setPen(issue ? QColor("#ffb347") : sub);
+                p->setPen(issue ? theme::c("#ffb347") : sub);
                 p->drawText(QRect(x + tw - fw, r.top() + 26, fw, 16), Qt::AlignRight | Qt::AlignVCenter, text);
                 artistW = tw - fw - 8;
             }
@@ -1898,12 +2012,12 @@ void MainWindow::paintPlaylistRow(QPainter *p, const QStyleOptionViewItem &opt, 
     // haladás
     if (progress >= 0) {
         p->fillRect(QRect(r.left(), r.bottom() - 3, r.width(), 3), QColor(0, 0, 0, 90));
-        p->fillRect(QRect(r.left(), r.bottom() - 3, int(r.width() * progress), 3), Qt::white);
+        p->fillRect(QRect(r.left(), r.bottom() - 3, int(r.width() * progress), 3), theme::c(QColor(Qt::white)));
     }
     if (selected) {
         p->setOpacity(1.0);
-        p->fillRect(r, QColor(255, 255, 255, 26));
-        p->setPen(QColor(255, 255, 255, 170));
+        p->fillRect(r, theme::c(QColor(255, 255, 255, 26)));
+        p->setPen(theme::c(QColor(255, 255, 255, 170)));
         p->setBrush(Qt::NoBrush);                      // a típusikon ecsetje ne töltse ki a sort
         p->drawRect(r.adjusted(0, 0, -1, -1));
     }
@@ -2318,8 +2432,9 @@ int MainWindow::autoMixMode(const Row *from, const Row *to, bool hasSaved) const
 {
     if (!autoMix_ || !from || !to) return 0;
     if (isMusicKind(from->item.kind) && isMusicKind(to->item.kind)) return 1;
-    if (!smart_.allItems) return 0;
-    if (smart_.savedWins) {
+    const eter::SmartMixSettings &sm = smartFor(from);   // a kimenő elem kategóriájának sablonja (ha van)
+    if (!sm.allItems) return 0;
+    if (sm.savedWins) {
         // A kézzel mentett átmenet, és az elem saját (az elemszerkesztőben vagy a Mix editorban mentett) mix pontja
         // és kezdőpontja érvényes marad.
         if (hasSaved) return 0;
@@ -2330,8 +2445,7 @@ int MainWindow::autoMixMode(const Row *from, const Row *to, bool hasSaved) const
 
 QColor MainWindow::playerColor(int i)
 {
-    static const QColor c[kPlayers] = {QColor("#f5a524"), QColor("#5cb0ff"), QColor("#3fd0b5")};
-    return c[std::clamp(i, 0, kPlayers - 1)];
+    return theme::playerColor(std::clamp(i, 0, kPlayers - 1));   // Beállítások → Megjelenés
 }
 
 void MainWindow::setAutoMix(bool on)
@@ -2433,10 +2547,15 @@ void MainWindow::guardDeadAir(const float *playerPeak, float otherPeak)
 void MainWindow::reloadMixSettings()
 {
     smart_ = loadSmartMix(db_);
+    mixCache_.clear();
     deadAirOn_ = deadAirGuard(db_);
     deadAirMs_ = deadAirMs(db_);
     const double mixDb = db_->setting("auto_mix_threshold_db", "-24").toDouble();
-    for (auto *p : players_) p->autoMixDb = mixDb;
+    const double cueDb = db_->setting("auto_cue_threshold_db", "-45").toDouble();
+    for (auto *p : players_) {
+        p->autoMixDb = mixDb;
+        p->autoCueDb = cueDb;
+    }
     ++mixVersion_;   // a terv újraszámolása
     if (mixPage_) mixPage_->reloadSmartMix();
 }
@@ -2495,11 +2614,12 @@ MainWindow::MixPlan MainWindow::planForBase(int outPlayer, int inPlayer)
     if (const int how = autoMixMode(outRow, inRow, planTransition_.toEntryId != 0)) {
         const eter::MixProfile &po = players_[outPlayer]->mixProfile();
         const bool outMusic = isMusicKind(outRow->item.kind), inMusic = isMusicKind(inRow->item.kind);
-        if ((smart_.enabled || how == 2) && po.valid) {
+        const eter::SmartMixSettings &sm = smartFor(outRow);   // a kimenő elem kategóriájának mix sablonja
+        if ((sm.enabled || how == 2) && po.valid) {
             const eter::MixProfile none;
             const eter::MixProfile &pi = inPlayer >= 0 ? players_[inPlayer]->mixProfile() : none;
             const eter::SmartMixPlan sp = eter::planAutoMix(po, pi, outMusic, inMusic, outRow->item.bpm, inRow->item.bpm,
-                                                            outRow->item.musicKey, inRow->item.musicKey, smart_);
+                                                            outRow->item.musicKey, inRow->item.musicKey, sm);
             if (sp.valid) {
                 plan.mixOutFrames = sp.mixOutMs * eter::kRate / 1000;
                 plan.outEndFrames = sp.outEndMs * eter::kRate / 1000;
@@ -2519,6 +2639,8 @@ MainWindow::MixPlan MainWindow::planForBase(int outPlayer, int inPlayer)
         }
         if (how == 1) {
             plan.mixOutFrames = players_[outPlayer]->mixOutFrame();
+            // A kimenő elem kategóriájának sablonja saját kiúsztatást adhat (különben az általános).
+            if (const MixSettingsCache::Entry &e = mixCache_.get(db_, outRow->item.categoryId); e.templateId > 0) plan.fadeOutMs = e.fadeMs;
             if (inPlayer >= 0 && inRow->item.cueInMs <= 0) {
                 const qint64 lead = players_[inPlayer]->leadInFrame();
                 if (lead > 0) plan.cueInFrames = lead;           // a szám elején lévő csend kimarad
@@ -2767,6 +2889,13 @@ void MainWindow::rebuildView()
         const int g = rows_[i].groupId;
         if (!g) {
             hour(i);
+            if (!rows_[i].note.isEmpty()) {
+                ViewRow n;
+                n.kind = ViewRow::Note;
+                n.first = i;
+                n.row = i;
+                view_.push_back(n);
+            }
             view_.push_back(item(i));
             wave(i);
             ++i;
@@ -2841,7 +2970,8 @@ void MainWindow::onViewRowMoved(int from, int to)
     if (from < 0 || from >= view_.size()) return;
     const ViewRow vr = view_[from];
     const int index = insertIndexForView(to);
-    const bool ontoHeader = to >= 0 && to < view_.size() && (view_[to].kind == ViewRow::Header || view_[to].kind == ViewRow::Hour);
+    const bool ontoHeader = to >= 0 && to < view_.size() && (view_[to].kind == ViewRow::Header || view_[to].kind == ViewRow::Hour
+                                                                 || view_[to].kind == ViewRow::Note);
     if (vr.kind == ViewRow::Item) moveRow(vr.row, index, ontoHeader);
     else if (vr.kind == ViewRow::Header) moveBlock(vr.first, vr.count, index);
 }
@@ -2862,7 +2992,7 @@ void MainWindow::playlistContextMenu(const QPoint &pos)
     if (v < 0 || v >= view_.size()) return;
     table_->setCurrentCell(v, 0);
     const ViewRow vr = view_[v];
-    if (vr.kind == ViewRow::Hour || vr.kind == ViewRow::Wave) return;
+    if (vr.kind == ViewRow::Hour || vr.kind == ViewRow::Wave || vr.kind == ViewRow::Note) return;
     QMenu menu(this);
     if (vr.kind == ViewRow::Header) {
         const int g = rows_[vr.first].groupId;
@@ -2980,6 +3110,12 @@ void MainWindow::persistOrder()
 bool MainWindow::loadIntoPlayer(Row &row, int player)
 {
     QString err;
+    // Az egyszerű mód küszöbei az elem kategóriájának mix sablonjából (ha van; különben az alapbeállítás).
+    {
+        const MixSettingsCache::Entry &e = mixCache_.get(db_, row.item.categoryId);
+        players_[player]->autoMixDb = e.mixDb;
+        players_[player]->autoCueDb = e.cueDb;
+    }
     if (!players_[player]->loadFile(row.item.path, &err)) {
         row.state = Row::Failed;
         row.player = -1;
@@ -2989,6 +3125,7 @@ bool MainWindow::loadIntoPlayer(Row &row, int player)
     }
     players_[player]->rowId = row.id;
     players_[player]->setMeta(row.item.title, row.item.artist);
+    if (artistInfo_) artistInfo_->requestForPlayer(row.item.id);   // előadói adatok (TheAudioDB), ha még nincsenek
     if (players_[player]->isStream()) players_[player]->setStreamLength(row.item.durationMs);
     engine_.source(playerChannel(player)).setEnvelope(env::toSource(env::fromString(row.item.volumeEnv), eter::kRate));
     if (row.item.cueInMs > 0) players_[player]->cueTo(row.item.cueInMs * eter::kRate / 1000);
@@ -3183,7 +3320,7 @@ void MainWindow::removeSelected()
 {
     const int v = table_->currentRow();
     if (v < 0 || v >= view_.size()) return;
-    if (view_[v].kind == ViewRow::Hour || view_[v].kind == ViewRow::Wave) return;
+    if (view_[v].kind == ViewRow::Hour || view_[v].kind == ViewRow::Wave || view_[v].kind == ViewRow::Note) return;
     if (view_[v].kind == ViewRow::Header) {
         // Blokkfejléc: a blokk minden sora törlődik, kivéve azt, ami éppen szól.
         QVector<Row> keep;
@@ -3288,7 +3425,7 @@ void MainWindow::refreshTable()
     table_->setRowCount(view_.size());
     for (int v = 0; v < view_.size(); ++v) {
         const int h = view_[v].kind == ViewRow::Item ? 48 : view_[v].kind == ViewRow::Header ? 36
-                      : view_[v].kind == ViewRow::Hour ? 24 : 150;
+                      : view_[v].kind == ViewRow::Hour ? 24 : view_[v].kind == ViewRow::Note ? 26 : 150;
         if (table_->rowHeight(v) != h) table_->setRowHeight(v, h);
     }
     // Melyik sorból visz egyedi mix (és voice track) a következőbe.
@@ -3318,7 +3455,7 @@ void MainWindow::refreshTable()
     }
     for (int v = 0; v < view_.size(); ++v) {
         const ViewRow &vr = view_[v];
-        if (vr.kind == ViewRow::Hour || vr.kind == ViewRow::Wave) {
+        if (vr.kind == ViewRow::Hour || vr.kind == ViewRow::Wave || vr.kind == ViewRow::Note) {
             for (int c = 0; c < 6; ++c) {
                 auto *item = table_->item(v, c);
                 if (!item) {
@@ -3353,15 +3490,15 @@ void MainWindow::refreshTable()
             if (playing >= 0) {
                 status = TR("ADÁSBAN · %1/%2").arg(done + 1).arg(vr.count);
                 fg = theme::amberSoft;
-                bg = QColor("#3a2c10");
+                bg = theme::c("#3a2c10");
             } else if (done == vr.count) {
                 status = TR("lejátszva");
-                fg = QColor("#8a93a0");
-                bg = QColor("#1f2329");
+                fg = theme::c("#8a93a0");
+                bg = theme::c("#1f2329");
             } else if (cued >= 0) {
                 status = TR("KÉSZENLÉT · %1").arg(cued + 1);
                 fg = theme::blueSoft;
-                bg = QColor("#14283d");
+                bg = theme::c("#14283d");
             } else if (done > 0) {
                 status = TR("%1/%2 lejátszva").arg(done).arg(vr.count);
             }
@@ -3404,15 +3541,15 @@ void MainWindow::refreshTable()
         case Row::Cued:
             status = rowPlayerStatus(row);
             fg = theme::blueSoft;
-            bg = QColor("#14283d");
+            bg = theme::c("#14283d");
             break;
         case Row::Playing:
             status = rowPlayerStatus(row);
             fg = theme::amberSoft;
-            bg = QColor("#3a2c10");
+            bg = theme::c("#3a2c10");
             break;
-        case Row::Played: status = TR("lejátszva"); fg = QColor("#8a93a0"); break;
-        case Row::Skipped: status = TR("kihagyva"); fg = QColor("#8a93a0"); break;
+        case Row::Played: status = TR("lejátszva"); fg = theme::c("#8a93a0"); break;
+        case Row::Skipped: status = TR("kihagyva"); fg = theme::c("#8a93a0"); break;
         case Row::Failed: status = TR("hibás fájl"); fg = theme::red; break;
         }
         // A nem zenei elemek (szignál, reklám, hírek…) sorát a kategóriájuk színe tölti ki.
@@ -3421,12 +3558,12 @@ void MainWindow::refreshTable()
         const QColor cat(row.item.color);
         if (row.item.kind != QLatin1String("music") && !row.item.color.isEmpty() && cat.isValid()) {
             const bool done = row.state == Row::Played || row.state == Row::Skipped || row.state == Row::Failed;
-            const QColor base("#16191e");
+            const QColor base = theme::c("#16191e");
             const double a = done ? 0.30 : 1.0;
             bg = QColor(int(base.red() + (cat.red() - base.red()) * a), int(base.green() + (cat.green() - base.green()) * a),
                         int(base.blue() + (cat.blue() - base.blue()) * a));
             const double lum = (0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()) / 255.0;
-            fg = done ? QColor("#aab1bc") : (lum > 0.55 ? QColor("#101215") : QColor("#ffffff"));
+            fg = done ? theme::c("#aab1bc") : (lum > 0.55 ? theme::c("#101215") : theme::c("#ffffff"));
             if (row.state == Row::Pending && !row.fixedAt.isValid()) { statusFg = fg; statusBg = bg; }
             else if (statusBg == Qt::transparent || statusBg.alpha() == 0) statusBg = base;
             if (done) { statusFg = fg; statusBg = bg; }
@@ -3571,7 +3708,7 @@ void MainWindow::updateStartTimes()
     }
     // A fejléc a blokk első, még le nem játszott elemének kezdését mutatja.
     for (int v = 0; v < view_.size() && v < table_->rowCount(); ++v) {
-        if (view_[v].kind == ViewRow::Hour || view_[v].kind == ViewRow::Wave) continue;
+        if (view_[v].kind == ViewRow::Hour || view_[v].kind == ViewRow::Wave || view_[v].kind == ViewRow::Note) continue;
         int r = view_[v].row;
         if (view_[v].kind == ViewRow::Header) {
             r = view_[v].first;
@@ -3687,6 +3824,89 @@ void MainWindow::openSettings()
     settings_->show();
     settings_->raise();
     settings_->activateWindow();
+}
+
+// MIDI-vezérlés (Beállítások → MIDI): a megtanított gombok és faderek műveletei.
+void MainWindow::setupMidi()
+{
+    midi_ = new MidiControl(this);
+    auto playerOf = [](const QString &id) { return int(id.back().toLatin1() - 'a'); };
+    connect(midi_, &MidiControl::buttonPressed, this, [this, playerOf](const QString &id) {
+        if (id == QLatin1String("next")) {
+            next();
+        } else if (id == QLatin1String("stop_all")) {
+            stopAll();
+        } else if (id.startsWith(QLatin1String("play_"))) {
+            const int i = playerOf(id);
+            if (i < 0 || i >= kPlayers || !players_[i]->isLoaded()) return;
+            if (players_[i]->isPlaying()) players_[i]->stop();
+            else players_[i]->play();
+        } else if (id.startsWith(QLatin1String("fade_"))) {
+            const int i = playerOf(id);
+            if (i >= 0 && i < kPlayers && players_[i]->isPlaying()) players_[i]->fadeOut(fadeMs_);
+        } else if (id == QLatin1String("cart_stop")) {
+            if (cartPanel_) cartPanel_->stopAll();
+        } else if (id.startsWith(QLatin1String("cart_"))) {
+            const int slot = id.mid(5).toInt() - 1;
+            if (cartPanel_ && slot >= 0 && slot < CartwallPanel::kSlots) cartPanel_->trigger(slot);
+        }
+    });
+    connect(midi_, &MidiControl::faderMoved, this, [this](const QString &id, double v) {
+        // A fader teteje 0 dB (a képernyőn a fader +6 dB-ig mehet); legalul −∞.
+        static const QHash<QString, int> strips{{QStringLiteral("vol_a"), ChannelMixer::A}, {QStringLiteral("vol_b"), ChannelMixer::B},
+                                                {QStringLiteral("vol_c"), ChannelMixer::C}, {QStringLiteral("vol_vt"), ChannelMixer::Vt},
+                                                {QStringLiteral("vol_cart"), ChannelMixer::Cart}, {QStringLiteral("vol_out"), ChannelMixer::Out}};
+        const auto it = strips.find(id);
+        if (it == strips.end() || !mixer_) return;
+        const double pos = std::clamp(v, 0.0, 1.0) * ChannelMixer::posOf(0.0);
+        mixer_->setDb(*it, ChannelMixer::dbOfPos(pos));
+    });
+    connect(midi_, &MidiControl::faderStart, this, [this, playerOf](const QString &id, bool open) {
+        const int i = playerOf(id);
+        if (i < 0 || i >= kPlayers || !players_[i]->isLoaded()) return;
+        if (open && !players_[i]->isPlaying()) players_[i]->play();
+        else if (!open && players_[i]->isPlaying()) players_[i]->stop();
+    });
+}
+
+void MainWindow::openSettingsPage(const QString &title)
+{
+    openSettings();
+    if (auto *tabs = settings_ ? settings_->findChild<QTabWidget *>("settingsTabs") : nullptr)
+        for (int i = 0; i < tabs->count(); ++i)
+            if (tabs->tabText(i) == title) tabs->setCurrentIndex(i);
+}
+
+InfoWindow *MainWindow::infoWindow(bool create)
+{
+    if (!info_ && create) {
+        info_ = new InfoWindow(db_, artistInfo_, this);
+        info_->setProviders([this] { return library_ ? library_->currentItem() : Item{}; },
+                            [this]() -> Item {
+                                // Az adásban lévő elem; ha épp semmi nem szól, a készenlétben lévő.
+                                int p = onAirPlayer();
+                                if (p < 0)
+                                    for (int i = 0; i < kPlayers && p < 0; ++i)
+                                        if (players_[i]->rowId >= 0 && rowById(players_[i]->rowId)) p = i;
+                                if (p < 0) return {};
+                                const Row *r = rowById(players_[p]->rowId);
+                                return r ? r->item : Item{};
+                            });
+        connect(info_, &InfoWindow::visibilityChanged, this, [this](bool on) {
+            library_->setInfoOpen(on);
+            if (infoAction_) infoAction_->setChecked(on);
+        });
+        connect(info_, &InfoWindow::settingsRequested, this, [this] { openSettingsPage(TR("Előadói adatok")); });
+    }
+    return info_;
+}
+
+void MainWindow::toggleInfoWindow()
+{
+    InfoWindow *w = infoWindow();
+    if (w->isVisible() && !w->isMinimized() && w->isActiveWindow()) w->close();
+    else if (w->isVisible() && !w->isMinimized() && sender() == library_) w->close();
+    else w->openWindow();
 }
 
 void MainWindow::openLog()
@@ -3821,6 +4041,7 @@ MainWindow::Row MainWindow::makeRow(const Entry &e) const
     row.overlay = e.overlay;
     row.overlayOffsetMs = e.overlayOffsetMs;
     row.overlayDuckDb = e.overlayDuckDb;
+    row.note = e.note;
     if (e.fixedStartS >= 0) {
         const QDate d = QDate::fromString(QString::number(e.playlistKey / 100), "yyyyMMdd");
         row.fixedAt = QDateTime(d, QTime(e.playlistKey % 100, 0)).addSecs(e.fixedStartS);
@@ -3945,7 +4166,7 @@ void MainWindow::autoGenerate()
     if (minute == lastGenerateMinute_) return;
     lastGenerateMinute_ = minute;
     const bool on = db_->setting("auto_generate", "1") == "1";
-    const bool hasGrid = !db_->weekGrid().isEmpty();
+    const bool hasGrid = db_->hasWeekGrid();
     schedStatus_->setText(!hasGrid ? TR("Ütemező: nincs beállítva")
                           : on ? TR("Ütemező: automatikus") : TR("Ütemező: kézi generálás"));
     if (!on || !hasGrid) return;
@@ -4070,14 +4291,19 @@ QJsonObject MainWindow::remoteLibrary()
     for (const Category &c : db_->categories()) cats.push_back(remote::categoryToJson(c));
     for (const Item &it : db_->items()) items.push_back(remote::itemToJson(it));
     QJsonObject settings{{"auto_mix_threshold_db", db_->setting("auto_mix_threshold_db", "-24")},
+                         {"auto_cue_threshold_db", db_->setting("auto_cue_threshold_db", "-45")},
                          {"default_fade_out_ms", db_->setting("default_fade_out_ms", "2500")}};
     // Az okos mix beállításai is, hogy a távoli Mix editor ugyanazt a tervet mutassa.
     for (const char *k : {"smart_mix", "smart_end_depth_db", "smart_fade_depth_db", "smart_max_overlap_ms", "smart_intro_max_ms",
                           "smart_tight_ms", "smart_flow", "smart_tempo_tol_pct", "smart_clash_overlap_ms", "smart_all_items",
-                          "smart_segue_gap_ms", "smart_saved_wins", "smart_hidden_track", "smart_hidden_silence_ms"}) {
+                          "smart_segue_gap_ms", "smart_saved_wins", "smart_hidden_track", "smart_hidden_silence_ms",
+                          "auto_cue_threshold_db", "mix_templates"}) {
         const QString v = db_->setting(k);
         if (!v.isEmpty()) settings.insert(QLatin1String(k), v);
     }
+    // A kategóriák mix sablonja, hogy a távoli Mix editor is a sablon szerinti tervet mutassa.
+    for (const Category &c : db_->categories())
+        if (const int t = categoryMixTemplate(db_, c.id)) settings.insert(QStringLiteral("mix_template_cat_%1").arg(c.id), QString::number(t));
     return QJsonObject{{"t", "library"}, {"station", QSysInfo::machineHostName()}, {"categories", cats}, {"items", items},
                        {"settings", settings}};
 }

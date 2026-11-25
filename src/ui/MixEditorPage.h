@@ -1,5 +1,6 @@
 // Mix editor: két vagy három egymást követő elem átmeneteinek beállítása idővonalon, előhallgatással.
 #pragma once
+#include "core/SmartMixConfig.h"
 #include "audio/SmartMix.h"
 #include "core/VolumeEnvelope.h"
 #include <functional>
@@ -224,6 +225,8 @@ private:
     class QLabel *autoBanner_ = nullptr;
     bool autoActive_ = false;
     eter::SmartMixSettings smart_;
+    mutable MixSettingsCache mixCache_;   // a kimenő elem kategóriájának mix sablonja szerint
+    const eter::SmartMixSettings &smartFor(const Item &from) const { return mixCache_.get(db_, from.categoryId).smart; }
     void updateAutoBanner();
     MixParams resolve(const MixPair &pair, int *kind) const;
     MixParams resolveMix(const MixPair &pair, int *kind) const;   // a ráfektetett elem nélkül

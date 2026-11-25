@@ -1,5 +1,6 @@
 // A főablak: hiányzó fájlok ellenőrzése (a playlist várakozó elemei és a teljes hangtár).
 #include "MainWindow.h"
+#include "Widgets.h"
 #include "core/FileCheck.h"
 #include "i18n.h"
 #include "net/Remote.h"
@@ -158,6 +159,7 @@ void MainWindow::showMissingFiles()
     table->setColumnWidth(0, 80);
     table->setColumnWidth(1, 220);
     table->setColumnWidth(2, 160);
+    makeColumnsResizable(table, QStringLiteral("relinkFiles"));
     v->addWidget(table, 1);
     auto *buttons = new QHBoxLayout;
     auto *recheck = new QPushButton(TR("Újraellenőrzés"));
@@ -212,6 +214,7 @@ void MainWindow::scanLibraryFiles()
     table->setColumnWidth(0, 220);
     table->setColumnWidth(1, 160);
     table->setColumnWidth(2, 110);
+    makeColumnsResizable(table, QStringLiteral("missingFiles"));
     v->addWidget(table, 1);
     auto *buttons = new QHBoxLayout;
     auto *remove = new QPushButton(TR("Kijelöltek törlése a hangtárból"));

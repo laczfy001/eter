@@ -31,7 +31,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
-static const QColor kMarkerColor[3] = {theme::green, theme::blue, theme::amber};
+static QColor kMarkerColorAt(int i) { const QColor m[3] = {theme::green, theme::blue, theme::amber}; return m[i]; }
 static const char *kMarkerShort[3] = {"KEZDŐPONT", "INTRO VÉGE", "OUTRO"};
 
 static QString clock(qint64 ms)
@@ -99,7 +99,7 @@ void MarkerWave::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
     const QRectF r = rect();
-    p.fillRect(r, QColor("#121418"));
+    p.fillRect(r, theme::c("#121418"));
     const double top = 54, bottom = r.height() - 18;
     const double mid = (top + bottom) / 2, half = (bottom - top) / 2;
 
@@ -114,7 +114,7 @@ void MarkerWave::paintEvent(QPaintEvent *)
     }
 
     if (peaks_.isEmpty()) {
-        p.setPen(QColor("#6b7380"));
+        p.setPen(theme::c("#6b7380"));
         p.drawText(QRectF(0, top, r.width(), bottom - top), Qt::AlignCenter,
                    durMs_ > 0 ? TR("Hullámforma készül…") : TR("A fájl nem olvasható"));
     } else {
@@ -125,9 +125,9 @@ void MarkerWave::paintEvent(QPaintEvent *)
             for (int i = a; i < b && i < peaks_.size(); ++i) v = std::max(v, peaks_[i]);
             const qint64 t = msAt(x);
             QColor c("#8a93a0");
-            if (t < cue) c = QColor("#4a5160");
-            else if (intro > cue && t < intro) c = QColor("#7fb8ee");
-            else if (outro > 0 && t >= outro) c = ms_[Outro] > 0 ? QColor("#e0a84a") : QColor("#a8946e");
+            if (t < cue) c = theme::c("#4a5160");
+            else if (intro > cue && t < intro) c = theme::c("#7fb8ee");
+            else if (outro > 0 && t >= outro) c = ms_[Outro] > 0 ? theme::c("#e0a84a") : theme::c("#a8946e");
             p.setPen(c);
             const double h = std::max(0.5, double(v) * half);
             p.drawLine(QPointF(x + 0.5, mid - h), QPointF(x + 0.5, mid + h));
@@ -143,7 +143,7 @@ void MarkerWave::paintEvent(QPaintEvent *)
         qint64 step = steps[9];
         for (qint64 s : steps)
             if (double(s) / durMs_ * r.width() >= 70) { step = s; break; }
-        p.setPen(QColor("#6b7380"));
+        p.setPen(theme::c("#6b7380"));
         for (qint64 t = 0; t <= durMs_; t += step) {
             const double x = xOf(t);
             p.drawLine(QPointF(x, bottom), QPointF(x, bottom + 4));
@@ -161,7 +161,7 @@ void MarkerWave::paintEvent(QPaintEvent *)
         const bool unset = m != CueIn && ms_[m] <= 0;
         if (m == Intro && unset) continue;                       // intro nélkül nincs mit rajzolni
         const QPointF pos = markerPos(Marker(m));
-        QColor c = kMarkerColor[m];
+        QColor c = kMarkerColorAt(m);
         if (unset) c.setAlpha(120);
         p.setPen(QPen(c, drag_ == m ? 2 : 1, unset ? Qt::DashLine : Qt::SolidLine));
         p.drawLine(QPointF(pos.x(), pos.y()), QPointF(pos.x(), bottom));
@@ -173,7 +173,7 @@ void MarkerWave::paintEvent(QPaintEvent *)
         p.setPen(Qt::NoPen);
         p.setBrush(c);
         p.drawRoundedRect(box, 2, 2);
-        p.setPen(QColor("#101215"));
+        p.setPen(theme::c("#101215"));
         p.drawText(box, Qt::AlignCenter, text);
     }
 
@@ -184,7 +184,7 @@ void MarkerWave::paintEvent(QPaintEvent *)
         path.moveTo(0, envY(env::dbAt(env_, 0)));
         for (const env::Point &pt : env_) path.lineTo(xOf(pt.ms), envY(pt.db));
         path.lineTo(r.width(), envY(env::dbAt(env_, durMs_)));
-        p.setPen(QPen(envMode_ ? QColor("#f7f7f7") : QColor(247, 247, 247, 150), envMode_ ? 2 : 1.5,
+        p.setPen(QPen(envMode_ ? theme::c("#f7f7f7") : QColor(247, 247, 247, 150), envMode_ ? 2 : 1.5,
                       envMode_ ? Qt::SolidLine : Qt::DashLine));
         p.setBrush(Qt::NoBrush);
         p.drawPath(path);
@@ -193,11 +193,11 @@ void MarkerWave::paintEvent(QPaintEvent *)
         p.setFont(f);
         for (int i = 0; i < env_.size(); ++i) {
             const QPointF c = envPointPos(i);
-            p.setPen(QPen(QColor("#121418"), 1.5));
-            p.setBrush(i == envDrag_ ? theme::amber : QColor("#f7f7f7"));
+            p.setPen(QPen(theme::c("#121418"), 1.5));
+            p.setBrush(i == envDrag_ ? theme::amber : theme::c("#f7f7f7"));
             p.drawEllipse(c, envMode_ ? 5.5 : 3.5, envMode_ ? 5.5 : 3.5);
             if (envMode_) {
-                p.setPen(i == envDrag_ ? theme::amber : QColor("#f7f7f7"));
+                p.setPen(i == envDrag_ ? theme::amber : theme::c("#f7f7f7"));
                 const QString t = std::abs(env_[i].db) < 0.05 ? QStringLiteral("0 dB")
                                   : QStringLiteral("%1 dB").arg(i18n::locale().toString(env_[i].db, 'f', 1)).replace('-', QStringLiteral("−"));
                 p.drawText(QPointF(c.x() + 8, c.y() - 7), t);
@@ -207,7 +207,7 @@ void MarkerWave::paintEvent(QPaintEvent *)
     }
 
     if (playhead_ >= 0 && durMs_ > 0) {
-        p.setPen(QPen(QColor("#ffffff"), 1));
+        p.setPen(QPen(theme::c("#ffffff"), 1));
         p.drawLine(QPointF(xOf(playhead_), top - 4), QPointF(xOf(playhead_), bottom));
     }
 }
@@ -527,7 +527,8 @@ ItemEditorDialog::ItemEditorDialog(Database *db, eter::Engine *engine, int itemI
     for (int m = 0; m < 3; ++m) {
         auto *dot = new QLabel;
         dot->setFixedSize(12, 12);
-        dot->setStyleSheet(QStringLiteral("background: %1; border-radius: 3px;").arg(kMarkerColor[m].name()));
+        theme::rawCss(dot);
+        dot->setStyleSheet(QStringLiteral("background: %1; border-radius: 3px;").arg(kMarkerColorAt(m).name()));
         auto *name = new QLabel(names[m]);
         name->setToolTip(tips[m]);
         spin_[m] = new QDoubleSpinBox;

@@ -28,8 +28,8 @@ for Icecast and a backup playout in one desktop application.
 - **Vocal rule**: tag tracks as male, female, group, mixed or instrumental (one by one or many at once from the
   library), and limit how many of the same vocal play in a row.
 - **Smart automatic mix**: recognises fade-out and sudden endings, soft and strong intros, and (optionally) shortens the
-  overlap when tempos or keys clash; every threshold is adjustable in *Settings → Automatic mix*, and the Mix editor
-  shows the plan for each transition. Jingles, ads, news and voice tracks follow each other back to back with the
+  overlap when tempos or keys clash; every threshold is adjustable in *Settings → Automatic mix* (with a live
+  diagram of how two example items are mixed), and the Mix editor shows the plan for each transition. Jingles, ads, news and voice tracks follow each other back to back with the
   silence cut at both ends; a hidden track after a long silence is left out; a dead-air guard moves on when the item
   on air stays silent.
 - **Live streams**: an Icecast/Shoutcast stream (MP3, AAC, Ogg; http or https; .pls/.m3u resolved) can be a
@@ -67,8 +67,22 @@ for Icecast and a backup playout in one desktop application.
 - **Overlay**: an item can be laid over the transition between the items before and after it, so all three
   play at once (for example a jingle over a crossfade). It plays on its own channel; right-click a waiting
   item → "Overlay on the transition", or drag in the Mix editor (see below).
-- **Cartwall** in place of the playlist: coloured walls of instant-start buttons, filled from the library or
+- **Cartwall** in place of the library (the view selector above the library): coloured walls of instant-start buttons, filled from the library or
   from files, with its own output (by default it follows player A).
+- **Artist info** from MusicBrainz (free), Wikipedia and TheAudioDB (*Settings → Artist info*, each optional): photo,
+  country, years, genre and biography in the player; empty album and year filled in. The separate **Info window**
+  (library header *Info* button, *Tools → Info window*, Ctrl+I) shows everything known about the selected or the
+  on-air item.
+- **MIDI control** (*Settings → MIDI*): a MIDI mixer such as the RØDECaster Pro, or any controller, with learn mode:
+  buttons start and stop players, *Next*, fade-out and cartwall; faders set volumes or work as fader start.
+- **External SQL server** (MySQL / MariaDB, *Settings → SQL server*): the server is the main store, with a local
+  copy as a reserve so the broadcast never depends on the network; migration of the existing database included.
+- **Your layout**: hide the tabs you do not use (*Settings → Tabs*); every list's columns can be resized, and the
+  widths are remembered. Interface size is set under *Settings → Appearance*.
+- **Colour schemes** (*Settings → Appearance*): five built-in schemes (Éter dark, Graphite, Midnight blue, High
+  contrast, Light) and a theme editor for the base colours (background, panels, buttons, borders, text, secondary
+  text, accent, information, OK, error, the three players). Changes show at once; your own schemes are saved by name
+  and can be exported to and imported from a JSON file.
 - **On time**: before every fixed-time item (the news at the top of the hour, say) the playlist shows how much is
   missing or over, and suggests a fix: tracks to add, or scheduler-placed tracks to drop or swap for better fitting ones,
   so the fixed item arrives within a few seconds (a small overrun is faded out rather than leaving silence). In
@@ -82,8 +96,8 @@ for Icecast and a backup playout in one desktop application.
 
 - **Library** in SQLite with user-defined categories, import of files and whole folders, and an item editor
   for title, artist, album, year, category, cue-in, intro and outro markers.
-- **Scheduler** (on screens below 1920×1080 it opens in its own window): clocks built from categories, fixed-time elements and fills, a week grid,
-  artist and title separation, automatic generation ahead of time. Items can have an energy (1–5), a tempo (estimated
+- **Scheduler** (on screens below 1920×1080 it opens in its own window): clocks built from categories, fixed-time elements and fills, note rows and per-row sweepers,
+  several week grids switched by hand or by date period, artist (“A and B” counts as two) and title separation, automatic generation ahead of time. Items can have an energy (1–5), a tempo (estimated
   from the audio or tapped in), a musical key and dayparts; rules keep slow songs apart, limit energy jumps and tempo
   changes, and a clock slot can ask for an energy band. Fills end close to the next fixed point (the last 1–3 tracks
   are chosen together).

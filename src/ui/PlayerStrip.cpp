@@ -1,3 +1,4 @@
+#include "Theme.h"
 #include "PlayerStrip.h"
 #include "i18n.h"
 
@@ -68,7 +69,7 @@ void PlayerStrip::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
-    const QColor panel("#1f2227"), border("#2c3038"), text("#e6e8eb"), muted("#9aa3af");
+    const QColor panel = theme::c("#1f2227"), border = theme::c("#2c3038"), text = theme::c("#e6e8eb"), muted = theme::c("#9aa3af");
     QFont small = font();
     small.setPixelSize(10);
     small.setWeight(QFont::Bold);
@@ -96,7 +97,7 @@ void PlayerStrip::paintEvent(QPaintEvent *)
         }
         p.drawRoundedRect(QRectF(b).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5);
         p.setFont(badge);
-        p.setPen(lit ? QColor("#10131a") : c);
+        p.setPen(lit ? theme::c("#10131a") : c);
         p.drawText(b, Qt::AlignCenter, letter);
         const int tx = b.right() + 10;
         p.setFont(mono);
@@ -105,7 +106,7 @@ void PlayerStrip::paintEvent(QPaintEvent *)
         p.drawText(QRect(r.right() - timeW - 2, r.top(), timeW, r.height()), Qt::AlignVCenter | Qt::AlignRight, time);
         const int tw = std::max(10, r.right() - timeW - tx - 6);
         p.setFont(small);
-        p.setPen(lit ? c : QColor("#c9cdd3"));
+        p.setPen(lit ? c : theme::c("#c9cdd3"));
         const QString head = extra.isEmpty() ? state : state + QStringLiteral("  ·  ") + extra;
         p.drawText(QRect(tx, r.top() + 6, tw, 14), Qt::AlignLeft | Qt::AlignVCenter,
                    QFontMetrics(small).elidedText(head, Qt::ElideRight, tw));

@@ -1,5 +1,26 @@
 #include "i18n.h"
+#include "Widgets.h"
 #include "SettingsDialog.h"
+#include <QSignalBlocker>
+#include <QJsonDocument>
+#include <QRegularExpression>
+#include <QLocale>
+#include <cstdio>
+#include <QJsonObject>
+#include <QInputDialog>
+#include "db/ServerSync.h"
+#include "net/ArtistInfo.h"
+#include <functional>
+#include <QFile>
+#include <QApplication>
+#include <QSqlDatabase>
+#include <QProgressDialog>
+#include "Theme.h"
+#include "MixPreview.h"
+#include "midi/MidiControl.h"
+#include <QToolButton>
+#include <QPainter>
+#include <QColorDialog>
 #include <QSpinBox>
 #include <QLineEdit>
 #include <QCheckBox>
@@ -461,6 +482,566 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
         status->setText(TR("Állapot: %1").arg(main_->nowPlayingStatus()));
     }
 
+    root = newPage(TR("Megjelenés"));
+    {
+        // Saját színek és a felület mérete; gépenként tárolva.
+        auto cap = [&](const QString &t) {
+            auto *c = new QLabel(t);
+            c->setObjectName("caption");
+            root->addWidget(c);
+        };
+        auto small = [&](const QString &t) {
+            auto *l = new QLabel(t);
+            l->setObjectName("small");
+            l->setWordWrap(true);
+            root->addWidget(l);
+        };
+        // Színválasztó gomb: a minta a gomb ikonja, a név a felirata.
+        auto swatch = [](const QColor &c) {
+            QPixmap pm(28, 16);
+            pm.fill(Qt::transparent);
+            QPainter p(&pm);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.setPen(theme::c("#0c0d10"));
+            p.setBrush(c);
+            p.drawRoundedRect(QRectF(0.5, 0.5, 27, 15), 3, 3);
+            return QIcon(pm);
+        };
+        auto colorButton = [swatch](const QString &key, const QColor &def, const QString &name) {
+            auto *b = new QPushButton;
+            b->setObjectName(QStringLiteral("color_") + key);
+            b->setIconSize(QSize(28, 16));
+            b->setIcon(swatch(def));
+            b->setText(QStringLiteral("  %1").arg(def.name().toUpper()));
+            b->setAccessibleName(name);
+            b->setMinimumWidth(140);
+            return b;
+        };
+        auto setButton = [swatch](QPushButton *b, const QColor &c) {
+            b->setIcon(swatch(c));
+            b->setText(QStringLiteral("  %1").arg(c.name().toUpper()));
+        };
+
+        // ---- Színséma: választás, mentés név szerint, import és export ----
+        cap(TR("SZÍNSÉMA"));
+        small(TR("Válassz egy sémát, vagy szabd testre az alapszíneket: a változás azonnal látszik az egész programban. "
+                 "A saját sémát név szerint mentheted, és fájlba exportálva másik gépre is átviheted."));
+        auto *schemeRow = new QHBoxLayout;
+        schemeRow->setSpacing(6);
+        auto *schemeCombo = new QComboBox;
+        schemeCombo->setObjectName("colorScheme");
+        schemeCombo->setMinimumWidth(240);
+        schemeCombo->setAccessibleName(TR("Színséma"));
+        auto *modified = new QLabel;
+        modified->setObjectName("small");
+        modified->setWordWrap(true);
+        schemeRow->addWidget(schemeCombo);
+        schemeRow->addWidget(modified, 1);
+        root->addLayout(schemeRow);
+        auto *schemeBtns = new QHBoxLayout;
+        schemeBtns->setSpacing(6);
+        auto mkBtn = [&](const QString &text, const char *name) {
+            auto *b = new QPushButton(text);
+            b->setObjectName(QLatin1String(name));
+            schemeBtns->addWidget(b);
+            return b;
+        };
+        auto *saveBtn = mkBtn(TR("Mentés"), "schemeSave");
+        auto *saveAsBtn = mkBtn(TR("Mentés másként…"), "schemeSaveAs");
+        auto *renameBtn = mkBtn(TR("Átnevezés…"), "schemeRename");
+        auto *deleteBtn = mkBtn(TR("Törlés"), "schemeDelete");
+        schemeBtns->addStretch(1);
+        auto *importBtn = mkBtn(TR("Importálás…"), "schemeImport");
+        auto *exportBtn = mkBtn(TR("Exportálás…"), "schemeExport");
+        root->addLayout(schemeBtns);
+
+        cap(TR("ALAPSZÍNEK"));
+        small(TR("A köztes árnyalatokat (kijelölés, sávok, halványabb keretek) a program ezekből számolja ki."));
+        auto *grid = new QGridLayout;
+        grid->setHorizontalSpacing(10);
+        grid->setVerticalSpacing(6);
+        QHash<QString, QPushButton *> roleButtons;
+        int n = 0;
+        for (const theme::Role &r : theme::roles()) {
+            if (r.key.startsWith(QLatin1String("player"))) continue;
+            auto *l = new QLabel(i18n::text(r.label));
+            l->setToolTip(i18n::text(r.hint));
+            auto *b = colorButton(r.key, r.def, i18n::text(r.label));
+            b->setToolTip(i18n::text(r.hint));
+            const int row = n % 5, col = (n / 5) * 2;
+            grid->addWidget(l, row, col);
+            grid->addWidget(b, row, col + 1);
+            roleButtons[r.key] = b;
+            ++n;
+        }
+        grid->setColumnMinimumWidth(2, 140);
+        grid->setColumnStretch(4, 1);
+        root->addLayout(grid);
+        auto *contrastWarn = new QLabel;
+        contrastWarn->setObjectName("contrastWarn");
+        contrastWarn->setWordWrap(true);
+        root->addWidget(contrastWarn);
+
+        auto *accRow = new QHBoxLayout;
+        accRow->setSpacing(6);
+        auto *accLabel = new QLabel(TR("Gyors kiemelő szín:"));
+        accLabel->setObjectName("small");
+        accRow->addWidget(accLabel);
+        const std::pair<const char *, const char *> presets[] = {
+            {QT_TR_NOOP("Borostyán"), "#f5a524"}, {QT_TR_NOOP("Korall"), "#ff7a59"}, {QT_TR_NOOP("Piros"), "#e5484d"},
+            {QT_TR_NOOP("Rózsaszín"), "#f472b6"}, {QT_TR_NOOP("Lila"), "#a78bfa"},   {QT_TR_NOOP("Kék"), "#5cb0ff"},
+            {QT_TR_NOOP("Türkiz"), "#3fd0b5"},    {QT_TR_NOOP("Zöld"), "#45d483"},   {QT_TR_NOOP("Citrom"), "#e2d34a"}};
+        QVector<QPair<QToolButton *, QColor>> presetButtons;
+        for (const auto &[label, hexv] : presets) {
+            auto *t = new QToolButton;
+            t->setIcon(swatch(QColor(hexv)));
+            t->setIconSize(QSize(28, 16));
+            t->setToolTip(i18n::text(label));
+            t->setAccessibleName(i18n::text(label));
+            t->setAutoRaise(true);
+            accRow->addWidget(t);
+            presetButtons << qMakePair(t, QColor(hexv));
+        }
+        accRow->addStretch(1);
+        root->addLayout(accRow);
+
+        cap(TR("A LEJÁTSZÓK SZÍNEI"));
+        small(TR("Az A, B és C lejátszó betűjele, a mini mixer, a hullámforma és a playlist sorainak jelölése."));
+        auto *pl = new QFormLayout;
+        pl->setFieldGrowthPolicy(QFormLayout::FieldsStayAtSizeHint);
+        for (int i = 0; i < 3; ++i) {
+            const QString letter = QString(QChar('A' + i));
+            const QString key = QStringLiteral("player%1").arg(i);
+            auto *b = colorButton(key, theme::defaultPlayerColor(i), TR("%1 lejátszó színe").arg(letter));
+            pl->addRow(TR("%1 lejátszó").arg(letter), b);
+            roleButtons[key] = b;
+        }
+        root->addLayout(pl);
+        auto *revertBtn = new QPushButton(TR("Visszaállítás"));
+        revertBtn->setObjectName("schemeRevert");
+        revertBtn->setToolTip(TR("A kiválasztott séma mentett színei."));
+        auto *rr = new QHBoxLayout;
+        rr->addWidget(revertBtn);
+        rr->addStretch(1);
+        root->addLayout(rr);
+
+        // Az oldal állapota a mentett beállításokból.
+        auto refresh = [=] {
+            const theme::Colors cur = theme::currentColors();
+            for (auto it = roleButtons.cbegin(); it != roleButtons.cend(); ++it) setButton(it.value(), cur.value(it.key()));
+            const QString id = theme::currentSchemeId();
+            const theme::Scheme sel = theme::scheme(id);
+            {
+                const QSignalBlocker block(schemeCombo);
+                schemeCombo->clear();
+                if (sel.id.isEmpty()) schemeCombo->addItem(TR("Mentetlen saját színek"), QString());
+                bool userSep = false;
+                for (const theme::Scheme &s : theme::schemes()) {
+                    if (!s.builtIn && !userSep) {
+                        schemeCombo->insertSeparator(schemeCombo->count());
+                        userSep = true;
+                    }
+                    schemeCombo->addItem(swatch(s.colors.value(QStringLiteral("accent"))), s.name, s.id);
+                }
+                schemeCombo->setCurrentIndex(std::max(0, schemeCombo->findData(sel.id.isEmpty() ? QString() : id)));
+            }
+            const bool mod = theme::currentModified();
+            const bool user = id.startsWith(QLatin1String("user:")) && !sel.id.isEmpty();
+            modified->setText(sel.id.isEmpty() ? TR("A színek nincsenek sémaként mentve: a „Mentés másként” gombbal mentheted el őket.")
+                              : mod        ? TR("Módosítva: a változtatások már látszanak, de a séma még a régi színeket tárolja.")
+                                           : (sel.builtIn ? TR("Beépített séma: a változtatásait saját sémaként mentheted.") : QString()));
+            saveBtn->setEnabled(user && mod);
+            renameBtn->setEnabled(user);
+            deleteBtn->setEnabled(user);
+            revertBtn->setEnabled(mod && !sel.id.isEmpty());
+            // Olvashatóság: a szöveg és a háttér, illetve a panel kontrasztja.
+            const double c1 = theme::contrast(cur.value(QStringLiteral("text")), cur.value(QStringLiteral("bg")));
+            const double c2 = theme::contrast(cur.value(QStringLiteral("text")), cur.value(QStringLiteral("panel")));
+            const double c3 = theme::contrast(cur.value(QStringLiteral("muted")), cur.value(QStringLiteral("panel")));
+            const double worst = std::min({c1, c2});
+            if (worst < 4.5)
+                contrastWarn->setText(TR("Figyelem: a szöveg nehezen olvasható ezen a háttéren (kontraszt %1:1, legalább 4,5:1 ajánlott).")
+                                          .arg(QLocale().toString(worst, 'f', 1)));
+            else if (c3 < 3.0)
+                contrastWarn->setText(TR("Figyelem: a halvány szöveg nehezen olvasható a paneleken (kontraszt %1:1, legalább 3:1 ajánlott).")
+                                          .arg(QLocale().toString(c3, 'f', 1)));
+            else
+                contrastWarn->clear();
+            contrastWarn->setVisible(!contrastWarn->text().isEmpty());
+            contrastWarn->setStyleSheet(QStringLiteral("color: #ffb4ae;"));
+        };
+        auto changeRole = [refresh](const QString &key, const QColor &c) {
+            theme::Colors cur = theme::currentColors();
+            cur[key] = c;
+            theme::setCurrentColors(cur, QString());
+            refresh();
+        };
+        for (auto it = roleButtons.cbegin(); it != roleButtons.cend(); ++it) {
+            QPushButton *b = it.value();
+            const QString key = it.key();
+            connect(b, &QPushButton::clicked, this, [this, b, key, changeRole] {
+                const QColor cur = theme::currentColors().value(key);
+                QColor c;
+                if (qEnvironmentVariableIsSet("ETER_PICK_COLOR")) c = QColor(qEnvironmentVariable("ETER_PICK_COLOR"));   // tesztekhez
+                else c = QColorDialog::getColor(cur, this, b->accessibleName());
+                if (c.isValid()) changeRole(key, c);
+            });
+        }
+        for (const auto &[t, c] : presetButtons) {
+            const QColor col = c;
+            connect(t, &QToolButton::clicked, this, [changeRole, col] { changeRole(QStringLiteral("accent"), col); });
+        }
+        connect(schemeCombo, &QComboBox::activated, this, [this, schemeCombo, refresh] {
+            const QString id = schemeCombo->currentData().toString();
+            const theme::Scheme s = theme::scheme(id);
+            if (s.id.isEmpty() || s.id == theme::currentSchemeId() && !theme::currentModified()) return refresh();
+            if (theme::currentModified() && !qEnvironmentVariableIsSet("ETER_AUTOCONFIRM")
+                && QMessageBox::question(this, TR("Színséma"), TR("A jelenlegi színek nincsenek elmentve, és a váltással elvesznek. Folytatod?"))
+                       != QMessageBox::Yes)
+                return refresh();
+            theme::setCurrentColors(s.colors, s.id);
+            refresh();
+        });
+        // Név bekérése (tesztekhez: ETER_SCHEME_NAME).
+        auto askName = [this](const QString &title, const QString &def) {
+            if (qEnvironmentVariableIsSet("ETER_SCHEME_NAME")) return qEnvironmentVariable("ETER_SCHEME_NAME").trimmed();
+            bool ok = false;
+            const QString n = QInputDialog::getText(this, title, TR("A séma neve:"), QLineEdit::Normal, def, &ok).trimmed();
+            return ok ? n : QString();
+        };
+        connect(saveBtn, &QPushButton::clicked, this, [refresh] {
+            const QString id = theme::currentSchemeId();
+            if (!id.startsWith(QLatin1String("user:"))) return;
+            theme::setCurrentColors(theme::currentColors(), theme::saveScheme(id.mid(5), theme::currentColors()));
+            refresh();
+        });
+        connect(saveAsBtn, &QPushButton::clicked, this, [this, askName, refresh] {
+            const theme::Scheme sel = theme::scheme(theme::currentSchemeId());
+            const QString def = sel.builtIn || sel.id.isEmpty() ? theme::uniqueSchemeName(TR("Saját séma")) : sel.name;
+            const QString name = askName(TR("Színséma mentése"), def);
+            if (name.isEmpty()) return;
+            if (theme::isBuiltInName(name)) {
+                QMessageBox::warning(this, TR("Színséma"), TR("Ez egy beépített séma neve; válassz másikat."));
+                return;
+            }
+            const QString id = QStringLiteral("user:") + name;
+            if (!theme::scheme(id).id.isEmpty() && id != theme::currentSchemeId() && !qEnvironmentVariableIsSet("ETER_AUTOCONFIRM")
+                && QMessageBox::question(this, TR("Színséma"), TR("Már van „%1” nevű séma. Felülírod?").arg(name)) != QMessageBox::Yes)
+                return;
+            theme::setCurrentColors(theme::currentColors(), theme::saveScheme(name, theme::currentColors()));
+            refresh();
+        });
+        connect(renameBtn, &QPushButton::clicked, this, [this, askName, refresh] {
+            const theme::Scheme sel = theme::scheme(theme::currentSchemeId());
+            if (sel.builtIn || sel.id.isEmpty()) return;
+            const QString name = askName(TR("Színséma átnevezése"), sel.name);
+            if (name.isEmpty() || name == sel.name) return;
+            if (theme::renameScheme(sel.id, name).isEmpty())
+                QMessageBox::warning(this, TR("Színséma"), TR("Ilyen nevű séma már van, vagy beépített séma neve."));
+            refresh();
+        });
+        connect(deleteBtn, &QPushButton::clicked, this, [this, refresh] {
+            const theme::Scheme sel = theme::scheme(theme::currentSchemeId());
+            if (sel.builtIn || sel.id.isEmpty()) return;
+            if (!qEnvironmentVariableIsSet("ETER_AUTOCONFIRM")
+                && QMessageBox::question(this, TR("Színséma"), TR("Törlöd a(z) „%1” sémát? A jelenlegi színek megmaradnak.").arg(sel.name))
+                       != QMessageBox::Yes)
+                return;
+            theme::removeScheme(sel.id);
+            refresh();
+        });
+        connect(revertBtn, &QPushButton::clicked, this, [refresh] {
+            const theme::Scheme sel = theme::scheme(theme::currentSchemeId());
+            if (!sel.id.isEmpty()) theme::setCurrentColors(sel.colors, sel.id);
+            refresh();
+        });
+        connect(exportBtn, &QPushButton::clicked, this, [this] {
+            const theme::Scheme sel = theme::scheme(theme::currentSchemeId());
+            const QString name = sel.id.isEmpty() ? TR("Saját séma") : sel.name;
+            QString path = qEnvironmentVariable("ETER_SCHEME_FILE");   // tesztekhez
+            if (path.isEmpty()) {
+                QString base = name;
+                base.replace(QRegularExpression(QStringLiteral("[\\\\/:*?\"<>|]")), QStringLiteral("_"));
+                path = QFileDialog::getSaveFileName(this, TR("Színséma exportálása"), QDir::home().filePath(base + QStringLiteral(".json")),
+                                                    TR("Éter színséma (*.json)"));
+            }
+            if (path.isEmpty()) return;
+            if (!path.endsWith(QLatin1String(".json"), Qt::CaseInsensitive)) path += QStringLiteral(".json");
+            QFile f(path);
+            if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)
+                || f.write(QJsonDocument(theme::schemeToJson(name, theme::currentColors())).toJson(QJsonDocument::Indented)) < 0) {
+                QMessageBox::warning(this, TR("Színséma"), TR("Nem sikerült menteni: %1").arg(f.errorString()));
+                return;
+            }
+            std::printf("színséma exportálva: %s\n", qPrintable(path));
+        });
+        connect(importBtn, &QPushButton::clicked, this, [this, refresh] {
+            QStringList paths;
+            if (qEnvironmentVariableIsSet("ETER_SCHEME_FILE")) paths << qEnvironmentVariable("ETER_SCHEME_FILE");
+            else paths = QFileDialog::getOpenFileNames(this, TR("Színséma importálása"), QDir::homePath(), TR("Éter színséma (*.json)"));
+            QString lastId;
+            QStringList errors;
+            for (const QString &p : paths) {
+                QFile f(p);
+                QString name, err;
+                theme::Colors cols;
+                if (!f.open(QIODevice::ReadOnly) || f.size() > 256 * 1024) {
+                    errors << QStringLiteral("%1: %2").arg(QFileInfo(p).fileName(), f.isOpen() ? TR("túl nagy fájl") : f.errorString());
+                    continue;
+                }
+                if (!theme::schemeFromJson(f.readAll(), &name, &cols, &err)) {
+                    errors << QStringLiteral("%1: %2").arg(QFileInfo(p).fileName(), err);
+                    continue;
+                }
+                if (name.isEmpty()) name = QFileInfo(p).completeBaseName();
+                // Ugyanilyen nevű és színű séma már van: nem kell kétszer.
+                const theme::Scheme same = theme::scheme(QStringLiteral("user:") + name);
+                if (!same.id.isEmpty() && same.colors == cols) lastId = same.id;
+                else lastId = theme::saveScheme(theme::uniqueSchemeName(name), cols);
+            }
+            if (!lastId.isEmpty()) theme::setCurrentColors(theme::scheme(lastId).colors, lastId);
+            refresh();
+            if (!errors.isEmpty()) {
+                if (qEnvironmentVariableIsSet("ETER_SCHEME_FILE")) std::printf("import hiba: %s\n", qPrintable(errors.join(" | ")));
+                else QMessageBox::warning(this, TR("Színséma importálása"), errors.join(QLatin1Char('\n')));
+            }
+        });
+        refresh();
+
+        cap(TR("A FELÜLET MÉRETE"));
+        small(TR("Minden felirat, gomb és ablak ennyivel nagyobb. A program következő indításakor lép életbe."));
+        auto *scale = new QComboBox;
+        scale->setObjectName("uiScale");
+        for (int pct : {100, 110, 125, 140, 150, 175, 200}) scale->addItem(QStringLiteral("%1 %").arg(pct), pct);
+        scale->setCurrentIndex(std::max(0, scale->findData(theme::uiScalePercent())));
+        auto *sf = new QFormLayout;
+        sf->setFieldGrowthPolicy(QFormLayout::FieldsStayAtSizeHint);
+        sf->addRow(TR("Méret"), scale);
+        root->addLayout(sf);
+        connect(scale, &QComboBox::activated, this, [scale] { QSettings().setValue(QStringLiteral("ui/scale"), scale->currentData().toInt()); });
+        root->addStretch(1);
+    }
+
+    root = newPage(TR("MIDI"));
+    if (MidiControl *mc = MidiControl::instance()) {
+        auto cap = [&](const QString &t) {
+            auto *c = new QLabel(t);
+            c->setObjectName("caption");
+            root->addWidget(c);
+        };
+        auto small = [&](const QString &t) {
+            auto *l = new QLabel(t);
+            l->setObjectName("small");
+            l->setWordWrap(true);
+            root->addWidget(l);
+            return l;
+        };
+        cap(TR("MIDI-ESZKÖZ"));
+        small(TR("Egy MIDI-képes keverőpult (például RØDECaster Pro) vagy kontroller gombjaival és fadereivel kezelheted a "
+                 "programot. Itt azok az eszközök látszanak, amelyeket a rendszer MIDI-eszközként ismer (Windows alatt az "
+                 "Eszközkezelőben is látszanak). Ha az eszköz nem küld üzenetet, nézd meg a saját beállításaiban, hogy a "
+                 "MIDI-vezérlés be van-e kapcsolva."));
+        auto *devRow = new QHBoxLayout;
+        devRow->setSpacing(6);
+        auto *dev = new QComboBox;
+        dev->setObjectName("midiDevice");
+        dev->setMinimumWidth(280);
+        auto *refreshDev = new QPushButton(TR("Frissítés"));
+        refreshDev->setObjectName("midiRefresh");
+        devRow->addWidget(dev, 1);
+        devRow->addWidget(refreshDev);
+        root->addLayout(devRow);
+        auto *status = small(QString());
+        status->setObjectName("midiStatus");
+        auto *monitor = new QLabel(TR("Utolsó üzenet: —"));
+        monitor->setObjectName("mono");
+        monitor->setToolTip(TR("Az eszközről érkező utolsó üzenet: így látszik, hogy a gombok és faderek mit küldenek"));
+        root->addWidget(monitor);
+
+        cap(TR("VEZÉRLÉS"));
+        small(TR("Tanuló mód: kattints a művelet „Tanítás” gombjára, majd nyomd meg a gombot vagy mozdítsd meg a fadert az "
+                 "eszközön. Gombhoz: indítás és leállítás, következő, kiúsztatás, cartwall. Faderhez: hangerő (a fader teteje "
+                 "0 dB) vagy fader-indítás (a fader felhúzására indul, lehúzására megáll a lejátszó). Egy fader lehet egyszerre "
+                 "hangerő és fader-indítás is."));
+        auto *table = new QTableWidget(0, 4);
+        table->setObjectName("midiBindings");
+        table->setHorizontalHeaderLabels({TR("Művelet"), TR("Vezérlő"), QString(), QString()});
+        table->verticalHeader()->hide();
+        table->verticalHeader()->setDefaultSectionSize(34);
+        table->setShowGrid(false);
+        table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        table->setSelectionMode(QAbstractItemView::NoSelection);
+        table->setFocusPolicy(Qt::NoFocus);
+        table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+        table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+        table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+        table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+        table->setMinimumHeight(320);
+        root->addWidget(table, 1);
+        auto *learnNote = small(QString());
+        learnNote->setObjectName("midiLearnNote");
+
+        auto *opts = new QHBoxLayout;
+        opts->setSpacing(8);
+        auto *thrLabel = new QLabel(TR("Fader-indítás: nyitottnak számít efölött"));
+        auto *thr = new QSpinBox;
+        thr->setObjectName("midiFaderThreshold");
+        thr->setRange(1, 50);
+        thr->setSuffix(QStringLiteral(" %"));
+        thr->setValue(mc->faderStartThreshold());
+        auto *clearAll = new QPushButton(TR("Összes hozzárendelés törlése"));
+        clearAll->setObjectName("midiClearAll");
+        opts->addWidget(thrLabel);
+        opts->addWidget(thr);
+        opts->addStretch(1);
+        opts->addWidget(clearAll);
+        root->addLayout(opts);
+
+        auto fillDevices = [=] {
+            const QSignalBlocker b(dev);
+            dev->clear();
+            dev->addItem(TR("Nincs (kikapcsolva)"), QString());
+            bool found = mc->deviceId().isEmpty();
+            for (const MidiControl::PortInfo &p : MidiControl::ports()) {
+                dev->addItem(p.name, p.id);
+                dev->setItemData(dev->count() - 1, p.name, Qt::UserRole + 1);
+                if (p.id == mc->deviceId() || (!mc->deviceName().isEmpty() && p.name == mc->deviceName())) found = true;
+            }
+            if (!found) {
+                dev->addItem(TR("%1 (nincs csatlakoztatva)").arg(mc->deviceName().isEmpty() ? mc->deviceId() : mc->deviceName()), mc->deviceId());
+                dev->setItemData(dev->count() - 1, mc->deviceName(), Qt::UserRole + 1);
+            }
+            int idx = dev->findData(mc->deviceId());
+            if (idx < 0 && !mc->deviceName().isEmpty()) idx = dev->findText(mc->deviceName());
+            dev->setCurrentIndex(std::max(0, idx));
+        };
+        // A táblázat sorai egyszer készülnek; a frissítés csak a feliratokat és az állapotot írja át (a gombok a saját
+        // kattintásuk közben nem törlődhetnek).
+        const QVector<MidiControl::Action> acts = MidiControl::actions();
+        table->setRowCount(int(acts.size()));
+        QVector<QPushButton *> learnBtns, clearBtns;
+        for (int r = 0; r < acts.size(); ++r) {
+            const MidiControl::Action &a = acts[r];
+            auto *name = new QTableWidgetItem(a.label);
+            name->setToolTip(a.kind == MidiControl::Button ? TR("Gomb") : TR("Fader"));
+            table->setItem(r, 0, name);
+            table->setItem(r, 1, new QTableWidgetItem);
+            auto *learn = new QPushButton(TR("Tanítás"));
+            learn->setObjectName(QStringLiteral("midiLearn_") + a.id);
+            // A „Mozdítsd meg…” felirat is elférjen (az oszlop a gomb méretéhez igazodik).
+            learn->setMinimumWidth(learn->fontMetrics().horizontalAdvance(TR("Mozdítsd meg…")) + 32);
+            learn->setToolTip(a.kind == MidiControl::Button ? TR("Kattints rá, majd nyomd meg a gombot az eszközön")
+                                                            : TR("Kattints rá, majd mozdítsd meg a fadert az eszközön"));
+            connect(learn, &QPushButton::clicked, this, [mc, learnNote, id = a.id] {
+                if (mc->learning() == id) {
+                    mc->cancelLearn();
+                    learnNote->setText(TR("A tanítás megszakadt."));
+                } else {
+                    mc->startLearn(id);
+                }
+            });
+            table->setCellWidget(r, 2, learn);
+            auto *clr = new QPushButton(TR("Törlés"));
+            clr->setObjectName(QStringLiteral("midiClear_") + a.id);
+            connect(clr, &QPushButton::clicked, this, [mc, id = a.id] { mc->setBinding(id, QString()); });
+            table->setCellWidget(r, 3, clr);
+            learnBtns << learn;
+            clearBtns << clr;
+        }
+        auto fillTable = [=] {
+            for (int r = 0; r < acts.size(); ++r) {
+                const MidiControl::Action &a = acts[r];
+                const QString key = mc->binding(a.id);
+                QTableWidgetItem *ctl = table->item(r, 1);
+                ctl->setText(key.isEmpty() ? QStringLiteral("—") : MidiControl::describe(key));
+                ctl->setForeground(key.isEmpty() ? theme::muted : theme::text);
+                const bool on = mc->learning() == a.id;
+                QPushButton *learn = learnBtns[r];
+                learn->setText(on ? TR("Mozdítsd meg…") : TR("Tanítás"));
+                if (learn->property("active").toBool() != on) {
+                    learn->setProperty("active", on);
+                    learn->style()->unpolish(learn);
+                    learn->style()->polish(learn);
+                }
+                clearBtns[r]->setEnabled(!key.isEmpty());
+            }
+            const QString l = mc->learning();
+            if (!l.isEmpty())
+                learnNote->setText((MidiControl::action(l).kind == MidiControl::Button
+                                        ? TR("Tanítás: „%1” – nyomd meg a gombot az eszközön (a „Mozdítsd meg…” gombbal megszakítható).")
+                                        : TR("Tanítás: „%1” – mozdítsd meg a fadert az eszközön (a „Mozdítsd meg…” gombbal megszakítható)."))
+                                       .arg(MidiControl::action(l).label));
+        };
+        fillDevices();
+        fillTable();
+        status->setText(mc->statusText());
+        connect(dev, &QComboBox::activated, this, [=] {
+            mc->setDevice(dev->currentData().toString(), dev->currentData().toString().isEmpty() ? QString()
+                                                                                                  : dev->currentData(Qt::UserRole + 1).toString());
+        });
+        connect(refreshDev, &QPushButton::clicked, this, [=] { fillDevices(); });
+        connect(mc, &MidiControl::statusChanged, this, [=] {
+            status->setText(mc->statusText());
+            fillTable();
+        });
+        connect(mc, &MidiControl::bindingsChanged, this, fillTable);
+        connect(mc, &MidiControl::messageSeen, this, [monitor](const QString &key, int value) {
+            monitor->setText(TR("Utolsó üzenet: %1 · érték %2").arg(MidiControl::describe(key)).arg(value));
+        });
+        connect(mc, &MidiControl::learned, this, [=](const QString &id, const QString &key, const QStringList &moved) {
+            QString t = TR("„%1” ← %2").arg(MidiControl::action(id).label, MidiControl::describe(key));
+            if (!moved.isEmpty()) {
+                QStringList names;
+                for (const QString &m : moved) names << MidiControl::action(m).label;
+                t += QLatin1Char(' ') + TR("(eddig ehhez tartozott: %1)").arg(names.join(QStringLiteral(", ")));
+            }
+            fillTable();
+            learnNote->setText(t);
+        });
+        connect(thr, &QSpinBox::valueChanged, this, [mc](int v) { mc->setFaderStartThreshold(v); });
+        connect(clearAll, &QPushButton::clicked, this, [this, mc] {
+            if (!qEnvironmentVariableIsSet("ETER_AUTOCONFIRM")
+                && QMessageBox::question(this, TR("MIDI"), TR("Minden MIDI-hozzárendelés törlődik. Folytatod?")) != QMessageBox::Yes)
+                return;
+            mc->clearAll();
+        });
+        // Az ablak bezárásakor a félbehagyott tanítás megszakad.
+        connect(this, &QObject::destroyed, mc, [mc] { mc->cancelLearn(); });
+    }
+
+    root = newPage(TR("Lapok"));
+    {
+        // A főablak fülei: amelyik nem kell, elrejthető. A rejtett lap a háttérben tovább működik.
+        auto *cap = new QLabel(TR("LÁTHATÓ LAPOK"));
+        cap->setObjectName("caption");
+        root->addWidget(cap);
+        auto *about = new QLabel(TR("A kikapcsolt lap füle eltűnik a főablakból. A lap a háttérben tovább működik: például "
+                                    "az időzített események akkor is lefutnak, ha az Időzítések lap rejtett. A Beállítások "
+                                    "fül elrejtése után a beállítások az Eszközök → Beállítások menüből (Ctrl+,) érhetők el."));
+        about->setObjectName("small");
+        about->setWordWrap(true);
+        root->addWidget(about);
+        const QStringList hidden = MainWindow::hiddenTabs();
+        QVector<QCheckBox *> boxes;
+        for (const auto &[key, label] : MainWindow::tabList()) {
+            auto *c = new QCheckBox(label);
+            c->setObjectName(QStringLiteral("tab_") + key);
+            c->setChecked(!hidden.contains(key));
+            c->setProperty("tabKey", key);
+            root->addWidget(c);
+            boxes << c;
+        }
+        for (QCheckBox *c : boxes)
+            connect(c, &QCheckBox::toggled, this, [this, boxes] {
+                QStringList keys;
+                for (QCheckBox *b : boxes)
+                    if (!b->isChecked()) keys << b->property("tabKey").toString();
+                MainWindow::setHiddenTabs(keys);
+                main_->applyTabVisibility();
+            });
+        root->addStretch(1);
+    }
+
     root = newPage(TR("Weboldal"));
     {
         // Weboldal: „Most szól”, „Következő számok” és számkérés a WordPress-oldalon (Éter Radio bővítmény).
@@ -660,6 +1241,53 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
             s->setValue(v);
             return s;
         };
+        // Sablonok: az automatikus mix beállításainak elmentett változatai, a hangtár kategóriáihoz rendelhetők.
+        caption(TR("SABLON"));
+        note(TR("A lenti beállítások sablonként is elmenthetők, és a sablon a hangtár kategóriáihoz rendelhető (Hangtár → "
+                "Kategóriák…). Az ilyen kategóriájú elem utáni átmenetet a sablonja szerint keveri a program (a bejövő elem "
+                "kezdőpontjának küszöbét a bejövő elem sablonja szerint); sablon nélkül az alapbeállítás érvényes. Itt "
+                "választhatod ki, melyiket szerkeszted: az „Alkalmazás” abba ment."));
+        auto *tplRow = new QHBoxLayout;
+        tplRow->setSpacing(6);
+        auto *tplSel = new QComboBox;
+        tplSel->setObjectName("mixTemplate");
+        tplSel->setMinimumWidth(240);
+        auto *tplNew = new QPushButton(TR("Mentés új sablonként…"));
+        tplNew->setObjectName("mixTemplateNew");
+        auto *tplRename = new QPushButton(TR("Átnevezés…"));
+        auto *tplDelete = new QPushButton(TR("Törlés"));
+        tplDelete->setProperty("danger", true);
+        tplRow->addWidget(tplSel, 1);
+        tplRow->addWidget(tplNew);
+        tplRow->addWidget(tplRename);
+        tplRow->addWidget(tplDelete);
+        root->addLayout(tplRow);
+        auto *tplCats = new QLabel;
+        tplCats->setObjectName("small");
+        tplCats->setWordWrap(true);
+        root->addWidget(tplCats);
+
+        // Előnézet: két mintaelem átmenete a lapon éppen beállított értékekkel (az „Alkalmazás” előtt is).
+        caption(TR("ELŐNÉZET"));
+        auto *pvRow = new QHBoxLayout;
+        pvRow->setSpacing(8);
+        auto *pvLabel = new QLabel(TR("Példa átmenet"));
+        auto *pvScenario = new QComboBox;
+        pvScenario->setObjectName("mixPreviewScenario");
+        pvScenario->addItems(MixPreview::scenarioNames());
+        pvRow->addWidget(pvLabel);
+        pvRow->addWidget(pvScenario, 1);
+        root->addLayout(pvRow);
+        auto *preview = new MixPreview;
+        root->addWidget(preview);
+        auto *pvSummary = new QLabel;
+        pvSummary->setObjectName("mixPreviewSummary");
+        pvSummary->setWordWrap(true);
+        pvSummary->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        root->addWidget(pvSummary);
+        connect(preview, &MixPreview::summaryChanged, pvSummary, &QLabel::setText);
+        connect(pvScenario, &QComboBox::currentIndexChanged, preview, &MixPreview::setScenario);
+
         caption(TR("OKOS MIX"));
         note(TR("Két zene között (automatikus mix módban) a program megnézi a kimenő szám végét és a következő elejét: "
                 "lassan elhalkuló végnél korábban keveri rá a következőt, hirtelen végnél szorosan illeszti; lágy, felfutó "
@@ -747,11 +1375,15 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
 
         caption(TR("EGYSZERŰ MÓD"));
         note(TR("Ha az okos mix ki van kapcsolva (vagy a kimenő szám elemzése még nem készült el): a mix pont az utolsó "
-                "hely, ahol a jel még a küszöb fölött van, és a kimenő szám onnan úszik ki."));
+                "hely, ahol a jel még a küszöb fölött van, és a kimenő szám onnan úszik ki. A bejövő szám ott indul, ahol "
+                "a jel először a kezdőpont küszöbe fölé ér (a mentett kezdőpont ezt felülírja)."));
         auto *form3 = new QFormLayout;
         auto *thr = dbSpin(db->setting("auto_mix_threshold_db", "-24").toDouble(), -60, -3, TR(" dB"));
+        auto *cueThr = dbSpin(db->setting("auto_cue_threshold_db", "-45").toDouble(), -80, -10, TR(" dB"));
+        cueThr->setObjectName("autoCueThreshold");
         auto *defFade = dbSpin(db->setting("default_fade_out_ms", "2500").toDouble() / 1000.0, 0.1, 15, TR(" mp"), 1);
         form3->addRow(TR("Mix pont küszöbe"), thr);
+        form3->addRow(TR("Kezdőpont küszöbe"), cueThr);
         form3->addRow(TR("Alapértelmezett kiúsztatás"), defFade);
         root->addLayout(form3);
 
@@ -776,6 +1408,7 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
             tempoTol->setValue(d.tempoTolPct);
             clash->setValue(d.clashOverlapMs / 1000.0);
             thr->setValue(-24);
+            cueThr->setValue(-45);
             defFade->setValue(2.5);
             allItems->setChecked(d.allItems);
             savedWins->setChecked(d.savedWins);
@@ -785,24 +1418,154 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
             hiddenSil->setValue(d.hiddenSilenceMs / 1000.0);
             deadSec->setValue(3.0);
         });
-        connect(apply, &QPushButton::clicked, this, [=, this] {
+        // A sablonba kerülő értékek az űrlapról (a csendvédelem minden elemre közös, az csak az alapbeállításban van).
+        auto collect = [=] {
             auto ms = [](QDoubleSpinBox *s) { return QString::number(qRound(s->value() * 1000)); };
-            db->setSetting("smart_mix", smartOn->isChecked() ? "1" : "0");
-            db->setSetting("smart_end_depth_db", QString::number(endDepth->value()));
-            db->setSetting("smart_fade_depth_db", QString::number(fadeDepth->value()));
-            db->setSetting("smart_intro_max_ms", ms(introMax));
-            db->setSetting("smart_tight_ms", ms(tight));
-            db->setSetting("smart_max_overlap_ms", ms(maxOverlap));
-            db->setSetting("smart_flow", flowOn->isChecked() ? "1" : "0");
-            db->setSetting("smart_tempo_tol_pct", QString::number(qRound(tempoTol->value())));
-            db->setSetting("smart_clash_overlap_ms", ms(clash));
-            db->setSetting("auto_mix_threshold_db", QString::number(thr->value()));
-            db->setSetting("default_fade_out_ms", ms(defFade));
-            db->setSetting("smart_all_items", allItems->isChecked() ? "1" : "0");
-            db->setSetting("smart_saved_wins", savedWins->isChecked() ? "1" : "0");
-            db->setSetting("smart_hidden_track", hidden->isChecked() ? "1" : "0");
-            db->setSetting("smart_segue_gap_ms", ms(gap));
-            db->setSetting("smart_hidden_silence_ms", ms(hiddenSil));
+            QJsonObject v{{"smart_mix", smartOn->isChecked() ? "1" : "0"},
+                          {"smart_end_depth_db", QString::number(endDepth->value())},
+                          {"smart_fade_depth_db", QString::number(fadeDepth->value())},
+                          {"smart_intro_max_ms", ms(introMax)},
+                          {"smart_tight_ms", ms(tight)},
+                          {"smart_max_overlap_ms", ms(maxOverlap)},
+                          {"smart_flow", flowOn->isChecked() ? "1" : "0"},
+                          {"smart_tempo_tol_pct", QString::number(qRound(tempoTol->value()))},
+                          {"smart_clash_overlap_ms", ms(clash)},
+                          {"auto_mix_threshold_db", QString::number(thr->value())},
+                          {"auto_cue_threshold_db", QString::number(cueThr->value())},
+                          {"default_fade_out_ms", ms(defFade)},
+                          {"smart_all_items", allItems->isChecked() ? "1" : "0"},
+                          {"smart_saved_wins", savedWins->isChecked() ? "1" : "0"},
+                          {"smart_hidden_track", hidden->isChecked() ? "1" : "0"},
+                          {"smart_segue_gap_ms", ms(gap)},
+                          {"smart_hidden_silence_ms", ms(hiddenSil)}};
+            return v;
+        };
+        // Az előnézet a lap aktuális értékeivel (minden változtatásra).
+        auto updatePreview = [=] {
+            const QJsonObject v = collect();
+            preview->setValues(loadSmartMix(db, &v), thr->value(), cueThr->value(), qRound(defFade->value() * 1000));
+        };
+        for (QDoubleSpinBox *sp : {endDepth, fadeDepth, introMax, tight, maxOverlap, tempoTol, clash, thr, cueThr, defFade, gap, hiddenSil})
+            connect(sp, &QDoubleSpinBox::valueChanged, this, updatePreview);
+        for (QCheckBox *c : {smartOn, flowOn, allItems, hidden}) connect(c, &QCheckBox::toggled, this, updatePreview);
+        updatePreview();
+        // Az űrlap kitöltése egy sablon (vagy az alapbeállítás) értékeivel.
+        auto fill = [=](const QJsonObject *tpl) {
+            const MixValues v{db, tpl};
+            const eter::SmartMixSettings c = loadSmartMix(db, tpl);
+            smartOn->setChecked(c.enabled);
+            endDepth->setValue(c.endDepthDb);
+            fadeDepth->setValue(c.fadeDepthDb);
+            introMax->setValue(c.introMaxMs / 1000.0);
+            tight->setValue(c.tightMs / 1000.0);
+            maxOverlap->setValue(c.maxOverlapMs / 1000.0);
+            flowOn->setChecked(c.flowAware);
+            tempoTol->setValue(c.tempoTolPct);
+            clash->setValue(c.clashOverlapMs / 1000.0);
+            allItems->setChecked(c.allItems);
+            savedWins->setChecked(c.savedWins);
+            hidden->setChecked(c.hiddenTrack);
+            gap->setValue(c.segueGapMs / 1000.0);
+            hiddenSil->setValue(c.hiddenSilenceMs / 1000.0);
+            thr->setValue(v.get("auto_mix_threshold_db", "-24").toDouble());
+            cueThr->setValue(v.get("auto_cue_threshold_db", "-45").toDouble());
+            defFade->setValue(v.get("default_fade_out_ms", "2500").toDouble() / 1000.0);
+        };
+        // A sablonválasztó: 0 = alapbeállítás; mellette, mely kategóriák használják.
+        auto refreshTemplates = [=](int select) {
+            const QVector<MixTemplate> list = loadMixTemplates(db);
+            QSignalBlocker b(tplSel);
+            tplSel->clear();
+            tplSel->addItem(TR("Alapbeállítás (minden kategória, amelyhez nincs sablon)"), 0);
+            for (const MixTemplate &t : list) tplSel->addItem(t.name, t.id);
+            tplSel->setCurrentIndex(std::max(0, tplSel->findData(select)));
+            const int id = tplSel->currentData().toInt();
+            QStringList cats;
+            for (const Category &c : db->categories())
+                if (categoryMixTemplate(db, c.id) == id && id > 0) cats << c.name;
+            tplCats->setText(id == 0 ? QString()
+                             : cats.isEmpty() ? TR("Ehhez a sablonhoz még nincs kategória rendelve (Hangtár → Kategóriák…).")
+                                              : TR("Ezek a kategóriák használják: %1").arg(cats.join(QStringLiteral(", "))));
+            tplCats->setVisible(id != 0);
+            tplRename->setEnabled(id != 0);
+            tplDelete->setEnabled(id != 0);
+            deadOn->setEnabled(id == 0);
+            deadSec->setEnabled(id == 0 && deadOn->isChecked());
+            deadOn->setToolTip(id == 0 ? QString() : TR("A csendvédelem minden elemre közös: az alapbeállításban állítható"));
+        };
+        auto templateValues = [db](int id) {
+            for (const MixTemplate &t : loadMixTemplates(db))
+                if (t.id == id) return t.values;
+            return QJsonObject();
+        };
+        refreshTemplates(0);
+        connect(tplSel, &QComboBox::activated, this, [=] {
+            const int id = tplSel->currentData().toInt();
+            const QJsonObject vals = templateValues(id);
+            fill(id ? &vals : nullptr);
+            refreshTemplates(id);
+        });
+        connect(tplNew, &QPushButton::clicked, this, [=, this] {
+            bool ok = false;
+            QString name = qEnvironmentVariable("ETER_TEMPLATE_NAME");
+            if (name.isEmpty())
+                name = QInputDialog::getText(this, TR("Mix sablon"), TR("A sablon neve (például Dance, Ballada, Rock):"),
+                                             QLineEdit::Normal, QString(), &ok).trimmed();
+            if (name.isEmpty()) return;
+            QVector<MixTemplate> list = loadMixTemplates(db);
+            MixTemplate t;
+            for (const MixTemplate &x : list) t.id = std::max(t.id, x.id);
+            ++t.id;
+            t.name = name;
+            t.values = collect();
+            list.push_back(t);
+            saveMixTemplates(db, list);
+            refreshTemplates(t.id);
+            main_->reloadMixSettings();
+        });
+        connect(tplRename, &QPushButton::clicked, this, [=, this] {
+            const int id = tplSel->currentData().toInt();
+            if (!id) return;
+            bool ok = false;
+            const QString name = QInputDialog::getText(this, TR("Mix sablon"), TR("A sablon új neve:"), QLineEdit::Normal,
+                                                       tplSel->currentText(), &ok).trimmed();
+            if (!ok || name.isEmpty()) return;
+            QVector<MixTemplate> list = loadMixTemplates(db);
+            for (MixTemplate &t : list)
+                if (t.id == id) t.name = name;
+            saveMixTemplates(db, list);
+            refreshTemplates(id);
+        });
+        connect(tplDelete, &QPushButton::clicked, this, [=, this] {
+            const int id = tplSel->currentData().toInt();
+            if (!id) return;
+            if (QMessageBox::question(this, TR("Mix sablon"), TR("Törlöd a(z) „%1” sablont? Az ehhez rendelt kategóriák ezután az "
+                                                               "alapbeállítás szerint keverednek.").arg(tplSel->currentText()),
+                                      QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+                return;
+            QVector<MixTemplate> list = loadMixTemplates(db);
+            list.erase(std::remove_if(list.begin(), list.end(), [id](const MixTemplate &t) { return t.id == id; }), list.end());
+            saveMixTemplates(db, list);
+            for (const Category &c : db->categories())
+                if (categoryMixTemplate(db, c.id) == id) setCategoryMixTemplate(db, c.id, 0);
+            fill(nullptr);
+            refreshTemplates(0);
+            main_->reloadMixSettings();
+        });
+        connect(apply, &QPushButton::clicked, this, [=, this] {
+            const int id = tplSel->currentData().toInt();
+            if (id) {
+                // Sablon: az űrlap értékei a sablonba kerülnek; az alapbeállítás nem változik.
+                QVector<MixTemplate> list = loadMixTemplates(db);
+                for (MixTemplate &t : list)
+                    if (t.id == id) t.values = collect();
+                saveMixTemplates(db, list);
+                main_->reloadMixSettings();
+                return;
+            }
+            const QJsonObject v = collect();
+            for (auto it = v.begin(); it != v.end(); ++it) db->setSetting(it.key(), it.value().toString());
+            auto ms = [](QDoubleSpinBox *s) { return QString::number(qRound(s->value() * 1000)); };
             db->setSetting("dead_air_guard", deadOn->isChecked() ? "1" : "0");
             db->setSetting("dead_air_ms", ms(deadSec));
             main_->reloadMixSettings();
@@ -905,6 +1668,120 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
         show();
     }
 
+    root = newPage(TR("Előadói adatok"));
+    if (ArtistInfoService *info = main_->artistInfo()) {
+        // TheAudioDB: életrajz, fotó, ország, műfaj, stílus, hangulat a lejátszóban.
+        auto cap = [&](const QString &t) {
+            auto *c = new QLabel(t);
+            c->setObjectName("caption");
+            root->addWidget(c);
+        };
+        auto small = [&](const QString &t) {
+            auto *l = new QLabel(t);
+            l->setObjectName("small");
+            l->setWordWrap(true);
+            l->setOpenExternalLinks(true);
+            root->addWidget(l);
+            return l;
+        };
+        cap(TR("ELŐADÓI ADATOK"));
+        small(TR("A lejátszóban az előadó fotója, országa, évei, műfaja (és ha van, stílusa, hangulata) látszik, az "
+                 "„Életrajz” gombra pedig az életrajza, a program nyelvén, ha van, különben angolul. A számok albuma és éve "
+                 "is kitöltődik. Az adatok az adatbázisba kerülnek; a meglévő adatot nem írják felül (az éneket, az albumot "
+                 "és az évet csak ott töltik ki, ahol még üres). Amelyik forrás ki van kapcsolva, annak a program egyetlen "
+                 "kérést sem küld."));
+        const ArtistInfoService::Settings cur = info->settings();
+        auto *modeForm = new QFormLayout;
+        auto *mode = new QComboBox;
+        mode->setObjectName("adbMode");
+        mode->addItem(TR("Automatikusan, a háttérben (az egész hangtár)"), ArtistInfoService::Auto);
+        mode->addItem(TR("Amikor egy elem a lejátszóba kerül"), ArtistInfoService::OnLoad);
+        mode->addItem(TR("Csak kézzel (hangtár: jobb klikk → Előadói adatok lekérése)"), ArtistInfoService::Manual);
+        mode->setCurrentIndex(std::max(0, mode->findData(cur.mode)));
+        modeForm->addRow(TR("Keresés módja"), mode);
+        root->addLayout(modeForm);
+        cap(TR("MUSICBRAINZ (INGYENES, KULCS NÉLKÜL)"));
+        auto *mb = new QCheckBox(TR("Előadói adatok és a számok albuma, éve a MusicBrainzből"));
+        mb->setObjectName("mbEnabled");
+        mb->setChecked(cur.mbEnabled);
+        root->addWidget(mb);
+        auto *wiki = new QCheckBox(TR("Életrajz és fotó a Wikipédiából (a MusicBrainz hivatkozása alapján)"));
+        wiki->setObjectName("wikiEnabled");
+        wiki->setChecked(cur.wikiEnabled);
+        root->addWidget(wiki);
+        small(TR("A MusicBrainz kulcs nélkül használható, másodpercenként legfeljebb egy lekéréssel (ezt a program betartja). "
+                 "A MusicBrainz adatai szabadon felhasználhatók; a szolgáltatás nem kereskedelmi célra ingyenes. A Wikipédia "
+                 "szövegei a CC BY-SA licenc alatt állnak."));
+        cap(TR("THEAUDIODB"));
+        auto *on = new QCheckBox(TR("Előadói adatok a TheAudioDB-ből"));
+        on->setObjectName("adbEnabled");
+        on->setChecked(cur.enabled);
+        root->addWidget(on);
+        auto *form = new QFormLayout;
+        auto *key = new QLineEdit(cur.key);
+        key->setObjectName("adbKey");
+        key->setPlaceholderText(QStringLiteral("123"));
+        auto *freeKey = new QToolButton;
+        freeKey->setText(TR("Ingyenes kulcs"));
+        freeKey->setToolTip(TR("Vissza az ingyenes „123” kulcsra"));
+        auto *keyRow = new QHBoxLayout;
+        keyRow->addWidget(key, 1);
+        keyRow->addWidget(freeKey);
+        form->addRow(TR("TheAudioDB API-kulcs"), keyRow);
+        root->addLayout(form);
+        small(TR("Az ingyenes kulcs (123) jelenleg csak mintaadatot ad (bármire ugyanazt az előadót); a nem egyező választ a "
+                 "program eldobja, így valódi adathoz saját (Premium) kulcs kell. Azzal percenként legfeljebb 100 lekérés "
+                 "mehet, és a számok albuma és éve is kitöltődik. Kulcs: "
+                 "<a href=\"https://www.theaudiodb.com/free_music_api\">theaudiodb.com</a>. A felhasználási feltételeket "
+                 "kereskedelmi rádióban érdemes elolvasni."));
+        auto *state = small(QString());
+        state->setObjectName("adbState");
+        auto *clear = new QPushButton(TR("Letöltött adatok törlése"));
+        clear->setToolTip(TR("A lekért előadói adatok és fotók törlése; bekapcsolva a program újra lekéri őket."));
+        auto *row = new QHBoxLayout;
+        row->addWidget(clear);
+        row->addStretch(1);
+        root->addLayout(row);
+        root->addStretch(1);
+        auto refresh = [state, info] {
+            state->setText(TR("MusicBrainz: %1").arg(info->mbStatusText()) + QStringLiteral("\n") + TR("TheAudioDB: %1").arg(info->statusText()));
+        };
+        refresh();
+        connect(info, &ArtistInfoService::statusChanged, state, refresh);
+        auto apply = [=] {
+            ArtistInfoService::Settings ns;
+            ns.enabled = on->isChecked();
+            ns.key = key->text().trimmed().isEmpty() ? QStringLiteral("123") : key->text().trimmed();
+            ns.mode = mode->currentData().toInt();
+            ns.mbEnabled = mb->isChecked();
+            ns.wikiEnabled = wiki->isChecked();
+            wiki->setEnabled(ns.mbEnabled);
+            const ArtistInfoService::Settings old = info->settings();
+            if (ns.enabled == old.enabled && ns.key == old.key && ns.mode == old.mode && ns.mbEnabled == old.mbEnabled
+                && ns.wikiEnabled == old.wikiEnabled)
+                return;
+            info->setSettings(ns);
+            main_->refreshPlayersArtistInfo();
+        };
+        connect(on, &QCheckBox::toggled, this, apply);
+        connect(mb, &QCheckBox::toggled, this, apply);
+        connect(wiki, &QCheckBox::toggled, this, apply);
+        wiki->setEnabled(cur.mbEnabled);
+        connect(key, &QLineEdit::editingFinished, this, apply);
+        connect(mode, &QComboBox::activated, this, apply);
+        connect(freeKey, &QToolButton::clicked, this, [key, apply] {
+            key->setText(QStringLiteral("123"));
+            apply();
+        });
+        connect(clear, &QPushButton::clicked, this, [this, info] {
+            if (QMessageBox::question(this, TR("Előadói adatok"), TR("Törlöd a lekért előadói adatokat és fotókat?"),
+                                      QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+                return;
+            info->clearCache();
+            main_->refreshPlayersArtistInfo();
+        });
+    }
+
     root = newPage(TR("Adatbázis"));
     {
         // Az adatbázis (hangtár, playlistek, ütemező, mixek, beállítások) exportálása és importálása.
@@ -951,6 +1828,247 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
         connect(importBtn, &QPushButton::clicked, this, [this] { main_->importDatabase(this); });
         connect(openBtn, &QPushButton::clicked, this, [this] {
             QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(main_->database()->path()).absolutePath()));
+        });
+    }
+
+    root = newPage(TR("SQL szerver"));
+    {
+        // Külső MySQL / MariaDB szerver: fő tároló, helyi tartalékkal (db/ServerSync.h).
+        auto cap = [&](const QString &t) {
+            auto *c = new QLabel(t);
+            c->setObjectName("caption");
+            root->addWidget(c);
+        };
+        auto small = [&](const QString &t) {
+            auto *l = new QLabel(t);
+            l->setObjectName("small");
+            l->setWordWrap(true);
+            root->addWidget(l);
+            return l;
+        };
+        cap(TR("KÜLSŐ SQL SZERVER (MYSQL / MARIADB)"));
+        small(TR("A szerver a fő tároló: a hangtár, az ütemező, a playlistek, a mixek, a beállítások és az adásnapló minden "
+                 "változása néhány másodpercen belül felkerül rá. Ezen a gépen helyi tartalék is marad, így ha a szerver vagy "
+                 "a hálózat kiesik, az adás zavartalanul megy tovább, a változások pedig a kapcsolat visszatértével kerülnek "
+                 "fel. Egyszerre egy gép ír a szerverre; induláskor az Éter letölti, ha egy másik gép újabb adatot hagyott ott. "
+                 "A hangfájlok nem kerülnek fel: a hangtár az elérési útjukat tárolja."));
+        const sqlsrv::Config cfg = sqlsrv::Config::load();
+        auto *form = new QFormLayout;
+        auto *host = new QLineEdit(cfg.host);
+        host->setObjectName("sqlHost");
+        host->setPlaceholderText(TR("például db.example.com vagy 192.168.1.10"));
+        auto *port = new QSpinBox;
+        port->setObjectName("sqlPort");
+        port->setRange(1, 65535);
+        port->setValue(cfg.port);
+        port->setMaximumWidth(120);
+        auto *user = new QLineEdit(cfg.user);
+        user->setObjectName("sqlUser");
+        auto *pass = new QLineEdit(cfg.password);
+        pass->setObjectName("sqlPassword");
+        pass->setEchoMode(QLineEdit::Password);
+        auto *dbName = new QLineEdit(cfg.database);
+        dbName->setObjectName("sqlDatabase");
+        form->addRow(TR("Kiszolgáló (cím)"), host);
+        form->addRow(TR("Port"), port);
+        form->addRow(TR("Felhasználó"), user);
+        form->addRow(TR("Jelszó"), pass);
+        form->addRow(TR("Adatbázis neve"), dbName);
+        root->addLayout(form);
+        auto current = [=] {
+            sqlsrv::Config c = sqlsrv::Config::load();
+            c.host = host->text().trimmed();
+            c.port = port->value();
+            c.user = user->text();
+            c.password = pass->text();
+            c.database = dbName->text().trimmed();
+            return c;
+        };
+        auto *testRow = new QHBoxLayout;
+        auto *test = new QPushButton(TR("Kapcsolat tesztelése"));
+        test->setObjectName("sqlTest");
+        testRow->addWidget(test);
+        testRow->addStretch(1);
+        root->addLayout(testRow);
+        auto *result = small(QString());
+        result->setObjectName("sqlTestResult");
+        result->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+        cap(TR("ADATOK"));
+        auto *state = small(QString());
+        state->setObjectName("sqlState");
+        auto *actRow = new QHBoxLayout;
+        auto *up = new QPushButton(TR("Feltöltés a szerverre (migrálás)"));
+        up->setObjectName("sqlUpload");
+        up->setToolTip(TR("Ennek a gépnek a teljes adatbázisa felkerül a szerverre (ami ott volt, lecserélődik), és ettől kezdve "
+                          "a szerver a fő tároló."));
+        auto *down = new QPushButton(TR("Letöltés a szerverről"));
+        down->setObjectName("sqlDownload");
+        down->setToolTip(TR("A szerveren lévő adatbázis kerül ide a helyi helyére (előtte biztonsági mentés készül); a program "
+                            "újraindul, és ettől kezdve a szerverrel dolgozik."));
+        auto *off = new QPushButton(TR("Kapcsolat bontása"));
+        off->setObjectName("sqlDisconnect");
+        off->setToolTip(TR("Az Éter ezután csak a helyi adatbázissal dolgozik; a szerveren lévő adat megmarad."));
+        actRow->addWidget(up);
+        actRow->addWidget(down);
+        actRow->addWidget(off);
+        actRow->addStretch(1);
+        root->addLayout(actRow);
+        small(TR("A jelszót a program ezen a gépen, a felhasználó beállításai között tárolja. A felhasználónak a megadott "
+                 "adatbázisban táblát létrehozni, módosítani, írni és olvasni kell tudnia. Az Éter táblái „eter_” előtaggal "
+                 "jönnek létre."));
+        root->addStretch(1);
+
+        ServerSync *sync = main_->serverSync();
+        auto refresh = [=] {
+            const sqlsrv::Config c = sqlsrv::Config::load();
+            const QString st = !c.enabled ? TR("Kikapcsolva: az Éter csak a helyi adatbázissal dolgozik.")
+                               : sync      ? TR("Bekapcsolva · %1").arg(sync->statusText())
+                                           : TR("Bekapcsolva");
+            state->setText(st);
+            off->setEnabled(c.enabled);
+        };
+        refresh();
+        if (sync) connect(sync, &ServerSync::statusChanged, state, refresh);
+        // A mezők mentése (a kapcsolódás adatai); bekapcsolt szinkronnál a háttérszál újrakapcsolódik.
+        auto saveFields = [=] {
+            const sqlsrv::Config c = current();
+            const sqlsrv::Config old = sqlsrv::Config::load();
+            if (c.host == old.host && c.port == old.port && c.user == old.user && c.password == old.password && c.database == old.database)
+                return;
+            c.save();
+            if (c.enabled && sync) {
+                sync->stop();
+                sync->start();
+            }
+        };
+        for (QLineEdit *e : {host, user, pass, dbName}) connect(e, &QLineEdit::editingFinished, this, saveFields);
+        connect(port, &QSpinBox::editingFinished, this, saveFields);
+
+        auto describe = [](const sqlsrv::ServerInfo &i) {
+            if (!i.ok) return TR("Nem sikerült kapcsolódni: %1").arg(i.error);
+            QString t = TR("Kapcsolódva: %1.").arg(i.version);
+            if (!i.hasData) return t + QLatin1Char(' ') + TR("A szerveren még nincs Éter-adat.");
+            const QDateTime hb = QDateTime::fromSecsSinceEpoch(i.heartbeat);
+            return t + QLatin1Char(' ') + TR("Éter-adat a szerveren: %1 elem a hangtárban; utoljára a(z) „%2” gép írta (%3).")
+                                             .arg(i.items).arg(i.writerName, i18n::locale().toString(hb, QLocale::ShortFormat));
+        };
+        connect(test, &QPushButton::clicked, this, [=] {
+            saveFields();
+            const sqlsrv::Config c = current();
+            if (!c.complete()) {
+                result->setText(TR("Add meg a kiszolgálót, a felhasználót és az adatbázis nevét."));
+                return;
+            }
+            QApplication::setOverrideCursor(Qt::WaitCursor);
+            const sqlsrv::ServerInfo i = sqlsrv::probe(c);
+            QApplication::restoreOverrideCursor();
+            result->setText(describe(i));
+            result->setStyleSheet(i.ok ? QStringLiteral("color: #45d483;") : QStringLiteral("color: #ff8f85;"));
+        });
+        auto progressRun = [this](const QString &title, const std::function<bool(const sqlsrv::Progress &)> &job) {
+            QProgressDialog dlg(title, TR("Mégse"), 0, 100, this);
+            dlg.setWindowModality(Qt::WindowModal);
+            dlg.setMinimumDuration(0);
+            dlg.setValue(0);
+            return job([&dlg](int pct, const QString &what) {
+                dlg.setValue(pct);
+                if (!what.isEmpty()) dlg.setLabelText(TR("%1 (%2)").arg(dlg.windowTitle(), what));
+                QApplication::processEvents();
+                return !dlg.wasCanceled();
+            });
+        };
+        connect(up, &QPushButton::clicked, this, [=] {
+            saveFields();
+            sqlsrv::Config c = current();
+            if (!c.complete()) {
+                result->setText(TR("Add meg a kiszolgálót, a felhasználót és az adatbázis nevét."));
+                return;
+            }
+            QApplication::setOverrideCursor(Qt::WaitCursor);
+            const sqlsrv::ServerInfo i = sqlsrv::probe(c);
+            QApplication::restoreOverrideCursor();
+            result->setText(describe(i));
+            if (!i.ok) return;
+            QString ask = TR("Ennek a gépnek a teljes adatbázisa felkerül a szerverre, és ettől kezdve a szerver a fő tároló.");
+            if (i.hasData)
+                ask += QStringLiteral("\n\n") + TR("A szerveren már van Éter-adat (%1 elem, utoljára a(z) „%2” gép írta). Ez lecserélődik.")
+                                                     .arg(i.items).arg(i.writerName);
+            if (!qEnvironmentVariableIsSet("ETER_SQL_AUTOCONFIRM")
+                && QMessageBox::question(this, TR("Feltöltés a szerverre"), ask + QStringLiteral("\n\n") + TR("Folytatod?"),
+                                      QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+                return;
+            if (sync) sync->stop();
+            QString err;
+            const QString path = main_->database()->path();
+            const bool ok = progressRun(TR("Feltöltés a szerverre"), [&](const sqlsrv::Progress &p) { return sqlsrv::upload(c, path, p, &err); });
+            if (!ok) {
+                QMessageBox::warning(this, TR("Feltöltés a szerverre"), TR("A feltöltés nem sikerült:\n%1").arg(err));
+                if (sync && sqlsrv::Config::load().enabled) sync->start();
+                return;
+            }
+            c.enabled = true;
+            c.save();
+            if (sync) sync->start();
+            result->setText(TR("Feltöltve. A szerver mostantól a fő tároló; ez a gép ír rá."));
+            result->setStyleSheet(QStringLiteral("color: #45d483;"));
+            refresh();
+        });
+        connect(down, &QPushButton::clicked, this, [=] {
+            saveFields();
+            sqlsrv::Config c = current();
+            if (!c.complete()) {
+                result->setText(TR("Add meg a kiszolgálót, a felhasználót és az adatbázis nevét."));
+                return;
+            }
+            QApplication::setOverrideCursor(Qt::WaitCursor);
+            const sqlsrv::ServerInfo i = sqlsrv::probe(c);
+            QApplication::restoreOverrideCursor();
+            result->setText(describe(i));
+            if (!i.ok) return;
+            if (!i.hasData) {
+                QMessageBox::information(this, TR("Letöltés a szerverről"), TR("A szerveren még nincs Éter-adat. Előbb tölts fel egy adatbázist."));
+                return;
+            }
+            if (!qEnvironmentVariableIsSet("ETER_SQL_AUTOCONFIRM")
+                && QMessageBox::question(this, TR("Letöltés a szerverről"),
+                                      TR("A helyi adatbázis lecserélődik a szerveren lévőre (%1 elem a hangtárban). Előtte biztonsági "
+                                         "mentés készül róla. A program ezután újraindul.\n\nFolytatod?").arg(i.items),
+                                      QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+                return;
+            if (sync) sync->stop();
+            QString err;
+            const QString path = main_->database()->path();
+            const QString tmp = path + QStringLiteral(".sqlsrv");
+            const bool ok = progressRun(TR("Letöltés a szerverről"), [&](const sqlsrv::Progress &p) { return sqlsrv::download(c, path, tmp, p, &err); });
+            if (!ok || !main_->stageDatabaseImport(tmp, &err)) {
+                QFile::remove(tmp);
+                QMessageBox::warning(this, TR("Letöltés a szerverről"), TR("A letöltés nem sikerült:\n%1").arg(err));
+                if (sync && sqlsrv::Config::load().enabled) sync->start();
+                return;
+            }
+            QFile::remove(tmp);
+            c.enabled = true;
+            c.save();
+            if (qEnvironmentVariableIsSet("ETER_SQL_NORELAUNCH")) {
+                result->setText(TR("Letöltve; újraindításkor lép életbe."));
+                return;
+            }
+            QTimer::singleShot(300, main_, [m = main_] { m->relaunch(QCoreApplication::arguments().mid(1)); });
+        });
+        connect(off, &QPushButton::clicked, this, [=] {
+            if (!qEnvironmentVariableIsSet("ETER_SQL_AUTOCONFIRM")
+                && QMessageBox::question(this, TR("Kapcsolat bontása"),
+                                      TR("Az Éter ezután csak a helyi adatbázissal dolgozik; ami a szerveren van, megmarad. Folytatod?"),
+                                      QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+                return;
+            if (sync) sync->stop();
+            sqlsrv::Config c = current();
+            c.enabled = false;
+            c.save();
+            QSqlDatabase local = QSqlDatabase::database();
+            sqlsrv::removeTriggers(local);
+            refresh();
         });
     }
 
@@ -1031,6 +2149,7 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
     users->setEditTriggers(QAbstractItemView::NoEditTriggers);
     users->horizontalHeader()->setStretchLastSection(true);
     users->setColumnWidth(0, 160);
+    makeColumnsResizable(users, QStringLiteral("remoteUsers"));
     users->setMinimumHeight(120);
     root->addWidget(users, 1);
     auto fillUsers = [users] {

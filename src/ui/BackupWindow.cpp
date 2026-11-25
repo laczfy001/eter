@@ -1,4 +1,5 @@
 #include "BackupWindow.h"
+#include "Widgets.h"
 #include "db/Database.h"
 #include "i18n.h"
 #include "RemoteEditor.h"
@@ -107,6 +108,7 @@ BackupWindow::BackupWindow(const QString &replicaPath, QWidget *parent)
     next_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     next_->setColumnWidth(0, 80);
     next_->setColumnWidth(2, 130);
+    makeColumnsResizable(next_, QStringLiteral("backupNext"));
     v->addWidget(next_, 1);
     info_ = new QLabel;
     info_->setObjectName("small");

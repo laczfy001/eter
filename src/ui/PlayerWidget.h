@@ -30,6 +30,7 @@ public:
 
     int rowId = -1;                       // a betöltött playlist-sor azonosítója
     double autoMixDb = -24.0;             // automatikus mix pont küszöbe
+    double autoCueDb = -45.0;             // automatikus kezdőpont küszöbe (a szám eleji csend vége)
 
     qint64 position() const { return src_->position(); }
     qint64 duration() const { return src_->duration(); }
@@ -56,6 +57,7 @@ public:
     int index() const { return index_; }   // 0 = A, 1 = B, 2 = C
     QString letter() const { return QString(QChar('A' + index_)); }
     void setOutputName(const QString &name);
+    void refreshArtistInfo() { updateArtistInfo(); }
     // A hangtárban megadott cím és előadó (a fájl saját címkéi helyett).
     void setMeta(const QString &title, const QString &artist);
     void setVtChip(const QString &text);
@@ -82,6 +84,7 @@ signals:
 protected:
     void dragEnterEvent(QDragEnterEvent *) override;
     void dropEvent(QDropEvent *) override;
+    void changeEvent(QEvent *) override;   // stílusváltás: a lejátszó saját színe újra
 
 private:
     void refreshState();
@@ -93,6 +96,12 @@ private:
     eter::Source *src_;
 
     QLabel *pill_, *title_, *artist_, *remainCaption_, *remain_, *elapsed_;
+    // Előadói adatok (TheAudioDB, Beállítások → Előadói adatok): fotó, tények, életrajz.
+    QLabel *artistPhoto_ = nullptr, *artistFacts_ = nullptr;
+    class QToolButton *bioBtn_ = nullptr;
+    QString artistKey_;
+    void updateArtistInfo();
+    void showBio();
     QComboBox *output_;
     WaveformWidget *wave_;
     MeterWidget *meter_;

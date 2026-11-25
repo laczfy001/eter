@@ -144,7 +144,7 @@ bool WebSync::requestsOpen() const
     if (!cfg_.enabled || !cfg_.requests) return false;
     if (cfg_.always) return true;
     const QDateTime t = QDateTime::currentDateTime();
-    const int clock = db_->weekGrid().value((t.date().dayOfWeek() - 1) * 100 + t.time().hour(), 0);
+    const int clock = db_->clockAt(t.date(), t.time().hour());
     return clock && cfg_.clocks.contains(clock);
 }
 
@@ -307,6 +307,11 @@ void WebSync::finished(QNetworkReply *reply, const QString &path)
             // A weboldal pontosan megmondja, mi a baj (kulcs, óra, elnyelt fejléc); ha nem, az általános szöveg.
             why = server.isEmpty() ? TR("a kulcs nem egyezik a weboldalon beállítottal (vagy a gép órája pontatlan)")
                                    : TR("a weboldal elutasította: %1").arg(server);
+            // Nem az Éter bővítménye utasította el, hanem egy biztonsági beállítás (a REST API csak bejelentkezve).
+            const QString code = o.value("code").toString();
+            if (!server.isEmpty() && !code.startsWith(QLatin1String("eter_")))
+                why += TR(" – a weboldal egy biztonsági beállítása csak bejelentkezve engedi a REST API-t; az Éter Radio "
+                          "bővítmény 1.2.2-es változata kivételt kér magának, frissítsd a bővítményt");
         } else if (http == 404 || (o.isEmpty() && http >= 200 && http < 300))
             why = TR("nem található az Éter Radio bővítmény ezen a címen (be van kapcsolva a WordPressben?)");
         else if (!server.isEmpty()) why = server;

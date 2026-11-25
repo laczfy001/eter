@@ -79,10 +79,14 @@ public:
     void importPaths(const QStringList &paths, Done done = {});
     void openCategories();
     void editStream(int itemId);          // élő stream felvétele (0) vagy módosítása
+    void setView(int view);               // 0: hangtár, 1: lejátszott elemek
     // Távoli szerkesztő: a hangtár csak olvasható (nincs import, törlés, szerkesztés); a ráejtett fájlok feltöltésre mennek.
     void setRemoteMode(bool on);
+    void setInfoOpen(bool open);          // az „Infó” gomb kiemelése, amíg az ablak nyitva van
 
 signals:
+    void infoRequested();                 // a fejléc „Infó” gombja (az Infó ablak megnyitása vagy bezárása)
+    void viewRequested(int view);         // a fejléc legördülője: 0 hangtár, 1 lejátszott elemek, 2 cartwall
     void filesDropped(const QStringList &paths);       // csak távoli módban
     void addToPlaylist(const QVector<int> &itemIds);
     void previewRequested();
@@ -111,7 +115,7 @@ private:
     QLabel *empty_;
     QVBoxLayout *layout_;
     QPointer<QDialog> importDialog_, categoriesDialog_;
-    QPushButton *importBtn_ = nullptr, *catBtn_ = nullptr;
+    QPushButton *importBtn_ = nullptr, *catBtn_ = nullptr, *infoBtn_ = nullptr;
     bool remote_ = false;
     // A fejléc legördülője: Adatbázis vagy Lejátszott elemek (az adásnapló, a legfrissebb felül).
     QComboBox *viewMode_ = nullptr;
@@ -119,6 +123,7 @@ private:
     QTimer *logTimer_ = nullptr;
     QVector<LogRow> logRows_;
     void setLogMode(bool on);
+    bool logMode_ = false;
     void reloadLog();
     bool logMode() const;
 };
@@ -166,6 +171,8 @@ private:
     QListWidget *list_;
     QLineEdit *name_;
     QComboBox *kind_, *color_;
+    QComboBox *mixTpl_ = nullptr;     // a kategória mix sablonja (Beállítások → Automatikus mix → Sablon)
+    void fillTemplates(int select);
     QLabel *info_;
     QPushButton *save_, *delete_;
     int editingId_ = 0;

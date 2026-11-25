@@ -1,5 +1,6 @@
 #include "i18n.h"
 #include "ChannelMixer.h"
+#include "Theme.h"
 
 #include <QContextMenuEvent>
 #include <QHelpEvent>
@@ -44,8 +45,9 @@ QString ChannelMixer::name(int i)
 
 QColor ChannelMixer::color(int i)
 {
-    static const QColor c[] = {QColor("#f5a524"), QColor("#5cb0ff"), QColor("#3fd0b5"), QColor("#c79bff"), QColor("#ff8f85"),
-                               QColor("#e8eaed")};
+    const QColor c[] = {theme::c("#f5a524"), theme::c("#5cb0ff"), theme::c("#3fd0b5"), theme::c("#c79bff"), theme::c("#ff8f85"),
+                               theme::c("#e8eaed")};
+    if (i >= 0 && i < 3) return theme::playerColor(i);    // a lejátszók saját színe (Beállítások → Megjelenés)
     return c[std::clamp(i, 0, int(Count) - 1)];
 }
 
@@ -195,7 +197,7 @@ void ChannelMixer::paintEvent(QPaintEvent *)
     for (int i = 0; i < Count; ++i) {
         const S &s = strips_[i];
         const QRectF sr = stripRect(i);
-        if (i == Out) p.fillRect(sr.adjusted(1, 0, -1, 0), QColor("#22262e"));
+        if (i == Out) p.fillRect(sr.adjusted(1, 0, -1, 0), theme::c("#22262e"));
         // Címke (az adásban lévő lejátszóé kiemelve; némítva áthúzva)
         f.setPixelSize(11);
         f.setBold(true);
@@ -206,10 +208,10 @@ void ChannelMixer::paintEvent(QPaintEvent *)
         const bool signal = std::max(s.levelL, s.levelR) > -50.0;
         if (signal) {
             p.setPen(Qt::NoPen);
-            p.setBrush(QColor("#4cc38a"));
+            p.setBrush(theme::c("#4cc38a"));
             p.drawRoundedRect(lr.adjusted(4, 1, -4, -1), 3, 3);
         }
-        p.setPen(signal ? QColor("#101215") : s.muted ? QColor("#6b727c") : color(i));
+        p.setPen(signal ? theme::c("#101215") : s.muted ? theme::c("#6b727c") : color(i));
         p.drawText(lr, Qt::AlignCenter, label(i));
         f.setStrikeOut(false);
         // Jelszint: két sáv, a 0 dB fölött sárga, −6 fölött borostyán
@@ -219,56 +221,56 @@ void ChannelMixer::paintEvent(QPaintEvent *)
         for (int ch = 0; ch < 2; ++ch) {
             const QRectF bar(cx - bw - 1.5 + ch * (bw + 3), m.top(), bw, m.height());
             p.setPen(Qt::NoPen);
-            p.setBrush(QColor("#0b0c0f"));
+            p.setBrush(theme::c("#0b0c0f"));
             p.drawRoundedRect(bar, 1.5, 1.5);
             const double lv = ch == 0 ? s.levelL : s.levelR;
             const double y = yOf(m, lv);
             if (y < bar.bottom() - 0.5) {
                 QLinearGradient g(bar.bottomLeft(), bar.topLeft());
-                g.setColorAt(0.0, QColor("#3fd0b5"));
-                g.setColorAt(posOf(-12), QColor("#3fd0b5"));
-                g.setColorAt(posOf(-6), QColor("#f5a524"));
-                g.setColorAt(posOf(0), QColor("#ff5a4f"));
-                g.setColorAt(1.0, QColor("#ff5a4f"));
+                g.setColorAt(0.0, theme::c("#3fd0b5"));
+                g.setColorAt(posOf(-12), theme::c("#3fd0b5"));
+                g.setColorAt(posOf(-6), theme::c("#f5a524"));
+                g.setColorAt(posOf(0), theme::c("#ff5a4f"));
+                g.setColorAt(1.0, theme::c("#ff5a4f"));
                 p.setBrush(g);
                 p.drawRect(QRectF(bar.left(), y, bar.width(), bar.bottom() - y));
             }
             if (s.holdDb > -90) {
                 const double hy = yOf(m, s.holdDb);
-                p.fillRect(QRectF(bar.left(), hy - 1, bar.width(), 2), QColor("#ffd58a"));
+                p.fillRect(QRectF(bar.left(), hy - 1, bar.width(), 2), theme::c("#ffd58a"));
             }
         }
         // Túlvezérlés-jelző (kattintásra törlődik)
         p.setPen(Qt::NoPen);
-        p.setBrush(s.clip ? QColor("#ff5a4f") : QColor("#2a2d33"));
+        p.setBrush(s.clip ? theme::c("#ff5a4f") : theme::c("#2a2d33"));
         p.drawRoundedRect(clipRect(i), 1.5, 1.5);
         // 0 dB jel és a fader
         const double y0 = yOf(m, 0.0);
-        p.setPen(QPen(QColor("#6b727c"), 1));
+        p.setPen(QPen(theme::c("#6b727c"), 1));
         p.drawLine(QPointF(m.left(), y0), QPointF(m.left() + 3, y0));
         p.drawLine(QPointF(m.right() - 3, y0), QPointF(m.right(), y0));
         const double fy = yOf(m, s.db);
         const QRectF thumb(m.left() + 1, fy - 4, m.width() - 2, 8);
         p.setPen(QPen(QColor(0, 0, 0, 140), 1));
-        p.setBrush(s.muted ? QColor("#8a919b") : QColor("#e8eaed"));
+        p.setBrush(s.muted ? theme::c("#8a919b") : theme::c("#e8eaed"));
         p.drawRoundedRect(thumb, 2, 2);
-        p.setPen(QPen(QColor("#111317"), 1));
+        p.setPen(QPen(theme::c("#111317"), 1));
         p.drawLine(QPointF(thumb.left() + thumb.width() * 0.25, fy), QPointF(thumb.right() - thumb.width() * 0.25, fy));
         // dB érték
         f.setBold(false);
         f.setPixelSize(10);
         p.setFont(f);
-        p.setPen(std::abs(s.db) < 0.05 ? QColor("#9aa1ab") : QColor("#ffd58a"));
+        p.setPen(std::abs(s.db) < 0.05 ? theme::c("#9aa1ab") : theme::c("#ffd58a"));
         p.drawText(QRectF(sr.left(), m.bottom() + kGap, sr.width(), kDbH), Qt::AlignCenter, dbText(s.db));
         // Némítás gomb
         const QRectF mr = muteRect(i);
-        p.setPen(QPen(s.muted ? QColor("#ff8f85") : QColor("#3a404b"), 1));
-        p.setBrush(s.muted ? QColor("#5a1f1b") : QColor("#22262e"));
+        p.setPen(QPen(s.muted ? theme::c("#ff8f85") : theme::c("#3a404b"), 1));
+        p.setBrush(s.muted ? theme::c("#5a1f1b") : theme::c("#22262e"));
         p.drawRoundedRect(mr, 3, 3);
         f.setBold(true);
         f.setPixelSize(9);
         p.setFont(f);
-        p.setPen(s.muted ? QColor("#ffb4ae") : QColor("#9aa1ab"));
+        p.setPen(s.muted ? theme::c("#ffb4ae") : theme::c("#9aa1ab"));
         p.drawText(mr, Qt::AlignCenter, QStringLiteral("M"));
     }
 }

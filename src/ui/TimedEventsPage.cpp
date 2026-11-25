@@ -1,4 +1,5 @@
 #include "TimedEventsPage.h"
+#include "Widgets.h"
 #include "i18n.h"
 #include "Library.h"
 #include "SchedulerPage.h"
@@ -112,6 +113,7 @@ TimedEventsPage::TimedEventsPage(Database *db, QWidget *parent) : QWidget(parent
     h->setSectionResizeMode(2, QHeaderView::Interactive);
     h->setSectionResizeMode(3, QHeaderView::Stretch);
     table_->setColumnWidth(2, 150);
+    makeColumnsResizable(table_, QStringLiteral("timedEvents"));
     lv->addWidget(table_, 1);
     hint_ = new QLabel(TR("Még nincs időzítés. Az „Új időzítés” gombbal hozz létre egyet, vagy a hangtárban "
                           "egy elemen jobb gombbal válaszd az „Időzítés…” pontot."));
@@ -305,7 +307,7 @@ void TimedEventsPage::reload(int selectId)
                 table_->setItem(r, c, item);
             }
             item->setText(cells[c]);
-            item->setForeground(e.enabled ? (c == 0 ? theme::green : theme::text) : QColor("#6b7380"));
+            item->setForeground(e.enabled ? (c == 0 ? theme::green : theme::text) : theme::c("#6b7380"));
             if (c == 1 || c == 5) item->setFont(mono);
             if (c == 0) {
                 item->setTextAlignment(Qt::AlignCenter);

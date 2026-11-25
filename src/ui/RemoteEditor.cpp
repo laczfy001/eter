@@ -1,4 +1,5 @@
 #include "RemoteEditor.h"
+#include "Widgets.h"
 #include "i18n.h"
 #include "MixEditorPage.h"
 #include "PlaylistTable.h"
@@ -203,6 +204,7 @@ RemoteEditorWindow::RemoteEditorWindow(Database *mirror, eter::Engine *engine, Q
     table_->setColumnWidth(0, 72);
     table_->setColumnWidth(2, 50);
     table_->setColumnWidth(3, 150);
+    makeColumnsResizable(table_, QStringLiteral("remoteEditor"));
     lv->addWidget(table_, 1);
     // A playout hangtára: innen húzható elem a playlistbe; ide (vagy a playlistbe) ejtett fájl feltöltésre kerül.
     library_ = new LibraryPanel(db_);
@@ -616,11 +618,11 @@ void RemoteEditorWindow::rebuildTable()
         if (!chips.isEmpty()) status += (status.isEmpty() ? QString() : QStringLiteral("  ·  ")) + chips.join(' ');
         const QString cells[4] = {r.start, title, theme::formatTime(r.entry.item.durationMs * eter::kRate / 1000), status};
         QColor bg = Qt::transparent, fg = theme::text;
-        if (r.state == QLatin1String("playing")) { bg = QColor("#3a2c10"); fg = theme::amberSoft; }
-        else if (r.state == QLatin1String("cued")) { bg = QColor("#14283d"); fg = theme::blueSoft; }
-        else if (!live(i)) fg = QColor("#8a93a0");
-        if (ovl) { bg = QColor(r.state == QLatin1String("playing") ? "#3d3160" : "#272338"); fg = QColor("#ddd2ff"); }
-        if (r.missing) { bg = QColor("#3a1d1f"); fg = QColor("#ffb4ae"); }
+        if (r.state == QLatin1String("playing")) { bg = theme::c("#3a2c10"); fg = theme::amberSoft; }
+        else if (r.state == QLatin1String("cued")) { bg = theme::c("#14283d"); fg = theme::blueSoft; }
+        else if (!live(i)) fg = theme::c("#8a93a0");
+        if (ovl) { bg = QColor(r.state == QLatin1String("playing") ? "#3d3160" : "#272338"); fg = theme::c("#ddd2ff"); }
+        if (r.missing) { bg = theme::c("#3a1d1f"); fg = theme::c("#ffb4ae"); }
         const bool movable = r.state == QLatin1String("pending") || r.state == QLatin1String("cued");
         for (int c = 0; c < 4; ++c) {
             auto *item = table_->item(i, c);

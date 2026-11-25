@@ -1,5 +1,6 @@
 #include "Scheduler.h"
 #include "i18n.h"
+#include "core/ArtistSplit.h"
 #include "core/MusicKey.h"
 #include "core/Vocal.h"
 
@@ -15,6 +16,15 @@ struct Picker {
     QHash<int, qint64> itemLast;                // elem → utolsó (tényleges vagy tervezett) kezdés
     QHash<QString, qint64> artistLast;
     qint64 artistGap = 0, titleGap = 0;
+    QString artistSeparators = artists::defaultSeparators();
+    mutable QHash<int, QStringList> artistNames;   // elem → előadói (az elválasztók szerint szétszedve)
+
+    const QStringList &namesOf(const Item &it) const
+    {
+        auto f = artistNames.find(it.id);
+        if (f == artistNames.end()) f = artistNames.insert(it.id, artists::split(it.artist, artistSeparators));
+        return *f;
+    }
     GenerateResult *result = nullptr;
     // A zenei folyam szabályai (0 = nincs ilyen szabály)
     int slowMax = 0;                            // ennyi lassú (energia 1–2) szám jöhet egymás után
@@ -31,8 +41,7 @@ struct Picker {
     void note(const Item &it, qint64 at)
     {
         itemLast[it.id] = std::max(itemLast.value(it.id, 0), at);
-        const QString a = it.artist.trimmed().toLower();
-        if (!a.isEmpty()) artistLast[a] = std::max(artistLast.value(a, 0), at);
+        for (const QString &a : namesOf(it)) artistLast[a] = std::max(artistLast.value(a, 0), at);
     }
 
     // A sorrendben következő zenei elem: a folyam szabályaihoz ehhez képest nézzük a következőt.
@@ -54,8 +63,7 @@ struct Picker {
     {
         const qint64 li = itemLast.value(it.id, 0);
         if (li && std::llabs(at - li) < titleGap) return false;
-        const QString a = it.artist.trimmed().toLower();
-        if (!a.isEmpty()) {
+        for (const QString &a : namesOf(it)) {
             const qint64 la = artistLast.value(a, 0);
             if (la && std::llabs(at - la) < artistGap) return false;
         }
@@ -184,11 +192,7 @@ struct Picker {
         std::stable_sort(ok.begin(), ok.end(), [&](int a, int b) { return lastOf(all[a]) < lastOf(all[b]); });
         if (ok.size() > 60) ok.resize(60);
         const int n = int(ok.size());
-        auto artistOf = [&](int i) { return all[i].artist.trimmed().toLower(); };
-        auto distinct = [&](int a, int b) {
-            const QString x = artistOf(a), y = artistOf(b);
-            return x.isEmpty() || y.isEmpty() || x != y;
-        };
+        auto distinct = [&](int a, int b) { return !artists::shareAny(namesOf(all[a]), namesOf(all[b])); };
         // Költség: a tűrésen túli eltérés (ms), majd a zenei folyam szabályait sértő átmenetek száma (a legjobb
         // sorrendben, az előző zenétől kezdve: tempó, energiaugrás, hangnem), végül a jelöltek „kora” (a helyük összege).
         const bool anyFlowRule = keyRule > 0 || bpmJumpPct > 0 || energyJump > 0 || vocalMax > 0 || slowMax > 0;
@@ -309,18 +313,36 @@ FlowStats Scheduler::flowStats(const QVector<Entry> &entries, int bpmPct, int ke
 
 GenerateResult Scheduler::generate(const QDateTime &from, int hours, bool replace)
 {
-    GenerateResult result;
-    const QHash<int, int> grid = db_->weekGrid();
-    if (grid.isEmpty()) return result;
-
-    QDateTime start(from.date(), QTime(from.time().hour(), 0));
+    if (!db_->hasWeekGrid()) return {};
+    const QDateTime start(from.date(), QTime(from.time().hour(), 0));
     if (replace) db_->deleteSchedulerEntriesFrom(keyOf(start));
+    QVector<QDateTime> list;
+    for (int h = 0; h < hours; ++h) list << start.addSecs(qint64(h) * 3600);
+    return generateHours(list, from, false);
+}
+
+GenerateResult Scheduler::generateHours(QVector<QDateTime> hours, const QDateTime &now, bool replace)
+{
+    GenerateResult result;
+    if (!db_->hasWeekGrid()) return result;
+    // Óra elejére kerekítve, időrendben, ismétlés és a már elmúlt órák nélkül.
+    for (QDateTime &h : hours) h = QDateTime(h.date(), QTime(h.time().hour(), 0));
+    std::sort(hours.begin(), hours.end());
+    hours.erase(std::unique(hours.begin(), hours.end()), hours.end());
+    const QDateTime thisHour(now.date(), QTime(now.time().hour(), 0));
+    hours.erase(std::remove_if(hours.begin(), hours.end(), [&](const QDateTime &h) { return h < thisHour; }), hours.end());
+    if (replace) {
+        db_->beginBatch();
+        for (const QDateTime &h : hours) db_->deleteSchedulerEntriesAt(keyOf(h));
+        db_->endBatch();
+    }
 
     Picker picker;
     picker.result = &result;
     picker.all = db_->items();
     picker.artistGap = db_->setting("artist_separation_min", "90").toLongLong() * 60;
     picker.titleGap = db_->setting("title_separation_min", "240").toLongLong() * 60;
+    picker.artistSeparators = db_->setting("artist_separators", artists::defaultSeparators());
     picker.slowMax = db_->setting("rule_slow_max", "0").toInt();
     picker.energyJump = db_->setting("rule_energy_jump", "0").toInt();
     picker.bpmJumpPct = db_->setting("rule_bpm_jump_pct", "0").toInt();
@@ -340,7 +362,7 @@ GenerateResult Scheduler::generate(const QDateTime &from, int hours, bool replac
             const QDate d = QDate::fromString(QString::number(e.playlistKey / 100), "yyyyMMdd");
             const qint64 base = QDateTime(d, QTime(e.playlistKey % 100, 0)).toSecsSinceEpoch();
             picker.note(e.item, base + offset[e.playlistKey] / 1000);
-            offset[e.playlistKey] += e.item.airMs();
+            if (!e.overlay) offset[e.playlistKey] += e.item.airMs();   // a ráfektetett elem nem foglal időt
         }
     }
     // A folyam szabályai a legutolsó, már sorban álló zenei elemtől folytatódnak.
@@ -349,11 +371,11 @@ GenerateResult Scheduler::generate(const QDateTime &from, int hours, bool replac
     for (const Entry &e : db_->pendingEntries())
         if (indexOf.contains(e.item.id)) picker.follow(picker.all[indexOf.value(e.item.id)]);
 
-    const qint64 nowSecs = from.toSecsSinceEpoch();
+    const qint64 nowSecs = now.toSecsSinceEpoch();
+    QString pendingNote;                         // „Jegyzet” elem: a következő betett elem elé kerül felirat
     db_->beginBatch();
-    for (int h = 0; h < hours; ++h) {
-        const QDateTime hour = start.addSecs(qint64(h) * 3600);
-        const int clockId = grid.value((hour.date().dayOfWeek() - 1) * 100 + hour.time().hour(), 0);
+    for (const QDateTime &hour : std::as_const(hours)) {
+        const int clockId = db_->clockAt(hour.date(), hour.time().hour());   // a napra érvényes heti rácsból
         if (!clockId) continue;
         const int playlist = db_->playlistFor(hour.date(), hour.time().hour());
         if (db_->playlistGenerated(playlist)) continue;
@@ -365,13 +387,40 @@ GenerateResult Scheduler::generate(const QDateTime &from, int hours, bool replac
         qint64 t = 0;                            // ms az óra elejétől
         int fillCategory = 0;                    // a legutóbbi kategória: ebből pótol a fix pont előtt
         int fillMin = 0, fillMax = 0;            // és annak energiasávja
+        int pendingSweeper = 0;                  // a hely sweeper kategóriája: az első eleme előtti átmenetre
+        double sweeperDuck = -6;
         auto add = [&](const Item &it, int fixed) {
             // A már elmúlt időre (a folyó óra eleje) nem kerül be elem, csak az idő halad.
             if (base + (t + it.airMs()) / 1000 <= nowSecs) {
                 t += it.airMs();
+                pendingNote.clear();
+                pendingSweeper = 0;
                 return;
             }
-            db_->addEntry(playlist, it.id, "scheduler", fixed);
+            if (pendingSweeper) {
+                // Sweeper: ráfektetve az előző elem és ez közti átmenetre (a mix pontnál indul), időt nem foglal.
+                if (const Item *sw = picker.pick(pendingSweeper, base + t / 1000)) {
+                    const Entry se = db_->addEntry(playlist, sw->id, "scheduler", -1);
+                    if (se.id) {
+                        db_->setEntryOverlay(se.id, true, 0, sweeperDuck);
+                        if (!pendingNote.isEmpty()) {
+                            // A felirat a hely elé kerül: a sweeper fölé.
+                            db_->setEntryNote(se.id, pendingNote);
+                            pendingNote.clear();
+                        }
+                        picker.note(*sw, base + t / 1000);
+                        ++result.entries;
+                    }
+                } else {
+                    ++result.empty;
+                }
+                pendingSweeper = 0;
+            }
+            const Entry added = db_->addEntry(playlist, it.id, "scheduler", fixed);
+            if (!pendingNote.isEmpty() && added.id) {
+                db_->setEntryNote(added.id, pendingNote);
+                pendingNote.clear();
+            }
             picker.note(it, base + t / 1000);
             if (indexOf.contains(it.id)) picker.follow(picker.all[indexOf.value(it.id)]);
             t += it.airMs();
@@ -403,12 +452,20 @@ GenerateResult Scheduler::generate(const QDateTime &from, int hours, bool replac
             for (int n = s + 1; n < slots_.size(); ++n)
                 if (slots_[n].fixedOffsetS >= 0) { nextFixed = qint64(slots_[n].fixedOffsetS) * 1000; break; }
 
+            if (slot.type == "note") {
+                // Csak felirat: a következő elem elé kerül, nem szól és nem foglal időt.
+                const QString text = slot.note.trimmed();
+                if (!text.isEmpty()) pendingNote = pendingNote.isEmpty() ? text : pendingNote + QStringLiteral("\n") + text;
+                continue;
+            }
             int fixed = slot.fixedOffsetS;
             if (fixed >= 0) {
                 // Ha a fix pontig még maradna üres idő, az előző kategóriából pótoljuk.
                 if (fillCategory) fillUntil(fillCategory, qint64(fixed) * 1000, fillMin, fillMax);
                 t = std::max(t, qint64(fixed) * 1000);
             }
+            pendingSweeper = slot.sweeperCategoryId;  // a hely első eleme előtti átmenetre
+            sweeperDuck = slot.sweeperDuckDb;
             if (slot.type == "item") {
                 const Item it = db_->item(slot.itemId);
                 if (it.id) add(it, fixed);
@@ -448,6 +505,7 @@ GenerateResult Scheduler::generate(const QDateTime &from, int hours, bool replac
                 }
             }
         }
+        pendingSweeper = 0;
         db_->markGenerated(playlist, clockId);
         ++result.hours;
     }

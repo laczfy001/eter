@@ -1,5 +1,173 @@
 # Changelog
 
+## 0.36.0
+- **MIDI control** (*Settings → MIDI*): the buttons and faders of a MIDI-capable mixer (such as the RØDECaster Pro) or
+  controller can run Éter.
+  - *Device:* every device the system knows as a MIDI input (Windows: through the system's MIDI service; Linux: the
+    ALSA MIDI devices). If the device is switched off or unplugged, Éter reconnects by itself within a few seconds.
+    A monitor line shows the last message received.
+  - *Learn mode:* click *Learn* next to an action, then press the button or move the fader on the device. A control
+    that already belonged to another action of the same kind moves over (and the page says from where).
+  - *Buttons* (note, program change, or a CC that jumps above 64): *Next*, *Stop* (all players), start/stop and fade
+    out for each player, cartwall buttons 1–16 and *stop all carts*.
+  - *Faders* (CC or pitch bend): volume of players A, B, C, the voice track, the cartwall and the output on the
+    on-screen mixer (the top of the fader is 0 dB); *fader start* for each player: pushed up above the threshold
+    (5 % by default) the player starts, pulled back down it stops. The first message after start-up never starts
+    anything (the fader may already have been up). One fader can be both volume and fader start.
+  - Device, assignments and threshold are stored per computer.
+- **Preview of the automatic mix** (*Settings → Automatic mix → Preview*): a diagram of how two items are mixed
+  with the values currently on the page, updated with every change, even before *Apply* (and for the template being
+  edited). It uses the same planner as the broadcast. Example transitions: fade-out or sudden ending, soft intro or
+  strong start, different tempo, music → jingle, jingle → music, hidden track. It shows both items' waveforms, the
+  outgoing volume curve, the mix point, where the outgoing item ends, the overlap and the skipped silence at the start,
+  with a one-line summary (e.g. "Smart mix: fade-out ending (5.4 s), soft intro (5.0 s). Overlap: 5.0 s · fade-out:
+  1.0 s"). With smart mix switched off it shows the simple mode.
+- **Fix: with the interface size set to 80 % or 90 %, the main window was drawn broken** (buttons and labels shifted
+  and cut off). Qt does not draw correctly with a scale factor below 1, so the smallest size is now 100 %; an earlier
+  80 % or 90 % setting counts as 100 %.
+- **Info window** (library header *Info* button, *Tools → Info window*, Ctrl+I): a separate, non-modal window with
+  everything Éter knows about an item, so the main window keeps its layout.
+  - *Track:* title, artist, album and year (marked *MUSICBRAINZ* or *THEAUDIODB* when filled in from there), length,
+    category, vocal.
+  - *Artist:* photo, name, type and genres, origin, formed or born, disbanded or died, members, label, mood, website.
+  - *Biography:* the Wikipedia summary with a *Read more on Wikipedia* link; the footer names the sources (Wikipedia
+    under CC BY-SA) and when the data was fetched.
+  - *Selected* shows the item selected in the library; *On air* follows the item playing (or the one on standby).
+  - Missing data for the shown item is fetched straight away, in every fetch mode (opening the window is the
+    request); *Refresh data* fetches it again. While fetching, when nothing is found, and when the sources are switched
+    off, the window says so (with a button to *Settings → Artist info*); data already stored is still shown.
+  - The window can be moved to another screen and resized; its position, size, *Always on top* and the
+    selected/on-air choice are remembered, and it reopens at start-up if it was open.
+- **Colour schemes and a theme editor** (*Settings → Appearance → Colour scheme*):
+  - Built-in schemes: *Éter (dark)* (the previous look), *Graphite*, *Midnight blue*, *High contrast* and *Light*.
+  - The base colours can be edited one by one: background, panels, buttons, borders, text, secondary text, accent,
+    information (standby, focus, links), OK, error, and players A, B and C. Changes show across the whole program at
+    once, including open windows; no restart is needed.
+  - The in-between shades (selection, row backgrounds, fainter borders, status bars) are worked out from the base
+    colours, so a light scheme stays readable without a separate set of colours. With *Éter (dark)* nothing changes
+    from 0.35.
+  - Own schemes: *Save as…* stores the current colours under a name; *Save*, *Rename…* and *Delete* manage them, and
+    *Revert* returns to the saved colours of the selected scheme. A note shows when the colours differ from the saved
+    scheme, and switching to another scheme asks before discarding unsaved colours.
+  - *Export…* writes the scheme to a JSON file (`"format": "eter-color-scheme"`); *Import…* reads one or more such
+    files and adds them under their own names (an identical scheme is not added twice).
+  - A warning appears when the text is hard to read on the chosen background (contrast below 4.5:1, or below 3:1 for
+    secondary text).
+  - Schemes are stored per computer, like the interface size. The accent and player colours set in earlier versions
+    are kept.
+
+## 0.35.0
+- **WordPress plugin 1.2.2:** works on sites where a security plugin or setting allows the REST API only to logged-in
+  users ("Sorry, you must be logged in to make a request", HTTP 401). The plugin makes an exception only for its own
+  routes (`eter/v1/…`), both for blocks in `rest_authentication_errors` and in `rest_pre_dispatch`, with
+  `?rest_route=` and `/wp-json/` addresses alike. Every other route stays blocked. The sync and catalogue calls
+  remain signed with the shared key; the other routes were meant to be public (the blocks read them). Éter's status
+  line now says when a refusal comes from such a security setting rather than from the plugin.
+- **Mix templates** (*Settings → Automatic mix → Template*): the automatic mix settings can be saved as named
+  templates (e.g. Dance, Ballad), and each library category can be given one (*Library → Categories… → Mix
+  template*). The transition after an item of that category follows its template; the cue-in threshold of the
+  incoming item follows the incoming item's template. Categories without a template use the default settings.
+  - The template selector chooses what the page edits; *Apply* saves into it. *Save as new template…*, *Rename…* and
+    *Delete* manage them, and the page lists which categories use the selected template.
+  - The dead-air guard stays common to all items.
+  - The Mix editor shows the template used for the selected transition; the remote editor gets the templates too.
+- **MusicBrainz as a source for artist info** (free, no key; *Settings → Artist info*, can be switched on and off on
+  its own):
+  - Artist: country and city, year formed or born, type (group or person), genres, official website.
+  - Tracks: the album and year are filled in where they are empty. The year is the first release; the album is the
+    earliest official studio album the track is on (else the single or EP), matched by title, artist and length.
+  - *Biography and photo from Wikipedia* (optional): through the artist's MusicBrainz link, the Wikipedia summary in
+    the program's language (or English) and its picture.
+  - At most one request a second, as MusicBrainz asks. Nothing is overwritten, and one source never replaces what
+    another has already filled in. The *Biography* window names the sources.
+- **Fix: artist info did not appear in the player** when it arrived after the item was loaded (for example with
+  *When an item is loaded into a player*). The players were created before the info service and never heard about
+  the update.
+- **TheAudioDB:** the free key (123) currently returns the same sample artist for any search. Éter now discards these
+  answers in every lookup (also the lookup by MusicBrainz ID, which is now used only with your own key) and says so in
+  the settings. TheAudioDB is now off by default; earlier "not found" entries are cleared so the new sources can try
+  again.
+
+## 0.34.0
+- **Artist info from TheAudioDB** (new *Settings → Artist info* page; off by default, and when off Éter sends no
+  requests):
+  - The player shows the artist's photo, country, year formed or born, genre, style and mood next to the title.
+  - The *Biography* button opens the biography (in the program's language when TheAudioDB has it, otherwise in
+    English) with the artist's details.
+  - API key: the free key (123) is the default. It gives artist info, at most 30 requests a minute; Éter keeps to
+    this and pauses for a minute if the service says it is too busy. With your own (Premium) key, the album and year
+    of tracks are filled in too, where they are empty.
+  - Lookup mode: *automatically in the background* (the whole library, new artists as they arrive), *when an item
+    is loaded into a player*, or *only by hand* (library: right-click → *Fetch artist info*).
+  - Nothing is overwritten. The vocal (male, female, group) is filled in only where it is still unknown, and album
+    and year only where they are empty. With several artists ("A feat. B") the first one is looked up.
+  - The data is kept in the database (synced to the SQL server too); photos are cached on the computer. *Delete
+    downloaded info* clears both.
+- Database schema 17.
+
+## 0.33.0
+- **External SQL server (MySQL / MariaDB)**: new *Settings → SQL server* page with server address, port, user,
+  password, database name and *Test connection*.
+  - The server is the main store, with a local copy kept as a reserve. Every change to the library, scheduler,
+    playlists, mixes, cartwalls, timed events, settings and play log is uploaded within a few seconds.
+  - If the server or the network goes down, the broadcast is not affected. Changes wait locally and are uploaded when
+    the connection returns.
+  - *Upload to the server (migrate)* copies the existing SQLite database to the server. *Download from the server*
+    replaces the local database with the server's copy (backup first, then restart). *Disconnect* returns to
+    local-only use.
+  - One computer writes to the server at a time. On start-up Éter downloads newer data left by another computer, and
+    asks before taking over from a computer that is still running (that one then stops writing and says so). If both
+    sides have changes, it asks which to keep.
+  - The status bar shows the connection state. Tables on the server get the `eter_` prefix.
+  - Audio files are not uploaded (the library keeps their paths: use the same paths, e.g. a network share, on every
+    computer).
+  - Needs Qt's MySQL driver: bundled in the AppImage (with the MySQL client library) and the Windows zip (with
+    MariaDB Connector/C).
+- **Appearance** (new *Settings → Appearance* page, stored per computer):
+  - **Accent colour**: the selected tab, main buttons, on-air marks and check boxes. Pick one of nine presets or any
+    colour. Text on it switches between dark and white to stay readable.
+  - **Player colours**: players A, B and C each get their own colour (letter badges, player tiles, mini mixer,
+    waveform, playlist marks). *Default colours* restores the originals.
+  - **Interface size** from 80 % to 200 %. Takes effect the next time Éter starts.
+- **Week grid presets** (Scheduler): any number of named week grids (*New*, *Copy*, *Rename*, *Delete*).
+  - Manual switch: *Make this the active one*.
+  - Automatic switch: *Periods…* sets date ranges during which another grid applies, optionally *every year* (also
+    across the year end, e.g. Dec 20 – Jan 6). When periods overlap, the lower one in the list wins.
+  - Generation uses the grid valid on each day, so a period that starts tomorrow is already used when tomorrow's hours
+    are generated. The grid selector shows which grid is active and which applies today.
+- **Generate dialog** (suggestion from a user): *Generate playlists* now asks which days (date range, weekdays) and
+  which hours (from–to, also across midnight such as 22–02) to generate, with *Today*, *Tomorrow*, *Rest of this
+  week* and *Next week* shortcuts. It shows how many hours that is, how many are already generated and how many have
+  no clock in the week grid. *Regenerate hours already generated* can be switched off to fill only empty hours. Past
+  hours are skipped; items added by hand and the item playing stay.
+- **Note rows in clocks**: new row type *Note (label only)*. Its text appears in the playlist above the next item, as
+  a label: it does not play and takes no time.
+- **Sweeper per clock row**: every clock row can have *Sweeper on the transition*. An item from the chosen category is
+  laid over the transition into that row: it starts at the mix point, takes no time, and lowers the music under it by
+  the chosen amount (default −6 dB).
+- **Artist separation with several artists**: “A and B”, “A feat. B”, “A ft. B”, “A vs. B”, “A / B” and “A; B” count
+  as separate artists for *Artist repeat*. So “Alpha and Beta” is kept apart from both Alpha and Beta. “&” keeps a
+  name together (Simon & Garfunkel, Earth, Wind & Fire), and so does a slash without spaces (AC/DC). The separators can
+  be edited under *Scheduler → Rules → Artist separators*. The *On time* suggestions follow the same rule.
+- Database schema 16 (updated automatically on first start; older versions of Éter cannot open it afterwards).
+
+## 0.32.0
+- **Hide tabs.** New *Settings → Tabs* page: untick a tab (Live, Scheduler, Mix editor, Playlist editor, Mixdown,
+  Timed events, Settings) and it disappears from the main window. Hidden tabs keep working in the background (timed
+  events still run); with the Settings tab hidden, settings open from *Tools → Settings* (Ctrl+,). Stored per computer.
+- **Cartwall in place of the library.** The view selector at the top of the library now has three choices: *Library*,
+  *Play log* and *Cartwall*. The cartwall takes the library's place on the right, with the same selector to switch
+  back. The cartwall button was removed from the playlist panel, so the playlist has its full width again. The last
+  view is remembered.
+- **Resizable columns everywhere.** Every column of the library, the play log, the scheduler clocks and items, the Mix
+  editor, the Playlist editor, the timed events, song requests and the other lists can be dragged to a new width.
+  Widths are remembered per list (per computer). Title and artist columns still fill the free space, and never get
+  narrower than about 110 px: the list scrolls sideways instead.
+- **Cue-in threshold in simple mix mode** (*Settings → Automatic mix → Simple mode*): the incoming track starts where
+  its signal first rises above this level (default −45 dB, as before; −80 … −10 dB). A cue-in point saved for the item
+  overrides it.
+- **Scheduler:** the rows of a clock can be reordered by dragging (the ↑ / ↓ buttons still work).
+
 ## 0.31.1
 - Website connection (bug report from Windows: “the key does not match … or this computer’s clock is wrong”, even
   with the right key):

@@ -17,7 +17,7 @@ static QString clockMs(qint64 ms)
     return sign + QStringLiteral("%1:%2.%3").arg(ms / 60000).arg(ms / 1000 % 60, 2, 10, QLatin1Char('0')).arg(ms / 100 % 10);
 }
 
-static const QColor kOutWave("#8fb8e6"), kInWave("#9fe0a8"), kMix("#ff8f85");
+static const theme::ColorRef kOutWave{"#8fb8e6"}, kInWave{"#9fe0a8"}, kMix{"#ff8f85"};
 
 // ================================================================ rajzlap
 
@@ -91,7 +91,7 @@ void MiniMixCanvas::paintEvent(QPaintEvent *)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, false);
     const QRectF r = rect();
-    p.fillRect(r, QColor("#0b0c0f"));
+    p.fillRect(r, theme::c("#0b0c0f"));
     const double pxPerMs = double(width()) / double(window_);
     const double mid = r.height() / 2.0;
     const QRectF outLane(0, 14, r.width(), mid - 16);
@@ -101,7 +101,7 @@ void MiniMixCanvas::paintEvent(QPaintEvent *)
     QFont mono("IBM Plex Mono");
     mono.setPixelSize(10);
     p.setFont(mono);
-    p.setPen(QColor("#4a5160"));
+    p.setPen(theme::c("#4a5160"));
     const qint64 first = (viewStart_ / 5000) * 5000;
     for (qint64 t = first; t < viewStart_ + window_; t += 5000) {
         if (t < 0) continue;
@@ -113,18 +113,18 @@ void MiniMixCanvas::paintEvent(QPaintEvent *)
     // Kimenő elem: hullámforma, a vége utáni rész sötét, a kiúsztatás görbéje
     const double outEndX = xOf(p_.outEndMs > 0 ? p_.outEndMs : outDur_);
     drawWave(p, outLane, outPeaks_, outDur_, xOf(0), 0, pxPerMs, kOutWave, 0, std::min(r.width(), outEndX));
-    drawWave(p, outLane, outPeaks_, outDur_, xOf(0), 0, pxPerMs, QColor("#39424f"), std::max(0.0, outEndX), r.width());
+    drawWave(p, outLane, outPeaks_, outDur_, xOf(0), 0, pxPerMs, theme::c("#39424f"), std::max(0.0, outEndX), r.width());
     if (p_.fadeOutMs > 0) {
         p.setRenderHint(QPainter::Antialiasing, true);
         const double x0 = xOf(p_.outEndMs - p_.fadeOutMs), x1 = outEndX;
         QPainterPath env;
         env.moveTo(x0, outLane.top() + 2);
         env.cubicTo((x0 + x1) / 2, outLane.top() + 2, (x0 + x1) / 2, outLane.bottom(), x1, outLane.bottom());
-        p.setPen(QPen(QColor("#ffd58a"), 1.5));
+        p.setPen(QPen(theme::c("#ffd58a"), 1.5));
         p.drawPath(env);
         p.setRenderHint(QPainter::Antialiasing, false);
     }
-    p.setPen(QColor("#c9ced6"));
+    p.setPen(theme::c("#c9ced6"));
     QFont small = font();
     small.setPixelSize(11);
     p.setFont(small);
@@ -133,13 +133,13 @@ void MiniMixCanvas::paintEvent(QPaintEvent *)
 
     // Bejövő elem: a mix ponttól, a saját kezdőpontjától; húzható
     p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(QPen(drag_ ? QColor("#ffffff") : QColor("#3d6b46"), 1));
+    p.setPen(QPen(drag_ ? theme::c("#ffffff") : theme::c("#3d6b46"), 1));
     p.setBrush(QColor(69, 212, 131, drag_ ? 46 : 26));
     p.drawRoundedRect(inLane, 3, 3);
     p.setRenderHint(QPainter::Antialiasing, false);
     drawWave(p, inLane.adjusted(0, 2, 0, -2), inPeaks_, inDur_, inLane.left(), p_.cueInMs, pxPerMs, kInWave, std::max(0.0, inLane.left()),
              std::min(r.width(), inLane.right()));
-    p.setPen(QColor("#e8eaed"));
+    p.setPen(theme::c("#e8eaed"));
     p.drawText(QRectF(inLane.left() + 6, inLane.top(), 260, 14), Qt::AlignLeft | Qt::AlignVCenter, inTitle_);
 
     // Ráfektetett elem: a két sáv határán, a mix ponttal együtt mozog
@@ -148,12 +148,12 @@ void MiniMixCanvas::paintEvent(QPaintEvent *)
         const double x0 = xOf(mix_ + p_.ovlOffsetMs), x1 = xOf(mix_ + p_.ovlOffsetMs + len);
         const QRectF bar(x0, mid - 17, std::max(2.0, x1 - x0), 12);       // a kimenő sáv alján
         p.fillRect(bar, QColor(185, 156, 255, 170));
-        p.fillRect(QRectF(x0 - 1, mid - 19, 2, 16), QColor("#b99cff"));
+        p.fillRect(QRectF(x0 - 1, mid - 19, 2, 16), theme::c("#b99cff"));
         QFont tiny = font();
         tiny.setPixelSize(10);
         tiny.setBold(true);
         p.setFont(tiny);
-        p.setPen(QColor("#15121f"));
+        p.setPen(theme::c("#15121f"));
         p.drawText(bar.adjusted(4, 0, -2, 0), Qt::AlignLeft | Qt::AlignVCenter,
                    QFontMetrics(tiny).elidedText(TR("RÁF  %1").arg(p_.ovlTitle), Qt::ElideRight, int(std::max(0.0, bar.width() - 6))));
         p.setFont(small);
@@ -166,13 +166,13 @@ void MiniMixCanvas::paintEvent(QPaintEvent *)
     const QString label = TR("MIX %1").arg(clockMs(mix_));
     const double lw = QFontMetrics(mono).horizontalAdvance(label) + 8;
     const QRectF box(mx + 4 + lw > r.width() ? mx - lw - 4 : mx + 4, r.height() - 14, lw, 13);
-    p.fillRect(box, QColor("#3a1d1b"));
+    p.fillRect(box, theme::c("#3a1d1b"));
     p.setPen(kMix);
     p.drawText(box, Qt::AlignCenter, label);
 
     if (playhead_ >= 0) {
         const double x = xOf(playhead_);
-        if (x >= 0 && x <= r.width()) p.fillRect(QRectF(x, 12, 1, mid), QColor("#ffffff"));
+        if (x >= 0 && x <= r.width()) p.fillRect(QRectF(x, 12, 1, mid), theme::c("#ffffff"));
     }
 }
 

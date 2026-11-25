@@ -9,6 +9,16 @@
 #include "ui/MixEditorPage.h"
 #include "ui/SchedulerPage.h"
 #include "ui/SettingsDialog.h"
+#include "ui/InfoWindow.h"
+#include "ui/MixPreview.h"
+#include "midi/MidiControl.h"
+#include "ui/PlayerWidget.h"
+#include "ui/ChannelMixer.h"
+#include <QElapsedTimer>
+#include <QCheckBox>
+#include <QStyle>
+#include <QFontInfo>
+#include <QScreen>
 #include "ui/Theme.h"
 
 #include <QApplication>
@@ -16,6 +26,14 @@
 #include "ui/TimedEventsPage.h"
 #include <QKeyEvent>
 #include <QSettings>
+#include <QScrollArea>
+#include "core/ArtistSplit.h"
+#include "db/ServerSync.h"
+#include "net/ArtistInfo.h"
+#include "core/Vocal.h"
+#include <QHeaderView>
+#include <QMimeData>
+#include <QDropEvent>
 #include "i18n.h"
 #include <QSpinBox>
 #include <QLineEdit>
@@ -339,6 +357,13 @@ int main(int argc, char **argv)
     bool headless = false;
     for (int i = 1; i < argc; ++i)
         if (QByteArray(argv[i]).startsWith("--selftest")) headless = true;
+    // A felület mérete (Beállítások → Megjelenés): a Qt méretezése az alkalmazás létrehozása előtt.
+    if (!headless && qEnvironmentVariableIsEmpty("QT_SCALE_FACTOR")) {
+        const int pct = QSettings(QSettings::NativeFormat, QSettings::UserScope, QStringLiteral("Eter"), QStringLiteral("Eter"))
+                            .value(QStringLiteral("ui/scale"), 100).toInt();
+        // 100 % alatt (1-nél kisebb szorzó) a Qt hibásan rajzol (elcsúszott, levágott elemek): ott nincs méretezés.
+        if (pct > 100 && pct <= 200) qputenv("QT_SCALE_FACTOR", QByteArray::number(pct / 100.0, 'f', 2));
+    }
     std::unique_ptr<QCoreApplication> holder(headless ? new QCoreApplication(argc, argv)
                                                       : new QApplication(argc, argv));
     QCoreApplication &app = *holder;
@@ -422,6 +447,11 @@ int main(int argc, char **argv)
         return selfTest(parser.value(selfTestOpt), parser.isSet(backendOpt) ? parser.value(backendOpt) : "null");
 
     theme::apply(*static_cast<QApplication *>(holder.get()));
+    if (qEnvironmentVariableIsSet("ETER_SCHEME")) {
+        // Fejlesztéshez: színséma indításkor (a képernyőképekhez), pl. builtin:light.
+        const theme::Scheme sc = theme::scheme(qEnvironmentVariable("ETER_SCHEME"));
+        if (!sc.id.isEmpty()) theme::setCurrentColors(sc.colors, sc.id);
+    }
     QtStreamInput::install();   // külső hangstreamek (http/https) a lejátszókban
     // A távoli szerkesztés közvetlenül az IP-címre csatlakozik: proxy sosem kell (és így nem is keresünk).
     QNetworkProxy::setApplicationProxy(QNetworkProxy::NoProxy);
@@ -619,6 +649,8 @@ int main(int argc, char **argv)
                                 "játszaná egyszerre, ezért ez a példány nem indul el.").arg(pid));
         return 1;
     }
+    // Külső SQL szerver: ha a szerveren egy másik gép újabb adatot hagyott, az lesz az importálandó adatbázis.
+    const bool sqlActive = sqlsrv::startupCheck(dbPath, !qEnvironmentVariableIsSet("ETER_SQL_NONINTERACTIVE"));
     {
         const bool pending = QFile::exists(dbPath + QStringLiteral(".import"));
         const QString importErr = MainWindow::applyPendingImport(dbPath);
@@ -644,7 +676,33 @@ int main(int argc, char **argv)
         if (testRun && !qEnvironmentVariableIsSet("ETER_ANALYZE")) qputenv("ETER_ANALYZE", "0");
     }
     MainWindow window(&db, parser.value(backendOpt));
+    ServerSync serverSync(dbPath);
+    window.setServerSync(&serverSync);
+    if (sqlActive) serverSync.start();
     window.show();
+    if (qEnvironmentVariableIsSet("ETER_DIAG")) {
+        // Hibakereséshez: a képernyő, a méretezés és a betűk adatai, majd a főbb elemek helye (a terminálba).
+        QTimer::singleShot(3000, &window, [&window] {
+            QScreen *sc = window.screen();
+            std::printf("platform=%s stílus=%s QT_SCALE_FACTOR=%s ui/scale=%d\n", qPrintable(QGuiApplication::platformName()),
+                        qPrintable(QApplication::style()->name()), qgetenv("QT_SCALE_FACTOR").constData(), theme::uiScalePercent());
+            if (sc)
+                std::printf("képernyő=%s %dx%d dpr=%.2f logikai dpi=%.1f fizikai dpi=%.1f\n", qPrintable(sc->name()), sc->geometry().width(),
+                            sc->geometry().height(), sc->devicePixelRatio(), sc->logicalDotsPerInch(), sc->physicalDotsPerInch());
+            const QFont f = QApplication::font();
+            std::printf("betű=%s px=%d pt=%.1f talált=%s\n", qPrintable(f.family()), f.pixelSize(), f.pointSizeF(),
+                        qPrintable(QFontInfo(f).family()));
+            std::printf("ablak=%dx%d maximalizált=%d séma=%s\n", window.width(), window.height(), int(window.isMaximized()),
+                        qPrintable(theme::currentSchemeId()));
+            for (QWidget *w : window.findChildren<QWidget *>()) {
+                if (w->objectName().isEmpty() || !w->isVisible()) continue;
+                const QRect g(w->mapTo(&window, QPoint(0, 0)), w->size());
+                std::printf("  %-22s %4d,%4d %4dx%-4d hint %dx%d min %dx%d\n", qPrintable(w->objectName()), g.x(), g.y(), g.width(), g.height(),
+                            w->sizeHint().width(), w->sizeHint().height(), w->minimumSizeHint().width(), w->minimumSizeHint().height());
+            }
+            std::fflush(stdout);
+        });
+    }
     if (qEnvironmentVariableIsSet("ETER_MIXDOWN_TEST")) {
         // Fejlesztéshez: a mixdown. A fájlok sorban (a „vt” nevű a 2. átmenet voice trackje), az átmenetek, majd
         // kikeverés MP3-ba és WAV-ba (44,1 kHz), a hosszuk, és képek (ETER_MIXDOWN_TEST = a mappa).
@@ -849,6 +907,837 @@ int main(int argc, char **argv)
                 window.grab().save(qEnvironmentVariable("ETER_STREAM_SHOT"));
             });
         QTimer::singleShot(qEnvironmentVariableIntValue("ETER_STREAM_SECS") * 1000, &window, [] { QApplication::exit(0); });
+    }
+    if (qEnvironmentVariableIsSet("ETER_TPL_TEST")) {
+        // Fejlesztéshez: mix sablonok. A Beállítások → Automatikus mix lapon új sablon (ETER_TEMPLATE_NAME), a „Dance”
+        // kategóriához rendelve; a beállítások kategóriánként; képek: a beállítás lap és a Kategóriák ablak.
+        const QString dir = qEnvironmentVariable("ETER_TPL_TEST");
+        const int pop = db.addCategory(QStringLiteral("Pop"), "music", "#5cb0ff");
+        const int dance = db.addCategory(QStringLiteral("Dance"), "music", "#f472b6");
+        window.resize(1400, 860);
+        QTimer::singleShot(500, &window, [&window, &db, dir, pop, dance] {
+            auto *dlg = new SettingsDialog(&window);
+            dlg->resize(860, 900);
+            dlg->show();
+            if (auto *tabs = dlg->findChild<QTabWidget *>("settingsTabs"))
+                for (int i = 0; i < tabs->count(); ++i)
+                    if (tabs->tabText(i) == TR("Automatikus mix")) tabs->setCurrentIndex(i);
+            // Az űrlapon hosszabb átfedés és lágyabb intró, majd mentés új sablonként.
+            QDoubleSpinBox *maxOv = nullptr;
+            for (auto *sp : dlg->findChildren<QDoubleSpinBox *>())
+                if (sp->toolTip().startsWith(TR("Semmilyen esetben"))) maxOv = sp;
+            if (maxOv) maxOv->setValue(16);
+            if (auto *b = dlg->findChild<QPushButton *>("mixTemplateNew")) b->click();
+            setCategoryMixTemplate(&db, dance, loadMixTemplates(&db).value(0).id);
+            emit db.categoriesChanged();
+            // Az alapbeállítás marad (8 mp); vissza az alapra és alkalmazás nélkül.
+            MixSettingsCache cache;
+            std::printf("sablonok: %d · Pop: átfedés %d ms (sablon %d) · Dance: átfedés %d ms (sablon %d)\n",
+                        int(loadMixTemplates(&db).size()), cache.get(&db, pop).smart.maxOverlapMs, cache.get(&db, pop).templateId,
+                        cache.get(&db, dance).smart.maxOverlapMs, cache.get(&db, dance).templateId);
+            if (auto *sel = dlg->findChild<QComboBox *>("mixTemplate")) {
+                sel->setCurrentIndex(1);
+                emit sel->activated(1);
+                std::printf("szerkesztett: %s\n", qPrintable(sel->currentText()));
+            }
+            QApplication::processEvents();
+            if (auto *area = dlg->findChild<QScrollArea *>()) area->verticalScrollBar()->setValue(0);
+            dlg->grab().save(dir + "/settings_template.png");
+            dlg->close();
+            window.library()->openCategories();
+            QApplication::processEvents();
+            for (QWidget *w : QApplication::topLevelWidgets())
+                if (w->windowTitle() == TR("Kategóriák") && w->isVisible()) {
+                    w->resize(760, 420);
+                    QApplication::processEvents();
+                    w->grab().save(dir + "/categories.png");
+                }
+            QApplication::exit(0);
+        });
+    }
+    if (qEnvironmentVariableIsSet("ETER_INFO_TEST")) {
+        // Fejlesztéshez: az Infó ablak állapotai (MusicBrainz-utánzat: ETER_MB_URL, ETER_WD_URL, ETER_WP_URL).
+        const QString dir = qEnvironmentVariable("ETER_INFO_TEST");
+        const int music = db.addCategory(QStringLiteral("80-as évek"), "music", "#5cb0ff");
+        const QStringList pairs{QStringLiteral("Duran Duran|Girls on Film"), QStringLiteral("Ismeretlen Zenekar|Valami"),
+                                QStringLiteral("Adele|Hello")};
+        const QStringList fs = parser.positionalArguments();
+        QVector<int> ids;
+        for (int k = 0; k < pairs.size() && k < fs.size(); ++k) {
+            eter::Decoder dec;
+            if (!dec.open(fs[k].toStdString())) continue;
+            Item it;
+            it.categoryId = music;
+            it.path = QFileInfo(fs[k]).absoluteFilePath();
+            it.artist = pairs[k].section(QLatin1Char('|'), 0, 0);
+            it.title = pairs[k].section(QLatin1Char('|'), 1);
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            ids << db.addItem(it);
+        }
+        db.setItemVocal({ids.value(0)}, vocal::Group);
+        db.setSetting("adb_enabled", "0");
+        db.setSetting("mb_enabled", "1");
+        db.setSetting("wiki_enabled", "1");
+        db.setSetting("adb_mode", "2");     // kézi mód: az Infó ablak maga kéri az adatokat
+        db.notifyItemsChanged();
+        if (ArtistInfoService *info = window.artistInfo()) info->reload();
+        window.resize(1500, 900);
+        auto select = [&window](const QString &title) {
+            auto *view = window.library()->findChild<QTableView *>();
+            for (int r = 0; r < view->model()->rowCount(); ++r)
+                if (view->model()->index(r, 0).data().toString() == title) {
+                    view->setCurrentIndex(view->model()->index(r, 0));
+                    view->selectRow(r);
+                }
+            QApplication::processEvents();
+        };
+        auto grabInfo = [&window, dir](const QString &name) {
+            QApplication::processEvents();
+            InfoWindow *w = window.infoWindow(false);
+            if (!w) return;
+            w->grab().save(dir + "/" + name + ".png");
+            std::printf("%-10s elem=%d állapot=%s cím=%s\n", qPrintable(name), w->shownItemId(), qPrintable(w->stateName()),
+                        qPrintable(w->windowTitle()));
+        };
+        QTimer::singleShot(400, &window, [&window, ids, select, grabInfo] {
+            window.appendItems({ids.value(0)}, 0);
+            if (auto *b = window.library()->findChild<QPushButton *>("infoBtn")) b->click();
+            InfoWindow *w = window.infoWindow(false);
+            std::printf("ablak: %s, gomb aktív: %d\n", w && w->isVisible() ? "nyitva" : "zárva",
+                        window.library()->findChild<QPushButton *>("infoBtn")->property("active").toBool());
+            w->resize(420, 760);
+            select(QStringLiteral("Girls on Film"));
+            grabInfo(QStringLiteral("1_loading"));
+        });
+        QTimer::singleShot(7000, &window, [&window, dir, select, grabInfo] {
+            grabInfo(QStringLiteral("2_data"));
+            window.grab().save(dir + "/main.png");
+            select(QStringLiteral("Valami"));
+            QTimer::singleShot(4000, &window, [&window, dir, select, grabInfo] {
+                grabInfo(QStringLiteral("3_notfound"));
+                InfoWindow *w = window.infoWindow(false);
+                if (auto *b = w->findChild<QToolButton *>("infoOnAir")) b->click();
+                grabInfo(QStringLiteral("4_onair"));
+                if (auto *b = w->findChild<QToolButton *>("infoSelected")) b->click();
+                window.artistInfo()->setSettings([&] {
+                    ArtistInfoService::Settings s = window.artistInfo()->settings();
+                    s.mbEnabled = false;
+                    s.enabled = false;
+                    return s;
+                }());
+                select(QStringLiteral("Hello"));
+                grabInfo(QStringLiteral("5_off"));
+                select(QStringLiteral("Girls on Film"));
+                grabInfo(QStringLiteral("6_data_off"));
+                if (auto *c = w->findChild<QCheckBox *>("infoOnTop")) c->setChecked(true);
+                std::printf("mindig felül: %d, látható: %d\n", int(w->windowFlags().testFlag(Qt::WindowStaysOnTopHint)), int(w->isVisible()));
+                w->close();
+                std::printf("bezárva: gomb aktív=%d, nyitva mentve=%d\n",
+                            window.library()->findChild<QPushButton *>("infoBtn")->property("active").toBool(),
+                            QSettings().value("ui/info/open").toBool());
+                QApplication::exit(0);
+            });
+        });
+    }
+    if (qEnvironmentVariableIsSet("ETER_ADB_TEST")) {
+        // Fejlesztéshez: előadói adatok (TheAudioDB-utánzat: ETER_ADB_URL). ETER_ADB_TEST = a képek mappája;
+        // ETER_ADB_KEY, ETER_ADB_MODE (0 automatikus, 1 betöltéskor, 2 kézzel), ETER_ADB_WAIT mp.
+        const QString dir = qEnvironmentVariable("ETER_ADB_TEST");
+        const int music = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        QStringList names{QStringLiteral("Coldplay"), QStringLiteral("Adele"), QStringLiteral("Simon & Garfunkel"),
+                          QStringLiteral("David Guetta feat. Sia"), QStringLiteral("Ismeretlen Zenekar")};
+        QStringList titles;
+        if (qEnvironmentVariableIsSet("ETER_ADB_ITEMS")) {
+            // „Előadó|Cím;Előadó|Cím…”
+            names.clear();
+            for (const QString &pair : qEnvironmentVariable("ETER_ADB_ITEMS").split(QLatin1Char(';'))) {
+                names << pair.section(QLatin1Char('|'), 0, 0);
+                titles << pair.section(QLatin1Char('|'), 1);
+            }
+        }
+        const QStringList fs = parser.positionalArguments();
+        QVector<int> ids;
+        for (int k = 0; k < names.size() && !fs.isEmpty(); ++k) {
+            eter::Decoder dec;
+            if (!dec.open(fs[k % fs.size()].toStdString())) continue;
+            Item it;
+            it.categoryId = music;
+            if (k >= fs.size()) break;
+            it.path = QFileInfo(fs[k]).absoluteFilePath();
+            it.title = k < titles.size() ? titles[k] : k == 0 ? QStringLiteral("Yellow") : QStringLiteral("Dal %1").arg(k + 1);
+            it.artist = names[k];
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            ids << db.addItem(it);
+        }
+        db.setItemVocal({ids.value(1)}, vocal::Male);   // kézzel beállított ének: nem írhatja felül (Adele „Female” lenne)
+        db.setSetting("adb_enabled", qEnvironmentVariable("ETER_ADB_ON", "1"));
+        db.setSetting("mb_enabled", qEnvironmentVariable("ETER_MB_ON", "0"));
+        db.setSetting("adb_key", qEnvironmentVariable("ETER_ADB_KEY", "123"));
+        db.setSetting("adb_mode", qEnvironmentVariable("ETER_ADB_MODE", "0"));
+        db.notifyItemsChanged();
+        if (ArtistInfoService *info = window.artistInfo()) info->reload();
+        window.resize(1500, 900);
+        QTimer::singleShot(300, &window, [&window, ids] {
+            window.appendItems({ids.value(0)}, 0);
+            if (qEnvironmentVariable("ETER_ADB_MODE") == QLatin1String("2"))
+                window.artistInfo()->requestItems(ids, true);
+        });
+        const int wait = qEnvironmentVariableIsSet("ETER_ADB_WAIT") ? qEnvironmentVariableIntValue("ETER_ADB_WAIT") : 14;
+        QTimer::singleShot(wait * 1000, &window, [&window, &db, dir] {
+            for (const Item &it : db.items()) {
+                QSqlQuery q;
+                q.prepare("SELECT album, COALESCE(year, 0) FROM items WHERE id = ?");
+                q.addBindValue(it.id);
+                q.exec();
+                q.next();
+                const ArtistData d = window.artistInfo()->artist(it.artist);
+                std::printf("%-24s ének=%-10s album=%-11s év=%-4d  adat: %s%s%s\n", qPrintable(it.artist), qPrintable(vocal::name(it.vocal)),
+                            qPrintable(q.value(0).toString()), q.value(1).toInt(), !d.known ? "nincs lekérve" : d.found ? "megvan" : "nem található",
+                            d.found ? qPrintable(QStringLiteral(" · ") + d.facts()) : "", d.imageFile.isEmpty() ? "" : " · fotó");
+            }
+            std::printf("állapot: %s\n", qPrintable(window.artistInfo()->statusText()));
+            window.grab().save(dir + "/main.png");
+            QToolButton *b = nullptr;
+            for (QToolButton *t : window.findChildren<QToolButton *>("bioButton"))
+                if (t->isVisible()) b = t;
+            if (b) {
+                b->click();
+                QApplication::processEvents();
+                const auto pops = window.findChildren<QFrame *>("bioPopup");
+                std::printf("életrajz ablak: %d\n", int(pops.size()));
+                for (QFrame *w : pops) {
+                    w->grab().save(dir + "/bio.png");
+                    w->close();
+                }
+            }
+            auto *dlg = new SettingsDialog(&window);
+            dlg->resize(860, 700);
+            dlg->show();
+            if (auto *tabs = dlg->findChild<QTabWidget *>("settingsTabs"))
+                for (int i = 0; i < tabs->count(); ++i)
+                    if (tabs->tabText(i) == TR("Előadói adatok")) tabs->setCurrentIndex(i);
+            QApplication::processEvents();
+            dlg->grab().save(dir + "/settings.png");
+            dlg->close();
+            QApplication::exit(0);
+        });
+    }
+    if (qEnvironmentVariableIsSet("ETER_SQL_TEST")) {
+        // Fejlesztéshez: külső SQL szerver. ETER_SQL_TEST = a képek mappája. ETER_SQL_FILL=1: hangtár a fájlokból;
+        // ETER_SQL_SETUP="host:port:user:pass:db": a Beállítások SQL oldalán kitölti és feltölti; ETER_SQL_EDIT=szöveg:
+        // az első elem címe erre változik; ETER_SQL_WAIT: ennyi mp után kilép.
+        const QString dir = qEnvironmentVariable("ETER_SQL_TEST");
+        if (qEnvironmentVariableIsSet("ETER_SQL_FILL")) {
+            const int music = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+            int n = 0;
+            for (const QString &f : parser.positionalArguments()) {
+                eter::Decoder dec;
+                if (!dec.open(f.toStdString())) continue;
+                Item it;
+                it.categoryId = music;
+                it.path = QFileInfo(f).absoluteFilePath();
+                it.title = QStringLiteral("Dal %1").arg(++n);
+                it.artist = QStringLiteral("Előadó %1").arg(n);
+                it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+                db.addItem(it);
+            }
+            db.setSetting("teszt_kulcs", QStringLiteral("árvíztűrő tükörfúrógép"));
+        }
+        auto dump = [&db](const char *when) {
+            QStringList t;
+            for (const Item &it : db.items()) t << it.title;
+            std::printf("[%s] helyi hangtár: %s · teszt_kulcs=%s\n", when, qPrintable(t.join(", ")), qPrintable(db.setting("teszt_kulcs")));
+        };
+        dump("indulás");
+        window.resize(1400, 860);
+        QTimer::singleShot(600, &window, [&window, &db, dir, dump] {
+            if (qEnvironmentVariableIsSet("ETER_SQL_SETUP")) {
+                const QStringList p = qEnvironmentVariable("ETER_SQL_SETUP").split(QLatin1Char(':'));
+                auto *dlg = new SettingsDialog(&window);
+                dlg->resize(860, 820);
+                dlg->show();
+                if (auto *tabs = dlg->findChild<QTabWidget *>("settingsTabs"))
+                    for (int i = 0; i < tabs->count(); ++i)
+                        if (tabs->tabText(i) == TR("SQL szerver")) tabs->setCurrentIndex(i);
+                const char *names[] = {"sqlHost", "sqlPort", "sqlUser", "sqlPassword", "sqlDatabase"};
+                for (int i = 0; i < 5 && i < p.size(); ++i) {
+                    if (auto *e = dlg->findChild<QLineEdit *>(names[i])) {
+                        e->setText(p[i]);
+                        emit e->editingFinished();
+                    } else if (auto *sp = dlg->findChild<QSpinBox *>(names[i])) {
+                        sp->setValue(p[i].toInt());
+                        emit sp->editingFinished();
+                    }
+                }
+                if (auto *b = dlg->findChild<QPushButton *>("sqlTest")) b->click();
+                if (auto *r = dlg->findChild<QLabel *>("sqlTestResult")) std::printf("teszt: %s\n", qPrintable(r->text()));
+                if (auto *b = dlg->findChild<QPushButton *>("sqlUpload")) b->click();
+                if (auto *r = dlg->findChild<QLabel *>("sqlTestResult")) std::printf("feltöltés: %s\n", qPrintable(r->text()));
+                QTimer::singleShot(1500, dlg, [dlg, dir] {
+                    dlg->grab().save(dir + "/settings_sql.png");
+                    if (auto *st = dlg->findChild<QLabel *>("sqlState")) std::printf("állapot: %s\n", qPrintable(st->text()));
+                    dlg->close();
+                });
+            }
+            if (qEnvironmentVariableIsSet("ETER_SQL_CLICK")) {
+                // A Beállítások SQL oldalának egy gombja (sqlDownload, sqlDisconnect, …).
+                QTimer::singleShot(1500, &window, [&window] {
+                    auto *dlg = new SettingsDialog(&window);
+                    dlg->show();
+                    if (auto *b = dlg->findChild<QPushButton *>(qEnvironmentVariable("ETER_SQL_CLICK"))) b->click();
+                    if (auto *r = dlg->findChild<QLabel *>("sqlTestResult")) std::printf("gomb után: %s\n", qPrintable(r->text()));
+                    if (auto *st = dlg->findChild<QLabel *>("sqlState")) std::printf("állapot: %s\n", qPrintable(st->text()));
+                    dlg->close();
+                });
+            }
+            if (qEnvironmentVariableIsSet("ETER_SQL_EDIT")) {
+                QTimer::singleShot(2500, &window, [&db] {
+                    QSqlQuery q;
+                    q.prepare("UPDATE items SET title = ? WHERE id = (SELECT MIN(id) FROM items)");
+                    q.addBindValue(qEnvironmentVariable("ETER_SQL_EDIT"));
+                    q.exec();
+                    db.setSetting("teszt_kulcs", qEnvironmentVariable("ETER_SQL_EDIT") + QStringLiteral(" beállítás"));
+                    db.notifyItemsChanged();
+                    std::printf("módosítva: az első elem címe „%s”\n", qPrintable(qEnvironmentVariable("ETER_SQL_EDIT")));
+                });
+            }
+            const int wait = qEnvironmentVariableIsSet("ETER_SQL_WAIT") ? qEnvironmentVariableIntValue("ETER_SQL_WAIT") : 9;
+            QTimer::singleShot(wait * 1000, &window, [&window, dump, dir] {
+                dump("vége");
+                if (ServerSync *s = window.serverSync()) std::printf("szinkron: %s\n", qPrintable(s->statusText()));
+                window.grab().save(dir + "/main.png");
+                QApplication::exit(0);
+            });
+        });
+    }
+    if (qEnvironmentVariableIsSet("ETER_MIDI_TEST")) {
+        // Fejlesztéshez: MIDI-vezérlés egy FIFO-n át (ETER_MIDI_DEVICE = a FIFO útvonala): tanítás és végrehajtás.
+        const QString dir = qEnvironmentVariable("ETER_MIDI_TEST");
+        const int music = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        QVector<int> ids;
+        int k = 0;
+        for (const QString &f : parser.positionalArguments()) {
+            eter::Decoder dec;
+            if (!dec.open(f.toStdString())) continue;
+            Item it;
+            it.categoryId = music;
+            it.path = QFileInfo(f).absoluteFilePath();
+            it.title = QStringLiteral("Dal %1").arg(++k);
+            it.artist = QStringLiteral("Előadó");
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            ids << db.addItem(it);
+        }
+        db.notifyItemsChanged();
+        window.resize(1500, 900);
+        QTimer::singleShot(500, &window, [&window, ids] { window.appendItems(ids); });
+        QTimer::singleShot(1500, &window, [&window, dir] {
+            auto *dlg = new SettingsDialog(&window);
+            dlg->resize(900, 900);
+            dlg->show();
+            if (auto *tabs = dlg->findChild<QTabWidget *>("settingsTabs"))
+                for (int i = 0; i < tabs->count(); ++i)
+                    if (tabs->tabText(i) == TR("MIDI")) tabs->setCurrentIndex(i);
+            MidiControl *mc = window.midiControl();
+            auto *dev = dlg->findChild<QComboBox *>("midiDevice");
+            QStringList names;
+            for (int i = 0; i < dev->count(); ++i) names << dev->itemText(i);
+            std::printf("eszközök: %s\n", qPrintable(names.join(" | ")));
+            dev->setCurrentIndex(dev->count() - 1);
+            emit dev->activated(dev->count() - 1);
+            QApplication::processEvents();
+            std::printf("állapot: %s\n", qPrintable(mc->statusText()));
+            auto fifo = std::make_shared<QFile>(qEnvironmentVariable("ETER_MIDI_DEVICE"));
+            if (!fifo->open(QIODevice::WriteOnly | QIODevice::Unbuffered)) std::printf("FIFO nem nyitható\n");
+            auto send = [fifo](std::initializer_list<int> bytes) {
+                QByteArray b;
+                for (int x : bytes) b.append(char(x));
+                fifo->write(b);
+                fifo->flush();
+                QElapsedTimer t;
+                t.start();
+                while (t.elapsed() < 250) QApplication::processEvents(QEventLoop::AllEvents, 20);
+            };
+            auto learn = [dlg](const char *action) {
+                if (auto *b = dlg->findChild<QPushButton *>(QStringLiteral("midiLearn_") + QLatin1String(action))) b->click();
+                QApplication::processEvents();
+            };
+            auto mon = [dlg](const char *what) {
+                std::printf("%-28s %s | %s\n", what, qPrintable(dlg->findChild<QLabel *>("mono") ? dlg->findChild<QLabel *>("midiStatus")->text() : QString()),
+                            qPrintable(dlg->findChild<QLabel *>("midiLearnNote")->text()));
+            };
+            learn("play_a");
+            mon("tanítás indul");
+            dlg->grab().save(dir + "/learning.png");
+            send({0x99, 36, 100, 0x89, 36, 0});
+            mon("A: hang 36");
+            learn("vol_out");
+            send({0xB0, 7, 64});
+            mon("KI hangerő: CC 7");
+            learn("fstart_b");
+            send({0xB0, 8, 0});
+            mon("B fader-indítás: CC 8");
+            learn("vol_b");
+            send({0xB0, 8, 0});
+            mon("B hangerő: CC 8");
+            learn("play_c");
+            send({0xB0, 20, 127, 0xB0, 20, 0});
+            mon("C: CC-gomb 20");
+            learn("next");
+            send({0x99, 36, 100});
+            mon("Következő: hang 36 (A-tól)");
+            learn("play_a");
+            send({0x99, 37, 90});
+            mon("A: hang 37");
+            learn("vol_a");
+            send({0x90, 40, 100});
+            mon("hangerő hanggal (nem fogadja)");
+            learn("vol_a");     // megszakítás
+            std::printf("tanítás: '%s'\n", qPrintable(mc->learning()));
+            QStringList b;
+            for (const MidiControl::Action &a : MidiControl::actions())
+                if (!mc->binding(a.id).isEmpty()) b << a.id + "=" + mc->binding(a.id);
+            std::printf("hozzárendelések: %s\n", qPrintable(b.join(", ")));
+            dlg->grab().save(dir + "/bindings.png");
+            // Végrehajtás
+            auto st = [&window](const char *what) {
+                std::printf("%-30s A=%s B=%s C=%s · KI=%.1f dB B-fader=%.1f dB · monitor: %s\n", what,
+                            window.playerWidget(0)->isPlaying() ? "szól" : "áll", window.playerWidget(1)->isPlaying() ? "szól" : "áll",
+                            window.playerWidget(2)->isPlaying() ? "szól" : "áll", window.mixer()->db(5), window.mixer()->db(1),
+                            "");
+            };
+            st("kezdet");
+            send({0x99, 37, 100});
+            st("hang 37 → A indul");
+            send({0x89, 37, 0, 0x99, 37, 100});
+            st("hang 37 újra → A leáll");
+            send({0xB0, 7, 127});
+            st("CC 7 = 127 → KI 0 dB");
+            send({0xB0, 7, 0});
+            st("CC 7 = 0 → KI −∞");
+            send({0xB0, 7, 100, 90});       // futó státusz: a második érték 90
+            st("CC 7 = 100, 90 (futó státusz)");
+            send({0xB0, 8, 100});
+            st("CC 8 fel → B indul + hangerő");
+            send({0xB0, 8, 1});
+            st("CC 8 le → B leáll");
+            send({0xB0, 20, 127});
+            st("CC 20 → C indul");
+            send({0xB0, 20, 0, 0xF8, 0xF0, 1, 2, 3, 0xF7, 0xB0, 20, 127});
+            st("SysEx/órajel között CC 20 → C leáll");
+            std::printf("monitor: %s\n", qPrintable(dlg->findChild<QLabel *>("mono")->text()));
+            fifo->close();
+            QApplication::exit(0);
+        });
+    }
+    if (qEnvironmentVariableIsSet("ETER_MIXPV_SHOT")) {
+        // Fejlesztéshez: az automatikus mix előnézete minden példa átmenettel, és egy-két érték változtatása.
+        const QString dir = qEnvironmentVariable("ETER_MIXPV_SHOT");
+        window.resize(1500, 900);
+        QTimer::singleShot(600, &window, [&window, dir] {
+            auto *dlg = new SettingsDialog(&window);
+            dlg->resize(900, 980);
+            dlg->show();
+            if (auto *tabs = dlg->findChild<QTabWidget *>("settingsTabs"))
+                for (int i = 0; i < tabs->count(); ++i)
+                    if (tabs->tabText(i) == TR("Automatikus mix")) tabs->setCurrentIndex(i);
+            QApplication::processEvents();
+            auto *combo = dlg->findChild<QComboBox *>("mixPreviewScenario");
+            auto *pv = dlg->findChild<MixPreview *>("mixPreview");
+            for (int i = 0; i < combo->count(); ++i) {
+                combo->setCurrentIndex(i);
+                QApplication::processEvents();
+                pv->grab().save(QStringLiteral("%1/pv%2.png").arg(dir).arg(i));
+                std::printf("%d %s\n   %s\n", i, qPrintable(combo->itemText(i)), qPrintable(pv->summary()));
+            }
+            combo->setCurrentIndex(0);
+            QApplication::processEvents();
+            dlg->grab().save(dir + "/page.png");
+            // Leghosszabb átfedés 2 mp-re: az előnézet azonnal követi.
+            for (auto *sp : dlg->findChildren<QDoubleSpinBox *>())
+                if (sp->toolTip() == TR("Semmilyen esetben nem szól tovább együtt a két szám")) sp->setValue(2.0);
+            QApplication::processEvents();
+            pv->grab().save(dir + "/pv_max2.png");
+            std::printf("max 2 mp: %s\n", qPrintable(pv->summary()));
+            if (auto *c = dlg->findChild<QCheckBox *>("smartMixOn")) c->setChecked(false);
+            QApplication::processEvents();
+            pv->grab().save(dir + "/pv_simple.png");
+            std::printf("egyszerű: %s\n", qPrintable(pv->summary()));
+            QApplication::exit(0);
+        });
+    }
+    if (qEnvironmentVariableIsSet("ETER_THEME_SHOT")) {
+        // Fejlesztéshez: a Megjelenés oldal és a főablak saját színekkel (ETER_THEME_ACCENT, ETER_THEME_A).
+        const QString dir = qEnvironmentVariable("ETER_THEME_SHOT");
+        std::printf("QT_SCALE_FACTOR=%s, méret %d %%\n", qgetenv("QT_SCALE_FACTOR").constData(), theme::uiScalePercent());
+        window.resize(1500, 900);
+        QTimer::singleShot(700, &window, [&window, dir] {
+            if (qEnvironmentVariableIsSet("ETER_THEME_ACCENT")) {
+                QSettings().setValue("ui/accent", qEnvironmentVariable("ETER_THEME_ACCENT"));
+                QSettings().setValue("ui/player0", qEnvironmentVariable("ETER_THEME_A", "#f472b6"));
+                theme::reapply();
+            }
+            QApplication::processEvents();
+            window.grab().save(dir + "/main.png");
+            auto *dlg = new SettingsDialog(&window);
+            dlg->resize(860, 900);
+            dlg->show();
+            if (auto *tabs = dlg->findChild<QTabWidget *>("settingsTabs"))
+                for (int i = 0; i < tabs->count(); ++i)
+                    if (tabs->tabText(i) == TR("Megjelenés")) tabs->setCurrentIndex(i);
+            QApplication::processEvents();
+            dlg->grab().save(dir + "/settings_look.png");
+            std::printf("kiemelő: %s, A: %s\n", qPrintable(theme::amber.name()), qPrintable(theme::playerColor(0).name()));
+            if (!qEnvironmentVariableIsSet("ETER_THEME_EDIT")) {
+                QApplication::exit(0);
+                return;
+            }
+            // A témaszerkesztő végigjárása: séma választása, egy szín átírása, mentés név szerint, export, törlés, import.
+            auto *combo = dlg->findChild<QComboBox *>("colorScheme");
+            auto click = [dlg](const char *name) {
+                if (auto *b = dlg->findChild<QPushButton *>(name)) {
+                    std::printf("  [%s] %s\n", name, b->isEnabled() ? "kattintás" : "tiltva");
+                    if (b->isEnabled()) b->click();
+                }
+                QApplication::processEvents();
+            };
+            auto state = [combo](const char *what) {
+                QStringList items;
+                for (int i = 0; i < combo->count(); ++i)
+                    if (!combo->itemText(i).isEmpty()) items << combo->itemText(i);
+                std::printf("%s: séma=%s (%s), módosítva=%d, háttér=%s, panel=%s | %s\n", what, qPrintable(theme::currentSchemeId()),
+                            qPrintable(combo->currentText()), int(theme::currentModified()), qPrintable(theme::bg.name()),
+                            qPrintable(theme::panel.name()), qPrintable(items.join(", ")));
+            };
+            state("kezdet");
+            const int mid = combo->findData(QStringLiteral("builtin:midnight"));
+            combo->setCurrentIndex(mid);
+            emit combo->activated(mid);
+            QApplication::processEvents();
+            state("Éjkék");
+            window.grab().save(dir + "/main_midnight.png");
+            qputenv("ETER_PICK_COLOR", "#203050");
+            click("color_panel");
+            state("panel átírva");
+            qputenv("ETER_SCHEME_NAME", "Stúdió éjjel");
+            click("schemeSaveAs");
+            state("mentve");
+            dlg->grab().save(dir + "/settings_saved.png");
+            qputenv("ETER_PICK_COLOR", "#e8eaed");
+            click("color_bg");
+            state("rossz kontraszt");
+            if (auto *w = dlg->findChild<QLabel *>("contrastWarn")) std::printf("  figyelmeztetés: %s\n", qPrintable(w->text()));
+            dlg->grab().save(dir + "/settings_contrast.png");
+            click("schemeRevert");
+            state("visszaállítva");
+            const QString file = dir + "/studio.json";
+            qputenv("ETER_SCHEME_FILE", file.toUtf8());
+            click("schemeExport");
+            QFile f(file);
+            if (f.open(QIODevice::ReadOnly)) std::printf("%s\n", f.readAll().constData());
+            qputenv("ETER_AUTOCONFIRM", "1");
+            qputenv("ETER_SCHEME_NAME", "Éjszakai");
+            click("schemeRename");
+            state("átnevezve");
+            click("schemeDelete");
+            state("törölve");
+            click("schemeImport");
+            state("importálva");
+            click("schemeImport");
+            state("újra importálva (nincs másolat)");
+            const QString bad = dir + "/bad.json";
+            QFile bf(bad);
+            if (bf.open(QIODevice::WriteOnly)) bf.write("{\"format\":\"valami\"}");
+            bf.close();
+            qputenv("ETER_SCHEME_FILE", bad.toUtf8());
+            click("schemeImport");
+            const int light = combo->findData(QStringLiteral("builtin:light"));
+            combo->setCurrentIndex(light);
+            emit combo->activated(light);
+            QApplication::processEvents();
+            state("Világos");
+            dlg->grab().save(dir + "/settings_light.png");
+            window.grab().save(dir + "/main_light.png");
+            QApplication::exit(0);
+        });
+    }
+    if (qEnvironmentVariableIsSet("ETER_V033_SHOT")) {
+        // Fejlesztéshez (0.33): „Jegyzet” és sweeper az órasémában, heti rácsok időszakokkal, előadók szétválasztása.
+        const QString dir = qEnvironmentVariable("ETER_V033_SHOT");
+        const int music = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        const int jingle = db.addCategory(QStringLiteral("Sweeper"), "jingle", "#f0a040");
+        const QStringList fs = parser.positionalArguments();
+        const QStringList artistsList{QStringLiteral("Alpha and Beta"), QStringLiteral("Beta"), QStringLiteral("Gamma & Delta"),
+                                      QStringLiteral("Delta"), QStringLiteral("Epsilon feat. Alpha"), QStringLiteral("Zeta"),
+                                      QStringLiteral("AC/DC"), QStringLiteral("Eta")};
+        for (int k = 0; k < artistsList.size() + 2 && !fs.isEmpty(); ++k) {
+            const QString f = fs[k % fs.size()];
+            eter::Decoder dec;
+            if (!dec.open(f.toStdString())) continue;
+            Item it;
+            const bool sw = k >= artistsList.size();
+            it.categoryId = sw ? jingle : music;
+            it.path = QFileInfo(f).absoluteFilePath();
+            it.title = sw ? QStringLiteral("Sweeper %1").arg(k - artistsList.size() + 1) : QStringLiteral("Dal %1").arg(k + 1);
+            it.artist = sw ? QString() : artistsList[k];
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            db.addItem(it);
+        }
+        for (const QString &a : artistsList)
+            std::printf("előadó „%s” → %s\n", qPrintable(a), qPrintable(artists::split(a, artists::defaultSeparators()).join(" | ")));
+        const int clockA = db.addClock(QStringLiteral("Reggel"), "#5cb0ff");
+        const int clockB = db.addClock(QStringLiteral("Nyár"), "#f5a524");
+        auto slot = [&db](int clock, const QString &type, int cat, int count, const QString &note = {}, int sweeper = 0) {
+            ClockSlot s;
+            s.clockId = clock;
+            s.type = type;
+            s.categoryId = cat;
+            s.count = count;
+            s.note = note;
+            s.sweeperCategoryId = sweeper;
+            s.sweeperDuckDb = -8;
+            db.addSlot(s);
+        };
+        slot(clockA, "note", 0, 1, QStringLiteral("Időjárás élőben a stúdióból"));
+        slot(clockA, "category", music, 3, {}, jingle);
+        slot(clockA, "note", 0, 1, QStringLiteral("Nyereményjáték: a 3. telefonáló nyer"));
+        slot(clockA, "category", music, 2, {}, jingle);
+        slot(clockB, "note", 0, 1, QStringLiteral("Nyári műsor"));
+        slot(clockB, "category", music, 2);
+        for (int d = 0; d < 7; ++d)
+            for (int h = 0; h < 24; ++h) db.setGrid(1, d, h, clockA);
+        const int summer = db.addWeekGrid(QStringLiteral("Nyári"), 1);
+        for (int d = 0; d < 7; ++d)
+            for (int h = 0; h < 24; ++h) db.setGrid(summer, d, h, clockB);
+        const QDate today = QDate::currentDate();
+        std::printf("rácsok: %d; ma érvényes: %d; séma most: %d\n", int(db.weekGrids().size()), db.gridFor(today),
+                    db.clockAt(today, 10));
+        WeekGridPeriod p;
+        p.gridId = summer;
+        p.from = today.addDays(3);
+        p.to = today.addDays(10);
+        const int pid = db.addWeekGridPeriod(p);
+        std::printf("időszak (+3…+10 nap): ma %d, +5 napon %d, +11 napon %d\n", db.gridFor(today), db.gridFor(today.addDays(5)),
+                    db.gridFor(today.addDays(11)));
+        WeekGridPeriod y;
+        y.gridId = summer;
+        y.from = QDate(2000, 12, 20);
+        y.to = QDate(2000, 1, 6);
+        y.yearly = true;
+        std::printf("évente dec. 20 – jan. 6: dec. 25 %d, jan. 3 %d, márc. 1 %d\n", y.contains(QDate(2027, 12, 25)),
+                    y.contains(QDate(2028, 1, 3)), y.contains(QDate(2028, 3, 1)));
+        db.setActiveWeekGrid(summer);
+        std::printf("kézi váltás után: ma %d, +5 napon %d\n", db.gridFor(today), db.gridFor(today.addDays(5)));
+        db.setActiveWeekGrid(1);
+        db.deleteWeekGridPeriod(pid);
+        WeekGridPeriod later = p;
+        later.from = today.addDays(30);
+        later.to = today.addDays(60);
+        db.addWeekGridPeriod(later);
+        db.setSetting("generate_ahead_hours", "2");
+        db.setSetting("artist_separation_min", "0");
+        db.notifyItemsChanged();
+        window.schedulerPage()->refreshAll();
+        window.resize(1500, 900);
+        QTimer::singleShot(800, &window, [&window, &db, dir] {
+            window.schedulerPage()->generateNow();
+            std::printf("generálás: %s\n", qPrintable(window.schedulerPage()->generateInfo()));
+            for (const Entry &e : db.pendingEntries())
+                std::printf("  %s%-12s %-18s%s%s\n", e.overlay ? "  ↝ " : "", qPrintable(e.item.title), qPrintable(e.item.artist),
+                            e.overlay ? qPrintable(QStringLiteral(" (ráfektetve, %1 dB)").arg(e.overlayDuckDb)) : "",
+                            e.note.isEmpty() ? "" : qPrintable(QStringLiteral("   [jegyzet: %1]").arg(e.note)));
+            if (qEnvironmentVariableIsSet("ETER_GENDLG_SHOT")) {
+                // A generálás párbeszéde: holnap 6–9 óra (a párbeszéd maga tölti ki és fogadja el).
+                for (auto *b : window.schedulerPage()->findChildren<QPushButton *>())
+                    if (b->text() == TR("Playlistek generálása")) { b->click(); break; }
+                std::printf("párbeszéd után: %s\n", qPrintable(window.schedulerPage()->generateInfo()));
+                QMap<int, int> perHour;
+                for (const Entry &e : db.pendingEntries()) ++perHour[e.playlistKey];
+                for (auto it = perHour.begin(); it != perHour.end(); ++it) std::printf("  óra %d: %d sor\n", it.key(), it.value());
+            }
+        });
+        QTimer::singleShot(1600, &window, [&window, dir] {
+            window.grab().save(dir + "/playlist_notes.png");
+            if (qEnvironmentVariableIsSet("ETER_GRAB_TABS")) {
+                // Fejlesztéshez: minden fül képe (a színsémák ellenőrzéséhez).
+                if (auto *row = window.findChild<QWidget *>("tabRow")) {
+                    int k = 0;
+                    for (auto *b : row->findChildren<QToolButton *>()) {
+                        if (!b->isVisible() || !b->isCheckable()) continue;
+                        b->click();
+                        QApplication::processEvents();
+                        QWidget *top = &window;
+                        for (QWidget *t : QApplication::topLevelWidgets())
+                            if (t != &window && t->isVisible() && t->isWindow() && t->width() > 400) top = t;
+                        top->grab().save(QStringLiteral("%1/tab%2.png").arg(dir).arg(++k));
+                        if (top != &window) top->hide();
+                    }
+                    for (auto *b : row->findChildren<QToolButton *>())
+                        if (b->isCheckable() && b->isVisible()) { b->click(); break; }
+                    QApplication::processEvents();
+                }
+            }
+            for (auto *b : window.findChildren<QToolButton *>())
+                if (b->text() == TR("Ütemező") && b->isVisible()) { b->click(); break; }
+            QApplication::processEvents();
+            auto *sched = window.schedulerPage();
+            for (auto *c : sched->findChildren<QComboBox *>())
+                if (const int i = c->findText(QStringLiteral("Reggel")); i >= 0 && c->objectName() != QLatin1String("weekGridSelect")) {
+                    c->setCurrentIndex(i);
+                    emit c->activated(i);
+                    break;
+                }
+            QApplication::processEvents();
+            QTableWidget *slotsT = nullptr;
+            for (auto *t : sched->findChildren<QTableWidget *>())
+                if (t->columnCount() == 5) slotsT = t;
+            if (slotsT) {
+                slotsT->selectRow(1);
+                QApplication::processEvents();
+            }
+            sched->window()->grab().save(dir + "/scheduler_sweeper.png");
+            if (slotsT) {
+                slotsT->selectRow(0);
+                QApplication::processEvents();
+            }
+            sched->window()->grab().save(dir + "/scheduler_note.png");
+            if (auto *sel = sched->findChild<QComboBox *>("weekGridSelect")) {
+                QStringList names;
+                for (int i = 0; i < sel->count(); ++i) names << sel->itemText(i);
+                std::printf("rácsválasztó: %s\n", qPrintable(names.join(" | ")));
+            }
+            qputenv("ETER_PERIODS_SHOT", (dir + "/periods.png").toUtf8());
+            if (auto *b = sched->findChild<QPushButton *>("weekGridPeriods")) b->click();
+            QTimer::singleShot(300, qApp, [] { QApplication::exit(0); });
+        });
+    }
+    if (qEnvironmentVariableIsSet("ETER_UI32_SHOT")) {
+        // Fejlesztéshez (0.32): a jobb oldali nézetváltó (hangtár / lejátszott / cartwall), a Lapok beállítás, az oszlopok
+        // szélessége (ETER_UI32_PHASE=2: a mentett szélességek visszatöltése) és az órasema sorainak húzása.
+        const int music = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        const int jingle = db.addCategory(QStringLiteral("Jingle"), "jingle", "#f0a040");
+        int n = 0;
+        for (const QString &f : parser.positionalArguments()) {
+            eter::Decoder dec;
+            if (!dec.open(f.toStdString())) continue;
+            Item it;
+            it.categoryId = n % 3 == 2 ? jingle : music;
+            it.path = QFileInfo(f).absoluteFilePath();
+            it.title = QStringLiteral("Dal %1").arg(++n);
+            it.artist = QStringLiteral("Előadó %1").arg(n);
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            db.addItem(it);
+        }
+        const int clock = db.addClock(QStringLiteral("Reggel"), "#5cb0ff");
+        for (int k = 0; k < 4; ++k) {
+            ClockSlot sl;
+            sl.clockId = clock;
+            sl.categoryId = k == 1 ? jingle : music;
+            sl.count = k + 1;
+            db.addSlot(sl);
+        }
+        db.notifyItemsChanged();
+        window.resize(1500, 900);
+        QTimer::singleShot(900, &window, [&window, &db, clock] {
+            const QString dir = qEnvironmentVariable("ETER_UI32_SHOT");
+            const bool phase2 = qEnvironmentVariable("ETER_UI32_PHASE") == QLatin1String("2");
+            auto *lib = window.library();
+            auto *view = lib->findChild<QTableView *>();
+            auto widths = [view] {
+                QStringList w;
+                for (int c = 0; c < view->horizontalHeader()->count(); ++c)
+                    w << (view->isColumnHidden(c) ? QStringLiteral("-") : QString::number(view->columnWidth(c)));
+                return w.join(' ');
+            };
+            std::printf("hangtár oszlopok: %s (nézet %d px)\n", qPrintable(widths()), view->viewport()->width());
+            if (phase2) {
+                std::printf("mentve: %s\n", qPrintable(QSettings().value("ui/columns/library").toStringList().join(' ')));
+                QApplication::exit(0);
+                return;
+            }
+            window.grab().save(dir + "/main_library.png");
+            if (auto *mode = lib->findChild<QComboBox *>("libraryView")) {
+                QStringList items;
+                for (int i = 0; i < mode->count(); ++i) items << mode->itemText(i);
+                std::printf("nézetváltó: %s\n", qPrintable(items.join(" | ")));
+                mode->setCurrentIndex(2);
+                emit mode->activated(2);
+            }
+            QApplication::processEvents();
+            window.grab().save(dir + "/main_cartwall.png");
+            std::printf("right_view = %s\n", qPrintable(db.setting("right_view")));
+            if (auto *cv = window.findChild<QComboBox *>("cartView")) {
+                cv->setCurrentIndex(0);
+                emit cv->activated(0);
+            }
+            QApplication::processEvents();
+            // Oszlop húzása: a Kategória (2) szélesebb lesz, a Cím és az Előadó osztozik a maradékon.
+            view->horizontalHeader()->resizeSection(2, 260);
+            QApplication::processEvents();
+            std::printf("húzás után:  %s\n", qPrintable(widths()));
+            window.resize(1200, 900);
+            QApplication::processEvents();
+            std::printf("kisebb ablak: %s (nézet %d px)\n", qPrintable(widths()), view->viewport()->width());
+            window.grab().save(dir + "/main_columns.png");
+            // Lapok elrejtése: Mix és Mixdown.
+            MainWindow::setHiddenTabs({QStringLiteral("mix"), QStringLiteral("mixdown")});
+            window.applyTabVisibility();
+            QApplication::processEvents();
+            window.grab().save(dir + "/main_hidden_tabs.png");
+            auto *dlg = new SettingsDialog(&window);
+            dlg->resize(820, 760);
+            dlg->show();
+            if (auto *tabs = dlg->findChild<QTabWidget *>("settingsTabs"))
+                for (int i = 0; i < tabs->count(); ++i)
+                    if (tabs->tabText(i) == TR("Lapok")) tabs->setCurrentIndex(i);
+            QApplication::processEvents();
+            dlg->grab().save(dir + "/settings_tabs.png");
+            if (auto *tabs = dlg->findChild<QTabWidget *>("settingsTabs"))
+                for (int i = 0; i < tabs->count(); ++i)
+                    if (tabs->tabText(i) == TR("Automatikus mix")) tabs->setCurrentIndex(i);
+            QApplication::processEvents();
+            if (auto *cue = dlg->findChild<QDoubleSpinBox *>("autoCueThreshold")) {
+                std::printf("kezdőpont küszöbe: %.0f dB\n", cue->value());
+                for (QWidget *w = cue->parentWidget(); w; w = w->parentWidget())
+                    if (auto *sa = qobject_cast<QScrollArea *>(w)) { sa->ensureWidgetVisible(cue, 50, 200); break; }
+            }
+            QApplication::processEvents();
+            dlg->grab().save(dir + "/settings_cue.png");
+            dlg->close();
+            // Az óraséma: a 4. sor húzása az 1. elé.
+            MainWindow::setHiddenTabs({});
+            window.applyTabVisibility();
+            for (auto *b : window.findChildren<QToolButton *>())
+                if (b->text() == TR("Ütemező") && b->isVisible()) { b->click(); break; }
+            QApplication::processEvents();
+            auto *sched = window.schedulerPage();
+            sched->refreshAll();
+            QApplication::processEvents();
+            auto *slotsT = sched->findChildren<QTableWidget *>().value(1);
+            for (auto *t : sched->findChildren<QTableWidget *>())
+                if (t->columnCount() == 5) slotsT = t;
+            auto order = [&db, clock] {
+                QStringList o;
+                for (const ClockSlot &s : db.clockSlots(clock)) o << QStringLiteral("%1×%2").arg(s.count).arg(s.label);
+                return o.join(", ");
+            };
+            std::printf("sorrend előtte: %s (táblában %d sor)\n", qPrintable(order()), slotsT->rowCount());
+            slotsT->selectRow(3);
+            QMimeData mime;
+            mime.setData(QStringLiteral("application/x-qabstractitemmodeldatalist"), QByteArray("x"));
+            const QRect r0 = slotsT->visualRect(slotsT->model()->index(0, 1));
+            const QPointF at(r0.center().x(), r0.top() + 3);
+            QDragEnterEvent enter(at.toPoint(), Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(slotsT->viewport(), &enter);
+            std::printf("húzás belépés elfogadva: %d\n", enter.isAccepted());
+            QDropEvent drop(at, Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(slotsT->viewport(), &drop);
+            QApplication::processEvents();
+            QTimer::singleShot(100, &window, [order, slotsT, dir] {
+                std::printf("sorrend utána:  %s (kijelölt sor %d)\n", qPrintable(order()), slotsT->currentRow());
+                slotsT->window()->grab().save(dir + "/scheduler_drag.png");
+                QTimer::singleShot(700, qApp, [] { QApplication::exit(0); });
+            });
+        });
     }
     if (qEnvironmentVariableIsSet("ETER_LIBLOG_SHOT")) {
         // Fejlesztéshez: a hangtár (a ma adásba ment dalok piros háttérrel) és a „Lejátszott elemek” lista képe.
@@ -1300,7 +2189,7 @@ int main(int argc, char **argv)
         QTimer::singleShot(qEnvironmentVariableIntValue("ETER_WATCH_STATE") * 1000, [] { QApplication::exit(0); });
     }
     const QStringList files = parser.positionalArguments();
-    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt) && !parser.isSet(threeTestOpt) && !parser.isSet(dbTestOpt) && !parser.isSet(envTestOpt) && !parser.isSet(freshTestOpt) && !parser.isSet(fillTestOpt) && !qEnvironmentVariableIsSet("ETER_ANALYZE_WATCH") && !qEnvironmentVariableIsSet("ETER_FLOW_SHOT") && !qEnvironmentVariableIsSet("ETER_SMARTMIX_TEST") && !qEnvironmentVariableIsSet("ETER_MIXER_TEST") && !qEnvironmentVariableIsSet("ETER_MIXDOWN_TEST") && !qEnvironmentVariableIsSet("ETER_WEB_TEST") && !qEnvironmentVariableIsSet("ETER_CART_SHOT") && !qEnvironmentVariableIsSet("ETER_LIBLOG_SHOT") && !qEnvironmentVariableIsSet("ETER_STREAM_TEST") && !qEnvironmentVariableIsSet("ETER_STREAMDLG_SHOT")) window.library()->importPaths(files);
+    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt) && !parser.isSet(threeTestOpt) && !parser.isSet(dbTestOpt) && !parser.isSet(envTestOpt) && !parser.isSet(freshTestOpt) && !parser.isSet(fillTestOpt) && !qEnvironmentVariableIsSet("ETER_ANALYZE_WATCH") && !qEnvironmentVariableIsSet("ETER_FLOW_SHOT") && !qEnvironmentVariableIsSet("ETER_SMARTMIX_TEST") && !qEnvironmentVariableIsSet("ETER_MIXER_TEST") && !qEnvironmentVariableIsSet("ETER_MIXDOWN_TEST") && !qEnvironmentVariableIsSet("ETER_WEB_TEST") && !qEnvironmentVariableIsSet("ETER_CART_SHOT") && !qEnvironmentVariableIsSet("ETER_LIBLOG_SHOT") && !qEnvironmentVariableIsSet("ETER_UI32_SHOT") && !qEnvironmentVariableIsSet("ETER_V033_SHOT") && !qEnvironmentVariableIsSet("ETER_THEME_SHOT") && !qEnvironmentVariableIsSet("ETER_SQL_TEST") && !qEnvironmentVariableIsSet("ETER_ADB_TEST") && !qEnvironmentVariableIsSet("ETER_INFO_TEST") && !qEnvironmentVariableIsSet("ETER_MIXPV_SHOT") && !qEnvironmentVariableIsSet("ETER_MIDI_TEST") && !qEnvironmentVariableIsSet("ETER_TPL_TEST") && !qEnvironmentVariableIsSet("ETER_STREAM_TEST") && !qEnvironmentVariableIsSet("ETER_STREAMDLG_SHOT")) window.library()->importPaths(files);
 
     if (parser.isSet(importTestOpt)) {
         // Az importáló ablak teljes útja: mappa, kategóriaválasztás, beolvasás.
@@ -1685,7 +2574,7 @@ int main(int argc, char **argv)
                 }
             }
         }
-        window.showLeft(1);
+        window.showRight(2);
         std::printf("bal oldal: %s\n", window.playlistTable()->isVisible() ? "playlist" : cw->isVisible() ? "cartwall" : "?");
         cw->assignPaths(0, loose);                                  // tallózott fájlok az 1. helytől
         cw->assignItems(4, {ids[1], ids[2]});                       // hangtárelemek az 5. helytől

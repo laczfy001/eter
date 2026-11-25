@@ -1,5 +1,8 @@
 #include "i18n.h"
+#include "Widgets.h"
 #include "Library.h"
+#include "core/SmartMixConfig.h"
+#include "net/ArtistInfo.h"
 #include "core/MusicKey.h"
 #include "core/Vocal.h"
 
@@ -82,7 +85,7 @@ QString formatMs(qint64 ms)
 QColor readableOn(const QColor &bg)
 {
     const double lum = 0.299 * bg.redF() + 0.587 * bg.greenF() + 0.114 * bg.blueF();
-    return lum > 0.5 ? QColor("#121418") : QColor("#e8eaed");
+    return lum > 0.5 ? theme::c("#121418") : theme::c("#e8eaed");
 }
 
 static QString formatLastPlayed(qint64 secs)
@@ -101,7 +104,7 @@ static QIcon swatch(const QColor &c)
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QColor("#6b7380"));
+    p.setPen(theme::c("#6b7380"));
     p.setBrush(c);
     p.drawRoundedRect(QRectF(0.5, 0.5, 13, 13), 3, 3);
     return QIcon(pm);
@@ -247,9 +250,9 @@ QVariant LibraryModel::data(const QModelIndex &index, int role) const
         mono.setPixelSize(12);
         return mono;
     }
-    if (role == Qt::ForegroundRole && (c == 2 || c == 4)) return QColor("#c9ced6");
+    if (role == Qt::ForegroundRole && (c == 2 || c == 4)) return theme::c("#c9ced6");
     if (role == Qt::DecorationRole && c == 2 && !it->color.isEmpty()) return swatch(QColor(it->color));
-    if (role == Qt::ForegroundRole && c == 5) return QColor("#f5a524");
+    if (role == Qt::ForegroundRole && c == 5) return theme::c("#f5a524");
     if (role == Qt::DecorationRole && c == 7 && mkey::valid(it->musicKey))   // a Camelot-kerék színe
         return swatch(QColor::fromHsv((mkey::camelotNumber(it->musicKey) - 1) * 30, mkey::isMinor(it->musicKey) ? 150 : 210, 235));
     if (role == Qt::ToolTipRole && c == 7 && mkey::valid(it->musicKey)) return mkey::both(it->musicKey);
@@ -257,7 +260,7 @@ QVariant LibraryModel::data(const QModelIndex &index, int role) const
     // Ma adásba ment: piros háttér (éjfélkor magától lekerül).
     if (role == Qt::BackgroundRole && it->lastPlayedAt > 0
         && it->lastPlayedAt >= QDateTime(QDate::currentDate(), QTime(0, 0)).toSecsSinceEpoch())
-        return QColor("#5a1f24");
+        return theme::c("#5a1f24");
     if (role == Qt::ToolTipRole && it->lastPlayedAt > 0
         && it->lastPlayedAt >= QDateTime(QDate::currentDate(), QTime(0, 0)).toSecsSinceEpoch())
         return TR("Ma adásba ment: %1\n%2").arg(QDateTime::fromSecsSinceEpoch(it->lastPlayedAt).toString("HH:mm"), it->path);
@@ -308,8 +311,9 @@ LibraryPanel::LibraryPanel(Database *db, QWidget *parent) : QFrame(parent), db_(
     viewMode_->setObjectName("libraryView");
     viewMode_->addItem(TR("Adatbázis"));
     viewMode_->addItem(TR("Lejátszott elemek"));
+    viewMode_->addItem(TR("Cartwall"));
     viewMode_->setFocusPolicy(Qt::NoFocus);
-    viewMode_->setToolTip(TR("Váltás a hangtár és az adásba ment elemek listája között"));
+    viewMode_->setToolTip(TR("Váltás a hangtár, az adásba ment elemek és a cartwall között"));
     auto *title = viewMode_;
     category_ = new QComboBox;
     category_->setMinimumWidth(150);
@@ -333,8 +337,14 @@ LibraryPanel::LibraryPanel(Database *db, QWidget *parent) : QFrame(parent), db_(
     h->addSpacing(6);
     h->addWidget(category_);
     h->addWidget(search_, 1);
+    infoBtn_ = new QPushButton(TR("Infó"));
+    infoBtn_->setObjectName("infoBtn");
+    infoBtn_->setFocusPolicy(Qt::NoFocus);
+    infoBtn_->setToolTip(TR("Infó ablak: a kijelölt elem albuma, éve, az előadó adatai és életrajza (Ctrl+I)"));
+    connect(infoBtn_, &QPushButton::clicked, this, &LibraryPanel::infoRequested);
     h->addWidget(importBtn);
     h->addWidget(catBtn);
+    h->addWidget(infoBtn_);
     layout_->addWidget(head);
 
     model_ = new LibraryModel(db_, this);
@@ -374,6 +384,7 @@ LibraryPanel::LibraryPanel(Database *db, QWidget *parent) : QFrame(parent), db_(
     view_->setColumnWidth(6, 50);
     view_->setColumnWidth(7, 72);
     view_->setColumnWidth(8, 120);
+    makeColumnsResizable(view_, QStringLiteral("library"));
     view_->installEventFilter(this);
     setAcceptDrops(true);
     installEventFilter(this);
@@ -406,6 +417,7 @@ LibraryPanel::LibraryPanel(Database *db, QWidget *parent) : QFrame(parent), db_(
         log_->setColumnWidth(0, 120);
         log_->setColumnWidth(3, 90);
         log_->setColumnWidth(4, 64);
+        makeColumnsResizable(log_, QStringLiteral("playLog"));
     }
     log_->hide();
     layout_->addWidget(log_, 1);
@@ -420,7 +432,11 @@ LibraryPanel::LibraryPanel(Database *db, QWidget *parent) : QFrame(parent), db_(
         view_->viewport()->update();    // éjfélkor a „ma játszott” jelölés eltűnik
     });
     logTimer_->start();
-    connect(viewMode_, &QComboBox::activated, this, [this](int i) { setLogMode(i == 1); });
+    connect(viewMode_, &QComboBox::activated, this, [this](int i) {
+        if (i == 2) viewMode_->setCurrentIndex(logMode_ ? 1 : 0);   // a cartwallt a főablak cseréli ide
+        else setLogMode(i == 1);
+        emit viewRequested(i);
+    });
 
     auto refilter = [this] {
         model_->setFilter(category_->currentData().toInt(), search_->text());
@@ -478,6 +494,14 @@ QVector<int> LibraryPanel::selectedItemIds() const
     for (const QModelIndex &i : rows)
         if (const Item *it = model_->itemAt(i.row())) ids << it->id;
     return ids;
+}
+
+void LibraryPanel::setInfoOpen(bool open)
+{
+    if (!infoBtn_) return;
+    infoBtn_->setProperty("active", open);
+    infoBtn_->style()->unpolish(infoBtn_);
+    infoBtn_->style()->polish(infoBtn_);
 }
 
 Item LibraryPanel::currentItem() const
@@ -569,6 +593,9 @@ void LibraryPanel::contextMenu(const QPoint &pos)
             db_->notifyItemsChanged();
         });
     }
+    if (ArtistInfoService *info = ArtistInfoService::instance(); info && info->anyEnabled())
+        menu.addAction(ids.size() == 1 ? TR("Előadói adatok lekérése") : TR("Előadói adatok lekérése (%1 elem)").arg(ids.size()),
+                       this, [info, ids] { info->requestItems(ids, true); });
     if (ids.size() > 1) {
         menu.addAction(TR("Hangnem törlése (%1 elem)").arg(ids.size()), this, [this, ids] {
             db_->setItemKey(ids, 0);
@@ -900,6 +927,11 @@ CategoriesDialog::CategoriesDialog(Database *db, QWidget *parent) : QDialog(pare
     form->addRow(TR("Név"), name_);
     form->addRow(TR("Típus"), kind_);
     form->addRow(TR("Szín"), color_);
+    mixTpl_ = new QComboBox;
+    mixTpl_->setObjectName("categoryMixTemplate");
+    mixTpl_->setToolTip(TR("Az ebbe a kategóriába tartozó elem utáni átmenetet az automatikus mix e sablon szerint keveri. "
+                           "Sablont a Beállítások → Automatikus mix lapon lehet menteni."));
+    form->addRow(TR("Mix sablon"), mixTpl_);
     right->addLayout(form);
     auto *kindHint = new QLabel(TR("A típus azt mondja meg a programnak, mire való a kategória "
                                                "(az ütemező ez alapján különbözteti meg például a zenét a reklámtól)."));
@@ -943,14 +975,28 @@ CategoriesDialog::CategoriesDialog(Database *db, QWidget *parent) : QDialog(pare
     reload();
 }
 
+void CategoriesDialog::fillTemplates(int select)
+{
+    mixTpl_->clear();
+    mixTpl_->addItem(TR("Alapbeállítás"), 0);
+    for (const MixTemplate &t : loadMixTemplates(db_)) mixTpl_->addItem(t.name, t.id);
+    mixTpl_->setCurrentIndex(std::max(0, mixTpl_->findData(select)));
+    mixTpl_->setEnabled(mixTpl_->count() > 1 || select > 0);
+}
+
 void CategoriesDialog::reload(int selectId)
 {
     list_->blockSignals(true);
     list_->clear();
     int row = -1;
     for (const Category &c : db_->categories()) {
+        QString tplName;
+        if (const int tid = categoryMixTemplate(db_, c.id))
+            for (const MixTemplate &t : loadMixTemplates(db_))
+                if (t.id == tid) tplName = t.name;
         auto *item = new QListWidgetItem(swatch(QColor(c.color)),
-                                         TR("%1  ·  %2  ·  %3 elem").arg(c.name, kindLabel(c.kind)).arg(c.itemCount));
+                                         TR("%1  ·  %2  ·  %3 elem").arg(c.name, kindLabel(c.kind)).arg(c.itemCount)
+                                             + (tplName.isEmpty() ? QString() : TR("  ·  mix: %1").arg(tplName)));
         item->setData(Qt::UserRole, c.id);
         list_->addItem(item);
         if (c.id == selectId) row = list_->count() - 1;
@@ -968,6 +1014,7 @@ void CategoriesDialog::showCurrent()
         if (list_->count() == 0 || editingId_ != 0) {
             editingId_ = 0;
             name_->clear();
+            fillTemplates(0);
             save_->setText(TR("Létrehozás"));
             delete_->setEnabled(false);
             info_->setText(list_->count() == 0
@@ -983,6 +1030,7 @@ void CategoriesDialog::showCurrent()
         name_->setText(c.name);
         kind_->setCurrentIndex(std::max(0, kind_->findData(c.kind)));
         color_->setCurrentIndex(std::max(0, color_->findData(c.color)));
+        fillTemplates(categoryMixTemplate(db_, c.id));
         save_->setText(TR("Mentés"));
         delete_->setEnabled(c.itemCount == 0);
         info_->setText(c.itemCount ? TR("%1 elem van benne; törölni csak üres kategóriát lehet.").arg(c.itemCount)
@@ -1001,7 +1049,9 @@ void CategoriesDialog::save()
     const QString kind = kind_->currentData().toString();
     const QString color = color_->currentData().toString();
     QString err;
+    const int tpl = mixTpl_->currentData().toInt();
     if (editingId_) {
+        setCategoryMixTemplate(db_, editingId_, tpl);
         if (!db_->updateCategory(editingId_, name, kind, color, &err)) {
             info_->setText(err);
             return;
@@ -1012,6 +1062,10 @@ void CategoriesDialog::save()
         if (!id) {
             info_->setText(err);
             return;
+        }
+        if (tpl) {
+            setCategoryMixTemplate(db_, id, tpl);
+            emit db_->categoriesChanged();
         }
         reload(id);
     }
@@ -1069,6 +1123,7 @@ LogDialog::LogDialog(Database *db, QWidget *parent) : QDialog(parent), db_(db)
     table_->setColumnWidth(4, 90);
     table_->setColumnWidth(5, 70);
     table_->setColumnWidth(6, 100);
+    makeColumnsResizable(table_, QStringLiteral("logDialog"));
     root->addWidget(table_, 1);
 
     auto *buttons = new QHBoxLayout;
@@ -1209,10 +1264,16 @@ void LibraryPanel::estimateTempo(const QVector<int> &ids, bool key)
     }).detach();
 }
 
-bool LibraryPanel::logMode() const { return viewMode_ && viewMode_->currentIndex() == 1; }
+bool LibraryPanel::logMode() const { return logMode_; }
+
+void LibraryPanel::setView(int view)
+{
+    if (view == 0 || view == 1) setLogMode(view == 1);
+}
 
 void LibraryPanel::setLogMode(bool on)
 {
+    logMode_ = on;
     if (viewMode_->currentIndex() != (on ? 1 : 0)) viewMode_->setCurrentIndex(on ? 1 : 0);
     category_->setVisible(!on);
     if (importBtn_) importBtn_->setVisible(!on && !remote_);
@@ -1256,7 +1317,7 @@ void LibraryPanel::reloadLog()
             it->setTextAlignment(int((c == 4 ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter));
             if (c == 0) it->setData(Qt::UserRole, l.itemId);
             if (c == 0 || c == 4) it->setFont(QFont("IBM Plex Mono", 9));
-            it->setForeground(c == 2 || c == 3 ? QColor("#9aa3af") : QColor("#e6e9ee"));
+            it->setForeground(c == 2 || c == 3 ? theme::c("#9aa3af") : theme::c("#e6e9ee"));
         }
     }
     if (keepRow >= 0 && keepRow < log_->rowCount()) log_->setCurrentCell(keepRow, 0);

@@ -42,6 +42,11 @@ rm -f ./*.AppImage
 # plugins only the OpenSSL one stays, for HTTPS to the website (Settings → Website); it loads the system's OpenSSL
 # (libssl.so.3), which is not bundled.
 rm -rf "$APPDIR/usr/plugins/networkinformation" "$APPDIR/usr/translations"
+# Database drivers: SQLite (the local database) and MySQL / MariaDB (the external SQL server, Settings → SQL server).
+find "$APPDIR/usr/plugins/sqldrivers" -type f ! -name 'libqsqlite.so' ! -name 'libqsqlmysql.so' -delete 2>/dev/null || true
+if [ ! -f "$APPDIR/usr/plugins/sqldrivers/libqsqlmysql.so" ]; then
+    echo "warning: the Qt MySQL driver is missing (apt install libqt6sql6-mysql); the SQL server page will not connect" >&2
+fi
 find "$APPDIR/usr/plugins/tls" -type f ! -name 'libqopensslbackend.so' -delete 2>/dev/null || true
 rm -f "$APPDIR"/usr/lib/libssl.so* "$APPDIR"/usr/lib/libcrypto.so*
 # libproxy (and libpxbackend, which Qt also lists) would bring curl and its TLS stack; see packaging/libproxy-stub.c.

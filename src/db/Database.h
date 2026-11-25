@@ -69,7 +69,29 @@ struct Entry {
     bool overlay = false;           // az előtte és utána szóló elem átmenetére van ráfektetve
     qint64 overlayOffsetMs = 0;     // a kezdése a két elem közti mix ponthoz képest (negatív: előtte)
     double overlayDuckDb = 0;       // ennyivel halkul alatta a zene
+    QString note;                   // felirat a sor előtt (az órasémák „Jegyzet” eleme); üres = nincs
     Item item;
+};
+
+// Heti rács (előbeállítás). Az 1-es mindig megvan; az üres név a kijelzésben „Alap”.
+struct WeekGrid {
+    int id = 0;
+    QString name;
+    int position = 0;
+};
+
+// Időszak, amíg egy heti rács érvényes (yearly: minden évben, csak a hónap és a nap számít; átnyúlhat az év végén).
+struct WeekGridPeriod {
+    int id = 0;
+    int gridId = 0;
+    QDate from, to;
+    bool yearly = false;
+    bool contains(const QDate &d) const
+    {
+        if (!yearly) return d >= from && d <= to;
+        const int md = d.month() * 100 + d.day(), a = from.month() * 100 + from.day(), b = to.month() * 100 + to.day();
+        return a <= b ? (md >= a && md <= b) : (md >= a || md <= b);
+    }
 };
 
 // Kézzel készített, elmentett playlist (a Playlist szerkesztőből).
@@ -112,6 +134,9 @@ struct ClockSlot {
     int fixedOffsetS = -1;          // −1 = folytatólagos
     int energyMin = 0, energyMax = 0;   // a választható elemek energiája; 0 = nincs korlát
     bool upToFit = false;           // „category”: legfeljebb count darab, de csak amennyi a következő fix pontig elfér
+    QString note;                   // "note": a playlistben megjelenő felirat (nem szól, nem foglal időt)
+    int sweeperCategoryId = 0;      // sweeper az ide vezető átmenetre ebből a kategóriából; 0 = nincs
+    double sweeperDuckDb = -6;      // ennyivel halkul alatta a zene
     QString label;                  // megjelenítéshez: kategória vagy elem neve
     QString kind, color;
 };
@@ -167,7 +192,7 @@ public:
     explicit Database(QObject *parent = nullptr);
     ~Database() override;
 
-    static constexpr int kSchemaVersion = 15;   // a legújabb séma (PRAGMA user_version)
+    static constexpr int kSchemaVersion = 17;   // a legújabb séma (PRAGMA user_version)
     bool open(const QString &path, QString *err = nullptr);
     QString path() const { return path_; }
 
@@ -197,6 +222,19 @@ public:
     void setItemFlow(const QVector<int> &ids, int energy, double bpm, int dayparts);
     void setItemKey(const QVector<int> &ids, int key);   // 0 = nincs megadva
     void setItemVocal(const QVector<int> &ids, int vocal);   // core/Vocal.h; 0 = nem ismert
+    // Online adatok gyorsítótára (TheAudioDB). found: 1 megvan, 0 nincs ilyen; fetchedAt: unix mp.
+    struct OnlineMeta {
+        bool known = false, found = false;
+        QString data;
+        qint64 fetchedAt = 0;
+    };
+    OnlineMeta onlineMeta(const QString &key);
+    void setOnlineMeta(const QString &key, bool found, const QString &data);
+    QHash<QString, qint64> onlineMetaTimes(const QString &prefix, bool found);   // kulcs → mikor kérdeztük
+    void clearOnlineMeta();
+    // Az album és az év, csak ha még üres (a kézzel vagy a címkéből kapott adatot nem írja felül).
+    void fillAlbumYear(int itemId, const QString &album, int year);
+    QHash<int, QPair<QString, int>> albumYears();             // elem → (album, év); üres/0 = nincs
     // Háttérelemzés (tempó, hangnem): a még meg nem nézett zenék, a számlálók és az eredmény mentése.
     QVector<AnalysisJob> analysisJobs(int version, int limit);
     void analysisCounts(int version, int *pending, int *total);
@@ -224,6 +262,7 @@ public:
     int nextGroupId();
     void setEntryGroup(int entryId, int groupId, const QString &groupName);
     void setEntryOverlay(int entryId, bool on, qint64 offsetMs = 0, double duckDb = 0);
+    void setEntryNote(int entryId, const QString &note);
 
     // Cartwall
     QVector<Cartwall> cartwalls();
@@ -249,6 +288,7 @@ public:
     bool playlistGenerated(int playlistId);
     void markGenerated(int playlistId, int clockId);
     // A megadott órától kezdve törli az ütemező még várakozó sorait (újrageneráláshoz).
+    void deleteSchedulerEntriesAt(int key);       // egy óra (ÉÉÉÉHHNNÓÓ) várakozó ütemezett sorai
     void deleteSchedulerEntriesFrom(int fromKey);
     // A megadott óra előtti, le nem játszott ütemezett sorok törlése.
     void purgeSchedulerEntriesBefore(int beforeKey);
@@ -264,8 +304,25 @@ public:
     void updateSlot(const ClockSlot &slot);
     void deleteSlot(int slotId);
     void reorderSlots(int clockId, const QVector<int> &slotIds);
-    QHash<int, int> weekGrid();                          // nap*100+óra → séma
-    void setGrid(int weekday, int hour, int clockId);    // clockId 0 = törlés
+    QHash<int, int> weekGrid();                          // az aktív rács (ma érvényes): nap*100+óra → séma
+    QHash<int, int> weekGrid(int gridId);
+    int clockAt(const QDate &date, int hour);
+    bool hasWeekGrid();                                  // van-e bármelyik rácsban beosztott óra            // az adott órára érvényes rács sémája; 0 = nincs
+    // Heti rácsok: kézzel választott aktív rács (active_week_grid), amit egy időszak felülírhat.
+    QVector<WeekGrid> weekGrids();
+    int addWeekGrid(const QString &name, int copyFrom = 0);
+    void renameWeekGrid(int id, const QString &name);
+    bool deleteWeekGrid(int id);                         // az utolsó rács nem törölhető
+    int activeWeekGrid();                                // a kézzel választott (alapból az 1-es)
+    void setActiveWeekGrid(int id);
+    int gridFor(const QDate &date);                      // az adott napon érvényes rács
+    QVector<WeekGridPeriod> weekGridPeriods();
+    int addWeekGridPeriod(const WeekGridPeriod &p);
+    void updateWeekGridPeriod(const WeekGridPeriod &p);
+    void deleteWeekGridPeriod(int id);
+    static QString gridDisplayName(const WeekGrid &g);
+    void setGrid(int weekday, int hour, int clockId);    // az aktív rácsba; clockId 0 = törlés
+    void setGrid(int gridId, int weekday, int hour, int clockId);
     void setEntryStatus(int entryId, const QString &status);
     void deleteEntry(int entryId);
     void saveOrder(const QVector<QPair<int, int>> &entryAndPlaylist);
@@ -311,6 +368,7 @@ signals:
     void clocksChanged();
     void savedPlaylistsChanged();
     void timedEventsChanged();
+    void weekGridsChanged();
 
 private:
     bool createSchema(QString *err);

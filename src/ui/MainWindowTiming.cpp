@@ -1,6 +1,8 @@
 // A főablak: pontos időre igazítás. A fix idejű elemek (például az óra eleji hírek) előtt kiszámolja, mennyit késik
 // vagy siet hozzájuk a playlist, és kitöltést vagy rövidítést javasol, beállítástól függően végre is hajtja.
 #include "MainWindow.h"
+#include "core/ArtistSplit.h"
+#include "Widgets.h"
 #include "i18n.h"
 #include "Theme.h"
 
@@ -66,7 +68,7 @@ void MainWindow::updateFixBar()
         text += fade ? TR(" (az előtte szóló elem ki lesz úsztatva)") : TR(" (a fix elem ennyit késik)");
         color = QStringLiteral("#33291a");
     }
-    fixText_->setText(text);
+    fixText_->setText(theme::css(text));
     fixBtn_->setVisible(action);
     fixBar_->setStyleSheet(QStringLiteral("#fixBar { background: %1; border-bottom: 1px solid #0f1114; }").arg(color));
     fixBar_->show();
@@ -81,7 +83,7 @@ int MainWindow::defaultFillCategory(int fixRowId) const
         const Row *fixRow = const_cast<MainWindow *>(this)->rowById(fixRowId);
         QDateTime t = fixRow && fixRow->fixedAt.isValid() ? fixRow->fixedAt : plannedStart_.value(fixRowId, eter::now());
         t = t.addSecs(-1);
-        clockId = const_cast<Database *>(db_)->weekGrid().value((t.date().dayOfWeek() - 1) * 100 + t.time().hour(), 0);
+        clockId = const_cast<Database *>(db_)->clockAt(t.date(), t.time().hour());
     }
     QString setting = clockId ? db_->setting(QStringLiteral("fix_fill_category_clock_%1").arg(clockId), QString()) : QString();
     if (setting.isEmpty()) setting = db_->setting("fix_fill_category", "0");
@@ -138,20 +140,24 @@ QVector<Item> MainWindow::fillPool(int fixRowId, int categoryId, const QSet<int>
         const qint64 fixS = (fixRow && fixRow->fixedAt.isValid() ? fixRow->fixedAt : now).toSecsSinceEpoch();
         QHash<int, QVector<qint64>> times;   // elem → mikor szól (mp)
         QSet<QString> nearArtists;
+        const QString seps = db_->setting("artist_separators", artists::defaultSeparators());
         for (int i = 0; i < rows_.size(); ++i) {
             const Row &r = rows_[i];
             if (r.state == Row::Playing) times[r.item.id] << (r.startedAt.isValid() ? r.startedAt : now).toSecsSinceEpoch();
             else if (r.state == Row::Played && r.startedAt.isValid()) times[r.item.id] << r.startedAt.toSecsSinceEpoch();
             else if (r.state == Row::Pending || r.state == Row::Cued)
                 times[r.item.id] << plannedStart_.value(r.id, fixRow ? fixRow->fixedAt : now).toSecsSinceEpoch();
-            if (i < at && i >= at - 4 && !r.item.artist.trimmed().isEmpty()) nearArtists.insert(r.item.artist.trimmed().toLower());
+            if (i < at && i >= at - 4)
+                for (const QString &a : artists::split(r.item.artist, seps)) nearArtists.insert(a);
         }
         struct Cand { Item item; qint64 nearest; };
         QVector<Cand> all;
         for (const Item &it : const_cast<Database *>(db_)->items()) {
             if (it.categoryId != categoryId || it.airMs() <= 0 || missingItems_.contains(it.id) || avoidItems.contains(it.id)) continue;
             if (const qint64 t = removedByHand_.value(it.id); t && QDateTime::currentMSecsSinceEpoch() - t < 2 * 3600 * 1000LL) continue;
-            if (nearArtists.contains(it.artist.trimmed().toLower())) continue;
+            if (const QStringList names = artists::split(it.artist, seps);
+                std::any_of(names.begin(), names.end(), [&](const QString &a) { return nearArtists.contains(a); }))
+                continue;
             qint64 nearest = std::numeric_limits<qint64>::max();
             for (qint64 t : times.value(it.id)) nearest = std::min(nearest, std::llabs(t - fixS));
             if (it.lastPlayedAt > 0) nearest = std::min(nearest, std::llabs(fixS - it.lastPlayedAt));
@@ -203,8 +209,10 @@ MainWindow::AdjustPlan MainWindow::planAdjust(int fixRowId, qint64 diffMs, int c
 
     const QVector<Item> pool = fillPool(fixRowId, categoryId, avoidItems);
     const int n = int(pool.size()), n3 = std::min(n, 40);
-    auto artist = [&](int i) { return pool[i].artist.trimmed().toLower(); };
-    auto distinct = [&](int a, int b) { return artist(a).isEmpty() || artist(a) != artist(b); };
+    const QString seps = db_->setting("artist_separators", artists::defaultSeparators());
+    QVector<QStringList> poolArtists;
+    for (const Item &it : pool) poolArtists << artists::split(it.artist, seps);
+    auto distinct = [&](int a, int b) { return !artists::shareAny(poolArtists[a], poolArtists[b]); };
 
     // Minden kivétel-változat (semmi, egy vagy két sor) mellé a legjobb 0–3 beszúrt elem. Költség: az eltérés ára,
     // plusz minden változtatás egy kicsit (a kevesebb beavatkozás jobb), és a frissebb elemek egy hajszállal.
@@ -405,6 +413,7 @@ void MainWindow::openFixDialog()
     table->setColumnWidth(0, 110);
     table->setColumnWidth(1, 300);
     table->setColumnWidth(2, 200);
+    makeColumnsResizable(table, QStringLiteral("timing"));
     v->addWidget(table, 1);
     auto *sum = new QLabel;
     sum->setWordWrap(true);
@@ -431,8 +440,8 @@ void MainWindow::openFixDialog()
             table->setItem(t, 3, new QTableWidgetItem(mmssText(ms)));
         };
         for (int id : plan->remove)
-            if (const Row *r = rowById(id)) addRow(TR("− kimarad"), QColor("#ffb4ae"), r->item, rowAirMs(*r));
-        for (const Item &it : plan->add) addRow(TR("+ bekerül"), QColor("#9be8b8"), it, it.airMs());
+            if (const Row *r = rowById(id)) addRow(TR("− kimarad"), theme::c("#ffb4ae"), r->item, rowAirMs(*r));
+        for (const Item &it : plan->add) addRow(TR("+ bekerül"), theme::c("#9be8b8"), it, it.airMs());
         if (!plan->changes()) sum->setText(TR("Nincs jobb megoldás: a hangtárban nincs ide illő elem."));
         else sum->setText(TR("Utána: %1.").arg(diffText(plan->afterMs))
                           + (plan->afterMs < -1500 && db_->setting("fixed_time_policy", "fade") == QLatin1String("fade")

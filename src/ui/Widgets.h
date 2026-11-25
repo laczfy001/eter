@@ -75,3 +75,9 @@ private:
     double fraction_ = 0;
     QString label_;
 };
+
+class QTableView;
+// Every column of the table can be dragged to a new width, and the widths are remembered (QSettings
+// ui/columns/<key>). The columns that were set to stretch keep filling the free space: when the window or another
+// column changes size, they share the difference. Call it after the table's own column setup.
+void makeColumnsResizable(QTableView *view, const QString &key);

@@ -36,10 +36,10 @@ static QColor mix(const QColor &a, const QColor &b, double t)
 static QColor textOn(const QColor &bg)
 {
     const double lum = (0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()) / 255.0;
-    return lum > 0.55 ? QColor("#101215") : QColor("#ffffff");
+    return lum > 0.55 ? theme::c("#101215") : theme::c("#ffffff");
 }
 
-static const QColor kPanel("#1b1e24");
+static const theme::ColorRef kPanel{"#1b1e24"};
 
 // ================================================================ gomb
 
@@ -88,16 +88,16 @@ void CartButton::paintEvent(QPaintEvent *)
     mono.setPixelSize(12);
 
     if (empty) {
-        p.setPen(QPen(dropping_ ? theme::amber : (hover_ ? QColor("#6b7380") : QColor("#3a4150")), 1, Qt::DashLine));
-        p.setBrush(dropping_ ? QColor("#262b34") : (hover_ ? QColor("#20242b") : QColor("#181b20")));
+        p.setPen(QPen(dropping_ ? theme::amber : (hover_ ? theme::c("#6b7380") : theme::c("#3a4150")), 1, Qt::DashLine));
+        p.setBrush(dropping_ ? theme::c("#262b34") : (hover_ ? theme::c("#20242b") : theme::c("#181b20")));
         p.drawRoundedRect(r, 6, 6);
-        p.setPen(QColor("#6b7380"));
+        p.setPen(theme::c("#6b7380"));
         p.setFont(small);
         p.drawText(r.adjusted(8, 6, -8, -6), Qt::AlignLeft | Qt::AlignTop, QString::number(slot_ + 1));
         QFont plus = font();
         plus.setPixelSize(22);
         p.setFont(plus);
-        p.setPen(hover_ || dropping_ ? QColor("#c9ced6") : QColor("#4a5160"));
+        p.setPen(hover_ || dropping_ ? theme::c("#c9ced6") : theme::c("#4a5160"));
         p.drawText(r, Qt::AlignCenter, QStringLiteral("+"));
         return;
     }
@@ -137,7 +137,7 @@ void CartButton::paintEvent(QPaintEvent *)
     p.setBrush(Qt::NoBrush);
     p.drawRoundedRect(r, 6, 6);
 
-    const QColor fg("#eef0f3");
+    const QColor fg = theme::c("#eef0f3");
     QColor dim = fg;
     dim.setAlphaF(0.72);
     // Lejátszás közben a világos háttéren is olvasható legyen: halvány árnyék a szöveg alatt.
@@ -357,11 +357,12 @@ void CartwallPanel::reloadWalls()
         b->setToolTip(TR("Jobb gomb: átnevezés, szín, törlés"));
         const QColor c(w.color.isEmpty() ? QStringLiteral("#3a4150") : w.color);
         const QColor idle = mix(kPanel, c, 0.28);
+        theme::rawCss(b);
         b->setStyleSheet(QStringLiteral(
-            "QToolButton { border: 1px solid %1; border-radius: 4px; padding: 4px 14px; background: %2; color: #e8eaed; }"
+            "QToolButton { border: 1px solid %1; border-radius: 4px; padding: 4px 14px; background: %2; color: %7; }"
             "QToolButton:hover { background: %3; }"
             "QToolButton:checked { background: %4; color: %5; font-weight: 600; border-color: %6; }")
-                             .arg(mix(kPanel, c, 0.7).name(), idle.name(), mix(kPanel, c, 0.42).name(), c.name(), textOn(c).name(), c.lighter(130).name()));
+                             .arg(mix(kPanel, c, 0.7).name(), idle.name(), mix(kPanel, c, 0.42).name(), c.name(), textOn(c).name(), c.lighter(130).name()).arg(theme::text.name()));
         connect(b, &QToolButton::clicked, this, [this, id = w.id] { selectWall(id); });
         connect(b, &QWidget::customContextMenuRequested, this, [this, b, id = w.id](const QPoint &pos) { wallMenu(id, b->mapToGlobal(pos)); });
         tabs_->addWidget(b);
@@ -383,7 +384,7 @@ void CartwallPanel::reloadCarts()
 {
     carts_.fill(Cart(), kSlots);
     for (Cart &c : carts_) c.slot = -1;
-    QColor color("#3a4150");
+    QColor color = theme::c("#3a4150");
     for (const Cartwall &w : walls_)
         if (w.id == wallId_ && !w.color.isEmpty()) color = QColor(w.color);
     int used = 0;

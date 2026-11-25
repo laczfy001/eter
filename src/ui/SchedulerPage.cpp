@@ -1,11 +1,23 @@
 #include "i18n.h"
+#include "Widgets.h"
 #include "SchedulerPage.h"
 
 #include <QMessageBox>
 #include "Library.h"
+#include "core/ArtistSplit.h"
 #include "Theme.h"
 
+#include <QApplication>
 #include <QCheckBox>
+#include <QDateEdit>
+#include <QDoubleSpinBox>
+#include <QDialog>
+#include <QInputDialog>
+#include <functional>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QTimer>
+#include <algorithm>
 #include <QComboBox>
 #include <QFormLayout>
 #include <QFrame>
@@ -44,7 +56,7 @@ static QLabel *caption(const QString &text)
 static QColor cellColor(const QString &hex)
 {
     const QColor c(hex.isEmpty() ? QStringLiteral("#3a4150") : hex);
-    const QColor base("#1b1e24");
+    const QColor base = theme::c("#1b1e24");
     auto mix = [](int a, int b) { return (a * 38 + b * 62) / 100; };
     return QColor(mix(c.red(), base.red()), mix(c.green(), base.green()), mix(c.blue(), base.blue()));
 }
@@ -70,6 +82,11 @@ SchedulerPage::SchedulerPage(Database *db, Scheduler *scheduler, QWidget *parent
     });
     connect(db_, &Database::categoriesChanged, this, [this] { reloadSlots(slots_.value(currentSlotRow()).id); });
     connect(db_, &Database::itemsChanged, this, [this] { categoryAvgMs_.clear(); });
+    connect(db_, &Database::weekGridsChanged, this, [this] {
+        if (gridSel_) reloadGridList();
+    });
+    editGrid_ = db_->gridFor(eter::now().date());
+    reloadGridList();
     reloadClocks();
     reloadGrid();
 }
@@ -104,6 +121,92 @@ QWidget *SchedulerPage::buildGridPanel()
     h->addWidget(clear);
     v->addWidget(head);
 
+    // Heti rácsok (előbeállítások): kézzel választott aktív rács, és időszakok, amikor egy másik érvényes.
+    auto *gridBar = new QFrame;
+    gridBar->setObjectName("panelFooter");
+    auto *gb = new QHBoxLayout(gridBar);
+    gb->setContentsMargins(10, 6, 10, 6);
+    gb->setSpacing(6);
+    auto *gridLabel = new QLabel(TR("Rács"));
+    gridSel_ = new QComboBox;
+    gridSel_->setObjectName("weekGridSelect");
+    gridSel_->setMinimumWidth(230);
+    gridSel_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    gridLabel->setBuddy(gridSel_);
+    auto *gridNew = new QToolButton;
+    gridNew->setText(TR("Új"));
+    gridNew->setToolTip(TR("Új, üres heti rács"));
+    auto *gridCopy = new QToolButton;
+    gridCopy->setText(TR("Másolat"));
+    gridCopy->setToolTip(TR("Új heti rács ennek a másolataként"));
+    auto *gridRename = new QToolButton;
+    gridRename->setText(TR("Átnevezés"));
+    gridDelete_ = new QPushButton(TR("Törlés"));
+    gridDelete_->setProperty("danger", true);
+    gridActive_ = new QPushButton(TR("Legyen ez az aktív"));
+    gridActive_->setToolTip(TR("Kézi váltás: ez a rács érvényes, amikor egyik időszak sem tart"));
+    auto *periods = new QPushButton(TR("Időszakok…"));
+    periods->setObjectName("weekGridPeriods");
+    periods->setToolTip(TR("Automatikus váltás: dátumtól dátumig (akár minden évben) egy másik rács érvényes"));
+    gridState_ = new QLabel;
+    gridState_->setObjectName("small");
+    gb->addWidget(gridLabel);
+    gb->addWidget(gridSel_);
+    gb->addWidget(gridNew);
+    gb->addWidget(gridCopy);
+    gb->addWidget(gridRename);
+    gb->addWidget(gridDelete_);
+    gb->addStretch(1);
+    gb->addWidget(gridState_);
+    gb->addWidget(gridActive_);
+    gb->addWidget(periods);
+    v->addWidget(gridBar);
+    connect(gridSel_, &QComboBox::activated, this, [this] {
+        editGrid_ = gridSel_->currentData().toInt();
+        reloadGridList();
+        reloadGrid();
+    });
+    auto askName = [this](const QString &title, const QString &def) {
+        bool ok = false;
+        const QString name = QInputDialog::getText(this, title, TR("A rács neve:"), QLineEdit::Normal, def, &ok).trimmed();
+        return ok ? (name.isEmpty() ? QStringLiteral(" ") : name) : QString();
+    };
+    connect(gridNew, &QToolButton::clicked, this, [this, askName] {
+        const QString name = askName(TR("Új heti rács"), QString());
+        if (name.isEmpty()) return;
+        editGrid_ = db_->addWeekGrid(name.trimmed());
+        reloadGridList();
+        reloadGrid();
+    });
+    connect(gridCopy, &QToolButton::clicked, this, [this, askName] {
+        const QString name = askName(TR("Rács másolása"), TR("%1 (másolat)").arg(gridSel_->currentData(Qt::UserRole + 1).toString()));
+        if (name.isEmpty()) return;
+        editGrid_ = db_->addWeekGrid(name.trimmed(), editGrid_);
+        reloadGridList();
+        reloadGrid();
+    });
+    connect(gridRename, &QToolButton::clicked, this, [this, askName] {
+        const QString name = askName(TR("Rács átnevezése"), gridSel_->currentData(Qt::UserRole + 1).toString());
+        if (name.isEmpty()) return;
+        db_->renameWeekGrid(editGrid_, name.trimmed());
+        reloadGridList();
+    });
+    connect(gridDelete_, &QPushButton::clicked, this, [this] {
+        if (QMessageBox::question(this, TR("Rács törlése"),
+                                  TR("Törlöd a(z) „%1” heti rácsot és az időszakait?").arg(gridSel_->currentData(Qt::UserRole + 1).toString()))
+            != QMessageBox::Yes)
+            return;
+        if (db_->deleteWeekGrid(editGrid_)) editGrid_ = db_->activeWeekGrid();
+        reloadGridList();
+        reloadGrid();
+    });
+    connect(gridActive_, &QPushButton::clicked, this, [this] {
+        db_->setActiveWeekGrid(editGrid_);
+        reloadGridList();
+        emit message(TR("Aktív heti rács: %1. A már elkészült playlistekhez generálj újra.").arg(gridSel_->currentData(Qt::UserRole + 1).toString()));
+    });
+    connect(periods, &QPushButton::clicked, this, &SchedulerPage::editPeriods);
+
     grid_ = new QTableWidget(24, 7);
     QStringList days, hours;
     for (const char *d : kDays) days << i18n::text(d);
@@ -135,17 +238,17 @@ QWidget *SchedulerPage::buildGridPanel()
     genInfo_->setWordWrap(true);
     auto *gen = new QPushButton(TR("Playlistek generálása"));
     gen->setProperty("accent", true);
-    gen->setToolTip(TR("Mostantól a beállított óraszámra előre újra elkészíti az ütemezett sorokat. "
-                                   "A kézzel betett és az éppen szóló elemek megmaradnak."));
+    gen->setToolTip(TR("Megadhatod, mely napok mely óráira készüljön (újra) playlist. "
+                       "A kézzel betett és az éppen szóló elemek megmaradnak."));
     f->addWidget(genInfo_, 1);
     f->addWidget(gen);
     v->addWidget(foot);
 
-    connect(gen, &QPushButton::clicked, this, &SchedulerPage::generateNow);
+    connect(gen, &QPushButton::clicked, this, &SchedulerPage::generateDialog);
     connect(clear, &QPushButton::clicked, this, [this] { assignSelection(0); });
     connect(grid_, &QTableWidget::cellClicked, this, [this](int row, int col) {
         // Egy cellára kattintva a hozzá tartozó séma jelenik meg a szerkesztőben.
-        const int id = db_->weekGrid().value(col * 100 + row, 0);
+        const int id = db_->weekGrid(editGrid_).value(col * 100 + row, 0);
         if (id && id != currentClockId()) reloadClocks(id);
     });
     connect(grid_, &QTableWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
@@ -159,9 +262,150 @@ QWidget *SchedulerPage::buildGridPanel()
     return p;
 }
 
+void SchedulerPage::reloadGridList()
+{
+    const QVector<WeekGrid> grids = db_->weekGrids();
+    const int active = db_->activeWeekGrid();
+    const int today = db_->gridFor(eter::now().date());
+    bool found = false;
+    for (const WeekGrid &g : grids) found = found || g.id == editGrid_;
+    if (!found) editGrid_ = today;
+    QSignalBlocker block(gridSel_);
+    gridSel_->clear();
+    QString todayName;
+    for (const WeekGrid &g : grids) {
+        const QString name = Database::gridDisplayName(g);
+        QStringList marks;
+        if (g.id == active) marks << TR("aktív");
+        if (g.id == today) marks << TR("ma érvényes");
+        gridSel_->addItem(marks.isEmpty() ? name : QStringLiteral("%1  ·  %2").arg(name, marks.join(QStringLiteral(", "))), g.id);
+        gridSel_->setItemData(gridSel_->count() - 1, name, Qt::UserRole + 1);
+        if (g.id == today) todayName = name;
+    }
+    gridSel_->setCurrentIndex(std::max(0, gridSel_->findData(editGrid_)));
+    gridDelete_->setEnabled(grids.size() > 1);
+    gridActive_->setEnabled(editGrid_ != active);
+    gridState_->setText(today == active ? QString() : TR("Most időszak szerint: %1").arg(todayName));
+}
+
+void SchedulerPage::editPeriods()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle(TR("Heti rácsok időszakai"));
+    dlg.resize(720, 380);
+    auto *v = new QVBoxLayout(&dlg);
+    auto *about = new QLabel(TR("Az időszak alatt a megadott rács érvényes; ha egyik időszak sem tart, az aktív rács. Ha két "
+                                "időszak fedi egymást, a lista lejjebb lévő tagja számít. „Minden évben”: csak a hónap és a "
+                                "nap számít, és átnyúlhat az év végén (például dec. 20 – jan. 6)."));
+    about->setWordWrap(true);
+    about->setObjectName("small");
+    v->addWidget(about);
+    auto *table = new QTableWidget(0, 4);
+    table->setObjectName("weekGridPeriodTable");
+    table->setHorizontalHeaderLabels({TR("Rács"), TR("Kezdete"), TR("Vége"), TR("Minden évben")});
+    table->verticalHeader()->hide();
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setSelectionMode(QAbstractItemView::SingleSelection);
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    table->setColumnWidth(1, 160);
+    table->setColumnWidth(2, 160);
+    table->setColumnWidth(3, 110);
+    table->verticalHeader()->setDefaultSectionSize(34);
+    makeColumnsResizable(table, QStringLiteral("weekGridPeriods"));
+    v->addWidget(table, 1);
+    auto *row = new QHBoxLayout;
+    auto *add = new QPushButton(TR("+ Időszak"));
+    auto *del = new QPushButton(TR("Törlés"));
+    auto *close = new QPushButton(TR("Bezárás"));
+    close->setProperty("accent", true);
+    row->addWidget(add);
+    row->addWidget(del);
+    row->addStretch(1);
+    row->addWidget(close);
+    v->addLayout(row);
+    connect(close, &QPushButton::clicked, &dlg, &QDialog::accept);
+
+    std::function<void()> fill;
+    fill = [this, table, &fill] {
+        table->setRowCount(0);
+        const QVector<WeekGrid> grids = db_->weekGrids();
+        for (const WeekGridPeriod &p : db_->weekGridPeriods()) {
+            const int r = table->rowCount();
+            table->insertRow(r);
+            auto *g = new QComboBox;
+            for (const WeekGrid &w : grids) g->addItem(Database::gridDisplayName(w), w.id);
+            g->setCurrentIndex(std::max(0, g->findData(p.gridId)));
+            auto *from = new QDateEdit(p.from);
+            auto *to = new QDateEdit(p.to);
+            for (QDateEdit *e : {from, to}) {
+                e->setCalendarPopup(true);
+                e->setDisplayFormat(p.yearly ? QStringLiteral("MM.dd.") : QStringLiteral("yyyy.MM.dd."));
+            }
+            auto *yearly = new QCheckBox;
+            yearly->setChecked(p.yearly);
+            auto *yw = new QWidget;
+            auto *yl = new QHBoxLayout(yw);
+            yl->setContentsMargins(8, 0, 0, 0);
+            yl->addWidget(yearly);
+            table->setCellWidget(r, 0, g);
+            table->setCellWidget(r, 1, from);
+            table->setCellWidget(r, 2, to);
+            table->setCellWidget(r, 3, yw);
+            auto *idItem = new QTableWidgetItem;
+            idItem->setData(Qt::UserRole, p.id);
+            table->setItem(r, 0, idItem);
+            const int id = p.id;
+            auto save = [this, id, g, from, to, yearly] {
+                WeekGridPeriod np;
+                np.id = id;
+                np.gridId = g->currentData().toInt();
+                np.from = from->date();
+                np.to = to->date();
+                np.yearly = yearly->isChecked();
+                db_->updateWeekGridPeriod(np);
+            };
+            connect(g, &QComboBox::activated, table, save);
+            connect(from, &QDateEdit::dateChanged, table, save);
+            connect(to, &QDateEdit::dateChanged, table, save);
+            connect(yearly, &QCheckBox::toggled, table, [save, from, to](bool on) {
+                for (QDateEdit *e : {from, to}) e->setDisplayFormat(on ? QStringLiteral("MM.dd.") : QStringLiteral("yyyy.MM.dd."));
+                save();
+            });
+        }
+    };
+    fill();
+    connect(add, &QPushButton::clicked, &dlg, [this, table, &fill] {
+        WeekGridPeriod p;
+        const QVector<WeekGrid> grids = db_->weekGrids();
+        p.gridId = grids.size() > 1 && grids[0].id == db_->activeWeekGrid() ? grids[1].id : grids[0].id;
+        p.from = eter::now().date();
+        p.to = p.from.addDays(6);
+        db_->addWeekGridPeriod(p);
+        fill();
+        table->selectRow(table->rowCount() - 1);
+    });
+    connect(del, &QPushButton::clicked, &dlg, [this, table, &fill] {
+        const int r = table->currentRow();
+        if (r < 0 || !table->item(r, 0)) return;
+        db_->deleteWeekGridPeriod(table->item(r, 0)->data(Qt::UserRole).toInt());
+        fill();
+    });
+    if (qEnvironmentVariableIsSet("ETER_PERIODS_SHOT")) {
+        // Fejlesztéshez: a párbeszéd képe.
+        QTimer::singleShot(400, &dlg, [&dlg] {
+            dlg.grab().save(qEnvironmentVariable("ETER_PERIODS_SHOT"));
+            dlg.accept();
+        });
+    }
+    dlg.exec();
+    reloadGridList();
+    reloadGrid();
+}
+
 void SchedulerPage::reloadGrid()
 {
-    const QHash<int, int> grid = db_->weekGrid();
+    const QHash<int, int> grid = db_->weekGrid(editGrid_);
+    const bool validToday = editGrid_ == db_->gridFor(eter::now().date());
     QHash<int, Clock> clocks;
     for (const Clock &c : db_->clocks()) clocks.insert(c.id, c);
     const QDateTime now = eter::now();
@@ -180,13 +424,13 @@ void SchedulerPage::reloadGrid()
             if (id && clocks.contains(id)) {
                 item->setText(clocks[id].name);
                 item->setBackground(cellColor(clocks[id].color));
-                item->setForeground(QColor("#e8eaed"));
+                item->setForeground(theme::c("#e8eaed"));
             } else {
                 item->setText({});
-                item->setBackground(QColor("#16181d"));
+                item->setBackground(theme::c("#16181d"));
             }
             QFont f = item->font();
-            f.setBold(d == today && h == now.time().hour());
+            f.setBold(validToday && d == today && h == now.time().hour());
             item->setFont(f);
         }
     }
@@ -205,7 +449,7 @@ void SchedulerPage::assignSelection(int clockId)
         return;
     }
     db_->beginBatch();
-    for (const QTableWidgetItem *item : selected) db_->setGrid(item->column(), item->row(), clockId);
+    for (const QTableWidgetItem *item : selected) db_->setGrid(editGrid_, item->column(), item->row(), clockId);
     db_->endBatch();
     reloadGrid();
     emit message(clockId ? TR("%1 óra beállítva.").arg(selected.size())
@@ -216,16 +460,188 @@ QString SchedulerPage::generateInfo() const { return genInfo_->text(); }
 
 void SchedulerPage::generateNow()
 {
-    if (db_->weekGrid().isEmpty()) {
+    if (!db_->hasWeekGrid()) {
         emit message(TR("A heti rács üres: előbb rendelj sémát legalább egy órához."));
         return;
     }
     const int hours = std::clamp(db_->setting("generate_ahead_hours", "24").toInt(), 1, 168);
     const QDateTime from = eter::now();
     const GenerateResult r = scheduler_->generate(from, hours, true);
+    reportGenerated(r, Scheduler::keyOf(QDateTime(from.date(), QTime(from.time().hour(), 0))));
+}
+
+void SchedulerPage::generateDialog()
+{
+    if (!db_->hasWeekGrid()) {
+        emit message(TR("A heti rács üres: előbb rendelj sémát legalább egy órához."));
+        return;
+    }
+    const QDateTime now = eter::now();
+    QDialog dlg(this);
+    dlg.setObjectName("generateDialog");
+    dlg.setWindowTitle(TR("Playlistek generálása"));
+    dlg.setMinimumWidth(640);
+    auto *v = new QVBoxLayout(&dlg);
+    v->setSpacing(10);
+    auto *about = new QLabel(TR("Válaszd ki, mely napok mely óráira készüljön playlist. A már elmúlt órák kimaradnak; a "
+                                "kézzel betett és az éppen szóló elemek megmaradnak."));
+    about->setObjectName("small");
+    about->setWordWrap(true);
+    v->addWidget(about);
+
+    auto *form = new QFormLayout;
+    form->setFieldGrowthPolicy(QFormLayout::FieldsStayAtSizeHint);
+    auto *fromDay = new QDateEdit(now.date());
+    auto *toDay = new QDateEdit(now.date());
+    for (QDateEdit *e : {fromDay, toDay}) {
+        e->setCalendarPopup(true);
+        e->setDisplayFormat(QStringLiteral("yyyy.MM.dd., dddd"));
+        e->setMinimumDate(now.date());
+        e->setMaximumDate(now.date().addDays(90));
+        e->setMinimumWidth(240);
+    }
+    fromDay->setObjectName("genFrom");
+    toDay->setObjectName("genTo");
+    auto *dayRow = new QHBoxLayout;
+    dayRow->setSpacing(8);
+    dayRow->addWidget(fromDay);
+    dayRow->addWidget(new QLabel(QStringLiteral("–")));
+    dayRow->addWidget(toDay);
+    form->addRow(TR("Napok"), dayRow);
+
+    auto *wdRow = new QHBoxLayout;
+    wdRow->setSpacing(10);
+    static const char *kShort[] = {"H", "K", "Sze", "Cs", "P", "Szo", "V"};
+    QVector<QCheckBox *> weekdays;
+    for (int d = 0; d < 7; ++d) {
+        auto *c = new QCheckBox(i18n::text(kShort[d]));
+        c->setToolTip(i18n::text(kDays[d]));
+        c->setChecked(true);
+        weekdays << c;
+        wdRow->addWidget(c);
+    }
+    form->addRow(TR("A hét napjai"), wdRow);
+
+    auto *fromHour = new QSpinBox;
+    auto *toHour = new QSpinBox;
+    fromHour->setObjectName("genFromHour");
+    toHour->setObjectName("genToHour");
+    for (QSpinBox *sp : {fromHour, toHour}) {
+        sp->setRange(0, 23);
+        sp->setMinimumWidth(190);
+    }
+    fromHour->setValue(0);
+    toHour->setValue(23);
+    fromHour->setSuffix(TR(":00 órától"));
+    toHour->setSuffix(TR(":00 órával bezárólag"));
+    auto *hourRow = new QHBoxLayout;
+    hourRow->addWidget(fromHour);
+    hourRow->addWidget(toHour);
+    form->addRow(TR("Órák"), hourRow);
+    v->addLayout(form);
+
+    auto *presets = new QHBoxLayout;
+    presets->setSpacing(6);
+    auto preset = [&](const QString &label, const QDate &a, const QDate &b) {
+        auto *t = new QPushButton(label);
+        presets->addWidget(t);
+        connect(t, &QPushButton::clicked, &dlg, [=] {
+            fromDay->setDate(a);
+            toDay->setDate(b);
+            fromHour->setValue(0);
+            toHour->setValue(23);
+            for (QCheckBox *c : weekdays) c->setChecked(true);
+        });
+    };
+    const QDate today = now.date();
+    preset(TR("Ma"), today, today);
+    preset(TR("Holnap"), today.addDays(1), today.addDays(1));
+    preset(TR("A hét hátralévő része"), today, today.addDays(7 - today.dayOfWeek()));
+    preset(TR("Jövő hét"), today.addDays(8 - today.dayOfWeek()), today.addDays(14 - today.dayOfWeek()));
+    presets->addStretch(1);
+    v->addLayout(presets);
+
+    auto *replace = new QCheckBox(TR("A már elkészült órák újragenerálása"));
+    replace->setObjectName("genReplace");
+    replace->setChecked(true);
+    replace->setToolTip(TR("Kikapcsolva csak a még üres órák készülnek el, a meglévők maradnak."));
+    v->addWidget(replace);
+    auto *summary = new QLabel;
+    summary->setObjectName("genSummary");
+    summary->setWordWrap(true);
+    v->addWidget(summary);
+
+    auto *buttons = new QHBoxLayout;
+    buttons->addStretch(1);
+    auto *cancel = new QPushButton(TR("Mégse"));
+    auto *ok = new QPushButton(TR("Generálás"));
+    ok->setProperty("accent", true);
+    ok->setDefault(true);
+    buttons->addWidget(cancel);
+    buttons->addWidget(ok);
+    v->addLayout(buttons);
+    connect(cancel, &QPushButton::clicked, &dlg, &QDialog::reject);
+    connect(ok, &QPushButton::clicked, &dlg, &QDialog::accept);
+
+    // A kiválasztott órák (a már elmúltak nélkül).
+    auto selected = [=] {
+        QVector<QDateTime> out;
+        const QDateTime thisHour(now.date(), QTime(now.time().hour(), 0));
+        int a = fromHour->value(), b = toHour->value();
+        for (QDate d = fromDay->date(); d <= toDay->date(); d = d.addDays(1)) {
+            if (!weekdays[d.dayOfWeek() - 1]->isChecked()) continue;
+            // Ha a „-tól” nagyobb, mint a „-ig”, éjfélen átnyúló sáv (például 22–02).
+            for (int k = 0; k < 24; ++k) {
+                const bool in = a <= b ? (k >= a && k <= b) : (k >= a || k <= b);
+                const QDateTime t(d, QTime(k, 0));
+                if (in && t >= thisHour) out << t;
+            }
+        }
+        return out;
+    };
+    auto update = [=] {
+        if (toDay->date() < fromDay->date()) toDay->setDate(fromDay->date());
+        const QVector<QDateTime> hrs = selected();
+        int done = 0, noClock = 0;
+        for (const QDateTime &t : hrs) {
+            if (!db_->clockAt(t.date(), t.time().hour())) ++noClock;
+            else if (db_->playlistGenerated(db_->playlistFor(t.date(), t.time().hour()))) ++done;
+        }
+        QStringList parts{TR("%1 óra").arg(hrs.size())};
+        if (done) parts << (replace->isChecked() ? TR("ebből %1 újragenerálva").arg(done) : TR("ebből %1 már kész, marad").arg(done));
+        if (noClock) parts << TR("%1 órához nincs séma a heti rácsban").arg(noClock);
+        summary->setText(parts.join(QStringLiteral(" · ")));
+        ok->setEnabled(!hrs.isEmpty());
+    };
+    for (QDateEdit *e : {fromDay, toDay}) connect(e, &QDateEdit::dateChanged, &dlg, update);
+    for (QSpinBox *sp : {fromHour, toHour}) connect(sp, &QSpinBox::valueChanged, &dlg, update);
+    for (QCheckBox *c : weekdays) connect(c, &QCheckBox::toggled, &dlg, update);
+    connect(replace, &QCheckBox::toggled, &dlg, update);
+    update();
+
+    if (qEnvironmentVariableIsSet("ETER_GENDLG_SHOT")) {
+        // Fejlesztéshez: holnap 6–9 óra, kép a párbeszédről, majd generálás.
+        QTimer::singleShot(300, &dlg, [&dlg, fromDay, toDay, fromHour, toHour, today] {
+            fromDay->setDate(today.addDays(1));
+            toDay->setDate(today.addDays(1));
+            fromHour->setValue(6);
+            toHour->setValue(9);
+            QApplication::processEvents();
+            dlg.grab().save(qEnvironmentVariable("ETER_GENDLG_SHOT"));
+            dlg.accept();
+        });
+    }
+    if (dlg.exec() != QDialog::Accepted) return;
+    const QVector<QDateTime> hrs = selected();
+    if (hrs.isEmpty()) return;
+    const GenerateResult r = scheduler_->generateHours(hrs, eter::now(), replace->isChecked());
+    reportGenerated(r, Scheduler::keyOf(hrs.first()));
+}
+
+void SchedulerPage::reportGenerated(const GenerateResult &r, int firstKey)
+{
     QStringList parts{TR("%1 órára %2 elem készült").arg(r.hours).arg(r.entries)};
     // A szabályok ellenőrzése a most generált órákon: az egymást követő zenék közti átmenetek.
-    const int firstKey = Scheduler::keyOf(QDateTime(from.date(), QTime(from.time().hour(), 0)));
     QVector<Entry> made;
     for (const Entry &e : db_->pendingEntries())
         if (e.playlistKey >= firstKey) made << e;
@@ -346,6 +762,16 @@ QWidget *SchedulerPage::buildClockPanel()
     slotTable_->setColumnWidth(1, 110);
     slotTable_->setColumnWidth(2, 100);
     slotTable_->setColumnWidth(4, 76);
+    makeColumnsResizable(slotTable_, QStringLiteral("clockSlots"));
+    // A sorok húzással is átrendezhetők; az ejtést az eventFilter kezeli (a sorrend az adatbázisba kerül).
+    slotTable_->setDragEnabled(true);
+    slotTable_->setAcceptDrops(true);
+    slotTable_->viewport()->setAcceptDrops(true);
+    slotTable_->setDragDropMode(QAbstractItemView::DragDrop);
+    slotTable_->setDefaultDropAction(Qt::MoveAction);
+    slotTable_->setDropIndicatorShown(true);
+    slotTable_->setDragDropOverwriteMode(false);
+    slotTable_->viewport()->installEventFilter(this);
     v->addWidget(slotTable_, 1);
 
     auto *bar = new QFrame;
@@ -359,6 +785,8 @@ QWidget *SchedulerPage::buildClockPanel()
     up->setAccessibleName(TR("Feljebb"));
     auto *down = new QPushButton(QStringLiteral("↓"));
     down->setAccessibleName(TR("Lejjebb"));
+    up->setToolTip(TR("Feljebb (a sorok húzással is átrendezhetők)"));
+    down->setToolTip(TR("Lejjebb (a sorok húzással is átrendezhetők)"));
     total_ = new QLabel;
     total_->setObjectName("small");
     b->addWidget(addSlot);
@@ -400,6 +828,7 @@ QWidget *SchedulerPage::buildClockPanel()
     slotType_->addItem(TR("Kategóriából, véletlenszerűen"), "category");
     slotType_->addItem(TR("Konkrét elem"), "item");
     slotType_->addItem(TR("Kitöltés a következő fix pontig"), "fill");
+    slotType_->addItem(TR("Jegyzet (csak felirat)"), "note");
     slotType_->setAccessibleName(TR("Az elem típusa"));
     slotCategoryLabel_ = new QLabel(TR("Kategória"));
     slotCategory_ = new QComboBox;
@@ -424,6 +853,12 @@ QWidget *SchedulerPage::buildClockPanel()
     row1->addWidget(slotUpToFit_);
     row1->addWidget(slotItemLabel_, 1);
     row1->addWidget(slotPick_);
+    slotNote_ = new QLineEdit;
+    slotNote_->setObjectName("slotNote");
+    slotNote_->setPlaceholderText(TR("A playlistben megjelenő felirat, például: Időjárás élőben a stúdióból"));
+    slotNote_->setAccessibleName(TR("Jegyzet"));
+    slotNote_->setMaxLength(200);
+    row1->addWidget(slotNote_, 1);
     fl->addLayout(row1);
     auto *row2 = new QHBoxLayout;
     row2->setSpacing(8);
@@ -454,6 +889,29 @@ QWidget *SchedulerPage::buildClockPanel()
     row2->addWidget(slotEnergyMax_);
     row2->addStretch(1);
     fl->addLayout(row2);
+    // Sweeper: a hely első eleme előtti átmenetre egy elem ebből a kategóriából, ráfektetve (a mix pontnál indul).
+    auto *row3 = new QHBoxLayout;
+    row3->setSpacing(8);
+    slotSweeperLabel_ = new QLabel(TR("Sweeper az átmenetre"));
+    slotSweeper_ = new QComboBox;
+    slotSweeper_->setObjectName("slotSweeper");
+    slotSweeper_->setMinimumWidth(150);
+    slotSweeper_->setToolTip(TR("Az ide vezető átmenetre (az előző elem és ennek a helynek az első eleme közé) egy elem ebből "
+                                "a kategóriából kerül, ráfektetve: a mix pontnál indul, és nem foglal időt."));
+    slotSweeperLabel_->setBuddy(slotSweeper_);
+    slotSweeperDuckLabel_ = new QLabel(TR("alatta a zene"));
+    slotSweeperDuck_ = new QDoubleSpinBox;
+    slotSweeperDuck_->setRange(-30, 0);
+    slotSweeperDuck_->setDecimals(0);
+    slotSweeperDuck_->setSuffix(TR(" dB"));
+    slotSweeperDuck_->setToolTip(TR("Ennyivel halkul a zene a sweeper alatt (0: nem halkul)"));
+    slotSweeperDuckLabel_->setBuddy(slotSweeperDuck_);
+    row3->addWidget(slotSweeperLabel_);
+    row3->addWidget(slotSweeper_);
+    row3->addWidget(slotSweeperDuckLabel_);
+    row3->addWidget(slotSweeperDuck_);
+    row3->addStretch(1);
+    fl->addLayout(row3);
     slotHint_ = new QLabel;
     slotHint_->setObjectName("small");
     slotHint_->setWordWrap(true);
@@ -508,6 +966,32 @@ QWidget *SchedulerPage::buildClockPanel()
     ahead_->setMinimum(1);
     rr->addStretch(1);
     rl->addLayout(rr);
+    {
+        // Előadók szétválasztása: „A and B” két előadó, mindkettőre külön számít az elválasztás; „&” egy előadó marad.
+        auto *sepRow = new QHBoxLayout;
+        sepRow->setSpacing(8);
+        auto *l = new QLabel(TR("Előadók elválasztói"));
+        auto *e = new QLineEdit(db_->setting("artist_separators", artists::defaultSeparators()));
+        e->setObjectName("artistSeparators");
+        e->setPlaceholderText(TR("nincs: az előadó mező egy előadó"));
+        e->setToolTip(TR("Szóközzel elválasztva. „A and B” vagy „A feat. B” két előadó, és az „Előadó újra” mindkettőre külön "
+                         "érvényes. Ami egy előadó marad, azt írd „&”-tel (például Simon & Garfunkel); a „&” csak akkor "
+                         "választ el, ha ide felveszed."));
+        l->setBuddy(e);
+        auto *reset = new QToolButton;
+        reset->setText(TR("Alapérték"));
+        sepRow->addWidget(l);
+        sepRow->addWidget(e, 1);
+        sepRow->addWidget(reset);
+        rl->addLayout(sepRow);
+        connect(e, &QLineEdit::editingFinished, this, [this, e] {
+            db_->setSetting("artist_separators", e->text().simplified());
+        });
+        connect(reset, &QToolButton::clicked, this, [this, e] {
+            e->setText(artists::defaultSeparators());
+            db_->setSetting("artist_separators", e->text());
+        });
+    }
     auto *rr2 = new QHBoxLayout;
     rr2->setSpacing(8);
     auto *policyLabel = new QLabel(TR("Fix időpontkor"));
@@ -758,6 +1242,9 @@ QWidget *SchedulerPage::buildClockPanel()
     connect(slotEnergyMax_, &QComboBox::activated, this, &SchedulerPage::applySlot);
     connect(slotTime_, &QTimeEdit::timeChanged, this, &SchedulerPage::applySlot);
     connect(slotPick_, &QPushButton::clicked, this, &SchedulerPage::pickItem);
+    connect(slotNote_, &QLineEdit::editingFinished, this, &SchedulerPage::applySlot);
+    connect(slotSweeper_, &QComboBox::activated, this, &SchedulerPage::applySlot);
+    connect(slotSweeperDuck_, &QDoubleSpinBox::valueChanged, this, &SchedulerPage::applySlot);
     return p;
 }
 
@@ -820,7 +1307,10 @@ void SchedulerPage::reloadSlots(int selectSlotId)
             timing = TR("fix :%1:%2").arg(s.fixedOffsetS / 60, 2, 10, QLatin1Char('0')).arg(s.fixedOffsetS % 60, 2, 10, QLatin1Char('0'));
         QString source, estimate;
         qint64 ms = 0;
-        if (s.type == "item") {
+        if (s.type == "note") {
+            timing = QStringLiteral("—");
+            source = s.note.isEmpty() ? TR("(üres jegyzet)") : QStringLiteral("„%1”").arg(s.note);
+        } else if (s.type == "item") {
             source = s.label.isEmpty() ? TR("(nincs kiválasztva)") : s.label;
             ms = s.itemId ? db_->item(s.itemId).durationMs : 0;
             estimate = formatMs(ms);
@@ -834,7 +1324,13 @@ void SchedulerPage::reloadSlots(int selectSlotId)
                                  : s.label;
             ms = categoryAvgMs_.value(s.categoryId, 0) * s.count;
         }
-        if (s.type != "item" && (s.energyMin || s.energyMax)) {
+        if (s.sweeperCategoryId > 0) {
+            QString sw;
+            for (const Category &c : db_->itemCategories())
+                if (c.id == s.sweeperCategoryId) sw = c.name;
+            if (!sw.isEmpty()) source = TR("↝ sweeper: %1 · ").arg(sw) + source;
+        }
+        if (s.type != "item" && s.type != "note" && (s.energyMin || s.energyMax)) {
             const QString lo = s.energyMin ? QString::number(s.energyMin) : QStringLiteral("1"),
                           hi = s.energyMax ? QString::number(s.energyMax) : QStringLiteral("5");
             source += TR("  · energia %1").arg(lo == hi ? lo : lo + QStringLiteral("–") + hi);
@@ -849,6 +1345,12 @@ void SchedulerPage::reloadSlots(int selectSlotId)
             if (c == 0 || c == 1 || c == 4) item->setFont(mono);
             if (c == 1 && s.fixedOffsetS >= 0) item->setForeground(theme::amberSoft);
             if (c == 3 && !s.color.isEmpty()) item->setIcon(swatchIcon(QColor(s.color)));
+            if (s.type == "note" && c >= 2) {
+                QFont it = item->font();
+                it.setItalic(true);
+                item->setFont(it);
+                item->setForeground(theme::c("#c9b27a"));
+            }
             if (c == 4) item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
             slotTable_->setItem(r, c, item);
         }
@@ -875,6 +1377,7 @@ void SchedulerPage::reloadSlots(int selectSlotId)
             QVector<int> rows;
             for (int k = r; k < end; ++k) {
                 const ClockSlot &s = slots_[k];
+                if (s.type == "note") continue;
                 if (s.type == "fill" || s.upToFit) { flexible = true; continue; }
                 if (s.type == "item") est += s.itemId ? db_->item(s.itemId).durationMs : 0;
                 else { est += categoryAvgMs_.value(s.categoryId, 0) * s.count; rows << k; }
@@ -897,7 +1400,7 @@ void SchedulerPage::reloadSlots(int selectSlotId)
     for (int k : overflowSlots_)
         for (int c = 0; c < 5; ++c)
             if (QTableWidgetItem *it = slotTable_->item(k, c)) {
-                it->setForeground(QColor("#ff8f85"));
+                it->setForeground(theme::c("#ff8f85"));
                 it->setToolTip(TR("Ez a sor a becsült hossza alapján nem fér el a következő fix pontig."));
             }
     if (auto *frame = qobject_cast<QWidget *>(overflow_->property("frame").value<QObject *>())) {
@@ -964,20 +1467,33 @@ void SchedulerPage::showSlot()
     slotItemLabel_->setText(s.label.isEmpty() ? TR("(nincs kiválasztva)") : s.label);
     slotEnergyMin_->setCurrentIndex(std::max(0, slotEnergyMin_->findData(s.energyMin)));
     slotEnergyMax_->setCurrentIndex(std::max(0, slotEnergyMax_->findData(s.energyMax)));
+    slotNote_->setText(s.note);
+    slotSweeper_->clear();
+    slotSweeper_->addItem(TR("nincs"), 0);
+    for (const Category &c : db_->itemCategories())
+        slotSweeper_->addItem(swatchIcon(QColor(c.color)), QStringLiteral("%1 (%2)").arg(c.name).arg(c.itemCount), c.id);
+    slotSweeper_->setCurrentIndex(std::max(0, slotSweeper_->findData(s.sweeperCategoryId)));
+    slotSweeperDuck_->setValue(s.sweeperDuckDb);
 
-    const bool isItem = s.type == "item", isFill = s.type == "fill";
-    slotCategoryLabel_->setVisible(!isItem);
-    slotCategory_->setVisible(!isItem);
-    slotCountLabel_->setVisible(!isItem && !isFill);
-    slotCount_->setVisible(!isItem && !isFill);
-    slotUpToFit_->setVisible(!isItem && !isFill);
+    const bool isItem = s.type == "item", isFill = s.type == "fill", isNote = s.type == "note";
+    slotCategoryLabel_->setVisible(!isItem && !isNote);
+    slotCategory_->setVisible(!isItem && !isNote);
+    slotCountLabel_->setVisible(!isItem && !isFill && !isNote);
+    slotCount_->setVisible(!isItem && !isFill && !isNote);
+    slotUpToFit_->setVisible(!isItem && !isFill && !isNote);
     slotItemLabel_->setVisible(isItem);
     slotPick_->setVisible(isItem);
-    slotFixed_->setVisible(!isFill);
-    slotTime_->setVisible(!isFill);
-    for (QWidget *w : std::initializer_list<QWidget *>{slotEnergyLabel_, slotEnergyMin_, slotEnergyDash_, slotEnergyMax_}) w->setVisible(!isItem);
+    slotNote_->setVisible(isNote);
+    slotFixed_->setVisible(!isFill && !isNote);
+    slotTime_->setVisible(!isFill && !isNote);
+    for (QWidget *w : std::initializer_list<QWidget *>{slotEnergyLabel_, slotEnergyMin_, slotEnergyDash_, slotEnergyMax_})
+        w->setVisible(!isItem && !isNote);
+    for (QWidget *w : std::initializer_list<QWidget *>{slotSweeperLabel_, slotSweeper_}) w->setVisible(!isNote);
+    for (QWidget *w : std::initializer_list<QWidget *>{slotSweeperDuckLabel_, slotSweeperDuck_})
+        w->setVisible(!isNote && s.sweeperCategoryId > 0);
     slotTime_->setEnabled(s.fixedOffsetS >= 0);
-    slotHint_->setText(isFill ? TR("Annyi elemet tesz be ebből a kategóriából, amennyi a következő fix időpontig (vagy az óra végéig) kell.")
+    slotHint_->setText(isNote ? TR("Csak felirat: a playlistben a következő elem fölött jelenik meg. Nem szól, és nem foglal időt.")
+                       : isFill ? TR("Annyi elemet tesz be ebből a kategóriából, amennyi a következő fix időpontig (vagy az óra végéig) kell.")
                        : s.fixedOffsetS >= 0 ? TR("Automata üzemmódban pontosan ekkor indul. Ha addig nem telne ki az idő, az ütemező az előző zenei kategóriából pótol.")
                                              : TR("Az előző elem után következik."));
     loading_ = false;
@@ -990,6 +1506,20 @@ void SchedulerPage::applySlot()
     if (row < 0) return;
     ClockSlot s = slots_[row];
     s.type = slotType_->currentData().toString();
+    s.sweeperCategoryId = s.type == "note" ? 0 : slotSweeper_->currentData().toInt();
+    s.sweeperDuckDb = slotSweeperDuck_->value();
+    if (s.type == "note") {
+        s.note = slotNote_->text().trimmed();
+        s.categoryId = 0;
+        s.count = 1;
+        s.upToFit = false;
+        s.energyMin = s.energyMax = 0;
+        s.fixedOffsetS = -1;
+        db_->updateSlot(s);
+        reloadSlots(s.id);
+        if (s.note.isEmpty()) slotNote_->setFocus();
+        return;
+    }
     if (s.type != "item") {
         s.categoryId = slotCategory_->currentData().toInt();
         if (!s.categoryId) {
@@ -1023,6 +1553,49 @@ void SchedulerPage::moveSlot(int delta)
     ids.swapItemsAt(row, to);
     db_->reorderSlots(currentClockId(), ids);
     reloadSlots(ids[to]);
+}
+
+void SchedulerPage::moveSlotTo(int from, int to)
+{
+    if (from < 0 || from >= slots_.size()) return;
+    to = std::clamp(to, 0, int(slots_.size()));
+    if (to > from) --to;          // a kivett sor után eggyel előrébb csúszik minden
+    if (to == from) return;
+    QVector<int> ids;
+    for (const ClockSlot &s : slots_) ids << s.id;
+    ids.move(from, to);
+    db_->reorderSlots(currentClockId(), ids);
+    reloadSlots(ids[to]);
+}
+
+bool SchedulerPage::eventFilter(QObject *o, QEvent *e)
+{
+    const QEvent::Type t = e->type();
+    if (slotTable_ && o == slotTable_->viewport() && (t == QEvent::DragEnter || t == QEvent::DragMove || t == QEvent::Drop)) {
+        auto *d = static_cast<QDropEvent *>(e);
+        // Csak a saját sorai: más táblából (vagy fájlt) nem fogad.
+        const bool ours = d->mimeData() && d->mimeData()->hasFormat(QStringLiteral("application/x-qabstractitemmodeldatalist"))
+                          && (d->source() == slotTable_ || !d->source());
+        if (!ours) {
+            d->ignore();
+            return true;
+        }
+        if (t != QEvent::Drop) return QWidget::eventFilter(o, e);
+        const int from = currentSlotRow();
+        const QPoint pos = d->position().toPoint();
+        const QModelIndex at = slotTable_->indexAt(pos);
+        int to = int(slots_.size());
+        if (at.isValid()) {
+            const QRect r = slotTable_->visualRect(at);
+            to = at.row() + (pos.y() > r.center().y() ? 1 : 0);
+        }
+        // Másolásként nyugtázva, hogy a tábla maga ne töröljön sort; az újratöltés a húzás vége után jön.
+        d->setDropAction(Qt::CopyAction);
+        d->accept();
+        QTimer::singleShot(0, this, [this, from, to] { moveSlotTo(from, to); });
+        return true;
+    }
+    return QWidget::eventFilter(o, e);
 }
 
 void SchedulerPage::pickItem()
@@ -1097,6 +1670,7 @@ ItemPickerDialog::ItemPickerDialog(Database *db, QWidget *parent, const QString 
     view_->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     view_->setColumnWidth(2, 140);
     view_->setColumnWidth(3, 60);
+    makeColumnsResizable(view_, QStringLiteral("schedulerItems"));
     view_->hideColumn(4);
     root->addWidget(view_, 1);
     auto *buttons = new QHBoxLayout;

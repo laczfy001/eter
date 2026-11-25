@@ -2,6 +2,7 @@
 // A kérés a most szóló elem után kerül a playlistbe; ha már vannak kérések a sorban, az utolsó alá. Ha nincs kérés,
 // a playlist a szokásos módon megy tovább. Jóváhagyásos módban a kérés először a Kérések ablakba kerül.
 #include "MainWindow.h"
+#include "Widgets.h"
 
 #include "audio/Engine.h"
 #include "i18n.h"
@@ -280,6 +281,7 @@ void MainWindow::openRequestsDialog()
     table->setColumnWidth(0, 70);
     table->setColumnWidth(1, 200);
     table->setColumnWidth(3, 150);
+    makeColumnsResizable(table, QStringLiteral("webRequests"));
     v->addWidget(table, 1);
     auto *row = new QHBoxLayout;
     auto *ok = new QPushButton(TR("Jóváhagyás"));

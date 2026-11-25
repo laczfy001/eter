@@ -2,7 +2,8 @@
 # Builds the Windows package (a zip with eter.exe and every DLL it needs).
 # Run it in an MSYS2 "UCRT64" shell. Packages needed:
 #   pacman -S --needed git make diffutils zip mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake \
-#       mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-qt6-base mingw-w64-ucrt-x86_64-lame
+#       mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-qt6-base mingw-w64-ucrt-x86_64-lame \
+#       mingw-w64-ucrt-x86_64-libmariadbclient
 # and a built FFmpeg (scripts/build_ffmpeg.sh, in the same shell).
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,6 +20,10 @@ find "$ROOT" -path "$ROOT/build" -prune -o -type f -newermt "$(date '+%Y-%m-%d %
 # The MP3 encoder for the program logger (added in 0.17): installed here if an older setup lacks it.
 if [ ! -f "$PREFIX/include/lame/lame.h" ]; then
     pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-lame
+fi
+# The MySQL / MariaDB client for the external SQL server (added in 0.33): Qt's qsqlmysql driver needs it.
+if [ ! -f "$PREFIX/bin/libmariadb.dll" ]; then
+    pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-libmariadbclient
 fi
 
 cmake -S "$ROOT" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -39,9 +44,13 @@ for tool in windeployqt6 windeployqt-qt6 windeployqt; do
 done
 [ -n "$DEPLOY" ] || { echo "windeployqt not found (install mingw-w64-ucrt-x86_64-qt6-base)"; exit 1; }
 "$DEPLOY" --release --no-translations --no-system-d3d-compiler --no-opengl-sw --compiler-runtime "$DIST/eter.exe"
-# Only the SQLite database driver is used.
+# Database drivers: SQLite (the local database) and MySQL / MariaDB (the external SQL server).
 if [ -d "$DIST/sqldrivers" ]; then
-    find "$DIST/sqldrivers" -type f ! -name 'qsqlite*' -delete
+    find "$DIST/sqldrivers" -type f ! -name 'qsqlite*' ! -name 'qsqlmysql*' -delete
+fi
+if [ ! -f "$DIST/sqldrivers/qsqlmysql.dll" ] && [ -f "$PREFIX/share/qt6/plugins/sqldrivers/qsqlmysql.dll" ]; then
+    mkdir -p "$DIST/sqldrivers"
+    cp "$PREFIX/share/qt6/plugins/sqldrivers/qsqlmysql.dll" "$DIST/sqldrivers/"
 fi
 
 # Everything else the program and the plugins link to from MSYS2 (ICU, zlib, the compiler runtime, …).

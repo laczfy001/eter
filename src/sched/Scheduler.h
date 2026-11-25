@@ -35,6 +35,9 @@ public:
 
     // `from` órájától `hours` órányit generál. replace: a már meglévő ütemezett sorokat újra elkészíti.
     GenerateResult generate(const QDateTime &from, int hours, bool replace);
+    // A megadott órákat generálja (a már elmúltakat kihagyja). replace: ezeknek az óráknak a meglévő ütemezett sorait
+    // újra elkészíti; különben a már elkészült órák maradnak.
+    GenerateResult generateHours(QVector<QDateTime> hours, const QDateTime &now, bool replace);
 
     // Ezek az elemek nem kerülnek be (például mert a fájljuk nem érhető el).
     void setUnavailable(const QSet<int> &itemIds) { unavailable_ = itemIds; }

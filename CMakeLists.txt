@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(eter VERSION 0.31.1 LANGUAGES C CXX)
+project(eter VERSION 0.36.0 LANGUAGES C CXX)
 if(WIN32)
     enable_language(RC)
 endif()
@@ -41,8 +41,13 @@ add_executable(eter
     src/ui/PlayerWidget.cpp
     src/ui/PlayerStrip.cpp
     src/db/Database.cpp
+    src/db/ServerSync.cpp
     src/ui/MainWindow.cpp
     src/ui/Library.cpp
+    src/ui/InfoWindow.cpp
+    src/ui/MixPreview.cpp
+    src/midi/MidiIn.cpp
+    src/midi/MidiControl.cpp
     src/ui/PlaylistTable.cpp
     src/ui/SchedulerPage.cpp
     src/ui/MixEditorPage.cpp
@@ -55,6 +60,7 @@ add_executable(eter
     src/ui/SettingsDialog.cpp
     src/net/Remote.cpp
     src/net/WebSync.cpp
+    src/net/ArtistInfo.cpp
     src/net/StreamFetcher.cpp
     src/ui/RemoteEditor.cpp
     src/core/FileCheck.cpp

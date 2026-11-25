@@ -4,7 +4,12 @@
 #include "Theme.h"
 
 #include <QMouseEvent>
+#include <QHeaderView>
 #include <QPainter>
+#include <QSet>
+#include <QSettings>
+#include <QTableView>
+#include <QTimer>
 #include <algorithm>
 #include <cmath>
 
@@ -111,7 +116,7 @@ void WaveformWidget::paintEvent(QPaintEvent *)
             p.drawText(box, Qt::AlignCenter, mixLabel_);
         }
     }
-    p.fillRect(QRect(std::clamp(playedX - 1, 0, w - 2), 0, 2, h), Qt::white);
+    p.fillRect(QRect(std::clamp(playedX - 1, 0, w - 2), 0, 2, h), theme::c(QColor(Qt::white)));
 }
 
 void WaveformWidget::setMixMarker(double fraction, const QString &label, const QColor &color)
@@ -265,4 +270,123 @@ void CountdownOverlay::paintEvent(QPaintEvent *)
     const QRectF textBox(numBox.right() + 12, r.top() + 10, r.right() - numBox.right() - 28, r.height() - 20);
     p.drawText(textBox, Qt::AlignVCenter | Qt::AlignLeft | Qt::TextWordWrap,
                QFontMetrics(small).elidedText(label_, Qt::ElideRight, int(textBox.width() * 2 - 20)));
+}
+
+// ---- Resizable, remembered columns ------------------------------------------------------------------------------
+
+namespace {
+
+class ColumnFitter : public QObject {
+public:
+    ColumnFitter(QTableView *view, const QString &key) : QObject(view->horizontalHeader()), view_(view), key_(key)
+    {
+        QHeaderView *h = view->horizontalHeader();
+        if (h->stretchLastSection() && h->count() > 0) flex_.insert(h->count() - 1);
+        h->setStretchLastSection(false);
+        for (int c = 0; c < h->count(); ++c) {
+            const auto mode = h->sectionResizeMode(c);
+            if (mode == QHeaderView::Stretch) flex_.insert(c);
+            if (mode == QHeaderView::ResizeToContents) toContents_.insert(c);
+            h->setSectionResizeMode(c, QHeaderView::Interactive);
+        }
+        h->setMinimumSectionSize(28);
+        QSettings s;
+        const QStringList saved = s.value(QStringLiteral("ui/columns/") + key_).toStringList();
+        if (saved.size() == h->count()) {
+            restored_ = true;
+            fitting_ = true;
+            for (int c = 0; c < saved.size(); ++c)
+                if (const int w = saved[c].toInt(); w >= 20) h->resizeSection(c, w);
+            fitting_ = false;
+        }
+        saveTimer_.setSingleShot(true);
+        saveTimer_.setInterval(400);
+        connect(&saveTimer_, &QTimer::timeout, this, [this] { save(); });
+        connect(h, &QHeaderView::sectionResized, this, [this](int logical, int, int) {
+            if (fitting_) return;
+            fit(logical);
+            saveTimer_.start();
+        });
+        connect(h, &QHeaderView::sectionCountChanged, this, [this] { QTimer::singleShot(0, this, [this] { fit(-1); }); });
+        viewport_ = view->viewport();
+        viewport_->installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject *o, QEvent *e) override
+    {
+        // Only the viewport's own pointer is compared: while the table is being destroyed it must not be asked anything.
+        if ((e->type() == QEvent::Resize || e->type() == QEvent::Show) && o == viewport_) {
+            if (!shown_ && view_->viewport()->width() > 0) {
+                shown_ = true;
+                // The columns sized to their contents get that width once, unless the user's own width is saved.
+                if (!restored_) {
+                    fitting_ = true;
+                    for (int c : std::as_const(toContents_)) view_->resizeColumnToContents(c);
+                    fitting_ = false;
+                }
+            }
+            fit(-1);
+        }
+        return QObject::eventFilter(o, e);
+    }
+
+private:
+    // The stretching columns (apart from the one just dragged) share what is left of the visible width.
+    void fit(int exclude)
+    {
+        QHeaderView *h = view_->horizontalHeader();
+        const int avail = view_->viewport()->width();
+        if (avail <= 0 || fitting_) return;
+        QList<int> cols;
+        int used = 0;
+        for (int c = 0; c < h->count(); ++c) {
+            if (h->isSectionHidden(c)) continue;
+            if (flex_.contains(c) && c != exclude) cols << c;
+            else used += h->sectionSize(c);
+        }
+        if (cols.isEmpty()) return;
+        const int minW = 110;      // a nyúló (cím, előadó…) oszlop ennél keskenyebb nem lesz: inkább görgethető a tábla
+        const int target = std::max<int>(minW * cols.size(), avail - used);
+        int current = 0;
+        for (int c : cols) current += h->sectionSize(c);
+        fitting_ = true;
+        int left = target;
+        for (int i = 0; i < cols.size(); ++i) {
+            const int c = cols[i];
+            int w = i == cols.size() - 1 ? left
+                    : current > 0        ? int(qint64(h->sectionSize(c)) * target / current)
+                                         : target / int(cols.size());
+            w = std::max(minW, w);
+            left -= w;
+            if (h->sectionSize(c) != w) h->resizeSection(c, w);
+        }
+        fitting_ = false;
+    }
+
+    void save()
+    {
+        QHeaderView *h = view_->horizontalHeader();
+        QStringList w;
+        for (int c = 0; c < h->count(); ++c) w << QString::number(h->sectionSize(c));
+        QSettings().setValue(QStringLiteral("ui/columns/") + key_, w);
+    }
+
+    QTableView *view_;
+    QWidget *viewport_ = nullptr;
+    QString key_;
+    QSet<int> flex_, toContents_;
+    QTimer saveTimer_;
+    bool fitting_ = false;
+    bool restored_ = false;
+    bool shown_ = false;
+};
+
+} // namespace
+
+void makeColumnsResizable(QTableView *view, const QString &key)
+{
+    if (!view || view->horizontalHeader()->property("eterColumns").isValid()) return;
+    view->horizontalHeader()->setProperty("eterColumns", key);
+    new ColumnFitter(view, key);
 }

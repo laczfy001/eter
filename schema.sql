@@ -106,7 +106,7 @@ CREATE TABLE clock_slots (
     id             INTEGER PRIMARY KEY,
     clock_id       INTEGER NOT NULL REFERENCES clocks(id) ON DELETE CASCADE,
     position       INTEGER NOT NULL,         -- sorrend a sémán belül
-    slot_type      TEXT NOT NULL CHECK (slot_type IN ('category','item','fill')),
+    slot_type      TEXT NOT NULL CHECK (slot_type IN ('category','item','fill','note')),
     category_id    INTEGER REFERENCES categories(id) ON DELETE RESTRICT,
     item_id        INTEGER REFERENCES items(id)      ON DELETE CASCADE,
     item_count     INTEGER NOT NULL DEFAULT 1 CHECK (item_count >= 1),  -- pl. reklámblokk: 3 szpot
@@ -115,17 +115,38 @@ CREATE TABLE clock_slots (
     energy_min     INTEGER NOT NULL DEFAULT 0,  -- a választható elemek energiája (0 = nincs korlát)
     energy_max     INTEGER NOT NULL DEFAULT 0,
     up_to_fit      INTEGER NOT NULL DEFAULT 0,  -- legfeljebb item_count darab, de csak amennyi a következő fix pontig elfér
+    note_text      TEXT NOT NULL DEFAULT '',    -- 'note': a playlistben megjelenő felirat
+    sweeper_category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,  -- sweeper az ide vezető átmenetre
+    sweeper_duck_db REAL NOT NULL DEFAULT -6,   -- ennyivel halkul alatta a zene
     UNIQUE (clock_id, position),
     CHECK ( (slot_type = 'item' AND item_id IS NOT NULL)
-         OR (slot_type IN ('category','fill') AND category_id IS NOT NULL) )
+         OR (slot_type IN ('category','fill') AND category_id IS NOT NULL)
+         OR slot_type = 'note' )
+) STRICT;
+
+-- Heti rácsok (előbeállítások): egy az aktív, a többire időszakok szerint vált a program
+CREATE TABLE week_grids (
+    id       INTEGER PRIMARY KEY,
+    name     TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0
+) STRICT;
+
+-- Időszakok: ezalatt a megadott rács érvényes (yearly = 1: minden évben, csak a hónap-nap számít)
+CREATE TABLE week_grid_periods (
+    id        INTEGER PRIMARY KEY,
+    grid_id   INTEGER NOT NULL REFERENCES week_grids(id) ON DELETE CASCADE,
+    from_date TEXT NOT NULL,                 -- ÉÉÉÉ-HH-NN
+    to_date   TEXT NOT NULL,
+    yearly    INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 
 -- Általános hét: nap (0 = hétfő … 6 = vasárnap) × óra → óraséma
 CREATE TABLE week_grid (
+    grid_id  INTEGER NOT NULL DEFAULT 1 REFERENCES week_grids(id) ON DELETE CASCADE,
     weekday  INTEGER NOT NULL CHECK (weekday BETWEEN 0 AND 6),
     hour     INTEGER NOT NULL CHECK (hour BETWEEN 0 AND 23),
     clock_id INTEGER NOT NULL REFERENCES clocks(id) ON DELETE RESTRICT,
-    PRIMARY KEY (weekday, hour)
+    PRIMARY KEY (grid_id, weekday, hour)
 ) STRICT, WITHOUT ROWID;
 
 -- Eltérés egy konkrét napon (ünnepnap, különkiadás)
@@ -161,6 +182,7 @@ CREATE TABLE playlist_entries (
     group_name    TEXT,
     overlay_offset_ms INTEGER,               -- ráfektetett elem: a kezdése a szomszédos átmenet mix pontjához képest
     overlay_duck_db   REAL NOT NULL DEFAULT 0, -- ennyivel halkul alatta a zene
+    note          TEXT NOT NULL DEFAULT '',  -- felirat a sor előtt (órasémák „Jegyzet” eleme)
     UNIQUE (playlist_id, position)
 ) STRICT;
 
@@ -287,6 +309,14 @@ CREATE TABLE web_requests (
     updated_at   INTEGER NOT NULL
 ) STRICT;
 
+-- Online adatok gyorsítótára (TheAudioDB): "a:<előadó>" előadói adatlap, "t:<elem>" szám keresése
+CREATE TABLE online_meta (
+    key        TEXT PRIMARY KEY,
+    found      INTEGER NOT NULL DEFAULT 0,
+    data       TEXT NOT NULL DEFAULT '',     -- JSON
+    fetched_at INTEGER NOT NULL
+) STRICT;
+
 -- ---------------------------------------------------------------------
 -- Kezdőadatok
 -- ---------------------------------------------------------------------
@@ -299,8 +329,10 @@ INSERT INTO settings (key, value) VALUES
     ('default_fade_curve',    'linear'),
     ('auto_mix_threshold_db', '-24');        -- automatikus mix pont: a szám vége előtt eddig halkul
 
+INSERT INTO week_grids (id, name, position) VALUES (1, '', 1);
+
 -- Kategóriákat a felhasználó hoz létre, ezért nincs előre feltöltött lista.
 
-PRAGMA user_version = 15;
+PRAGMA user_version = 17;
 
 COMMIT;

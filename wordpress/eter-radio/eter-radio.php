@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Éter Radio
  * Description:       Now playing, up next, most played and song requests on your site, fed live by the Éter radio playout.
- * Version:           1.2.1
+ * Version:           1.2.2
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            Éter
@@ -20,7 +20,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('ETER_RADIO_VERSION', '1.2.1');
+define('ETER_RADIO_VERSION', '1.2.2');
 define('ETER_RADIO_FILE', __FILE__);
 
 require_once __DIR__ . '/includes/class-store.php';
@@ -64,6 +64,8 @@ add_action('init', function () {
     Eter_Radio_Blocks::register();
 });
 add_action('rest_api_init', ['Eter_Radio_Rest', 'register']);
+// Ha egy biztonsági beállítás a REST API-t csak bejelentkezve engedi, az Éter útvonalai akkor is elérhetők maradnak.
+Eter_Radio_Rest::allow_through_blockers();
 if (is_admin()) {
     Eter_Radio_Admin::init();
 }

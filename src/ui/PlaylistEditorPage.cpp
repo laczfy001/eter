@@ -1,4 +1,5 @@
 #include "i18n.h"
+#include "Widgets.h"
 #include "PlaylistEditorPage.h"
 #include "Library.h"
 #include "PlaylistTable.h"
@@ -125,6 +126,7 @@ PlaylistEditorPage::PlaylistEditorPage(Database *db, QWidget *parent) : QWidget(
     table_->setColumnWidth(0, 44);
     table_->setColumnWidth(3, 140);
     table_->setColumnWidth(4, 64);
+    makeColumnsResizable(table_, QStringLiteral("playlistEditor"));
     hint_ = new QLabel(TR("Üres playlist.\n\nHúzd ide az elemeket a jobb oldali hangtárból,\nvagy kattints rájuk duplán."));
     hint_->setObjectName("small");
     hint_->setAlignment(Qt::AlignCenter);

@@ -1,4 +1,5 @@
 #include "i18n.h"
+#include "Widgets.h"
 #include "MixEditorPage.h"
 #include "Library.h"
 #include "SchedulerPage.h"
@@ -84,10 +85,10 @@ static bool writeWav(const QString &path, const std::vector<float> &samples, int
 
 static const int kRuler = 24;
 static int pairIndex(const QVector<MixPair> &pairs, int fromEntry, int toEntry);
-static const QColor kBright[3] = {QColor("#b07a1e"), QColor("#2f6ea8"), QColor("#3f9a6b")};
-static const QColor kDim[3] = {QColor("#3d3220"), QColor("#1d3046"), QColor("#1f3d2e")};
-static const QColor kLine[3] = {QColor("#ffd58a"), QColor("#bfe0ff"), QColor("#b4f0cf")};
-static const QColor kTag[3] = {QColor("#f5a524"), QColor("#5cb0ff"), QColor("#45d483")};
+static const theme::ColorTable<3> kBright{{"#b07a1e", "#2f6ea8", "#3f9a6b"}};
+static const theme::ColorTable<3> kDim{{"#3d3220", "#1d3046", "#1f3d2e"}};
+static const theme::ColorTable<3> kLine{{"#ffd58a", "#bfe0ff", "#b4f0cf"}};
+static const theme::ColorTable<3> kTag{{"#f5a524", "#5cb0ff", "#45d483"}};
 
 // Egysoros felirat, amely a végén három ponttal rövidül, ha nem fér ki (a teljes szöveg a súgóban).
 class ElidedLabel : public QLabel {
@@ -420,7 +421,7 @@ void MixTimeline::paintEvent(QPaintEvent *)
     // Az átfedések sávja
     for (int j = 0; j < tr_.size(); ++j) {
         const double x0 = xOf(clipStart(j + 1)), x1 = xOf(clipEnd(j));
-        if (x1 > x0) p.fillRect(QRectF(x0, laneRect(j).top(), x1 - x0, laneRect(j + 1).bottom() - laneRect(j).top()), QColor("#20242c"));
+        if (x1 > x0) p.fillRect(QRectF(x0, laneRect(j).top(), x1 - x0, laneRect(j + 1).bottom() - laneRect(j).top()), theme::c("#20242c"));
     }
 
     // Vonalzó: a kijelölt átmenet mix pontjához viszonyított másodpercek
@@ -436,13 +437,13 @@ void MixTimeline::paintEvent(QPaintEvent *)
         const double x = xOf(zero + k * step);
         if (x > w) break;
         if (x < -80) continue;
-        p.setPen(QColor("#30353e"));
+        p.setPen(theme::c("#30353e"));
         p.drawLine(QPointF(x, 0), QPointF(x, kRuler));
         p.setPen(k == 0 ? theme::amberSoft : theme::muted);
         p.drawText(QPointF(x + 4, 16), k == 0 ? TR("mix pont")
                                              : TR("%1%2 mp").arg(k > 0 ? "+" : "−").arg(std::llabs(k * step) / 1000));
     }
-    p.setPen(QColor("#30353e"));
+    p.setPen(theme::c("#30353e"));
     p.drawLine(0, kRuler, w, kRuler);
     for (int lane = 1; lane <= n; ++lane) p.drawLine(QPointF(0, laneRect(lane).top()), QPointF(w, laneRect(lane).top()));
 
@@ -464,7 +465,7 @@ void MixTimeline::paintEvent(QPaintEvent *)
         if (nat >= 0) {
             const double xe = xOf(nat);
             if (xe >= 0 && xe <= w) {
-                p.setPen(QPen(QColor("#6b7380"), 1, Qt::DashLine));
+                p.setPen(QPen(theme::c("#6b7380"), 1, Qt::DashLine));
                 p.drawLine(QPointF(xe, lane.top()), QPointF(xe, lane.bottom()));
             }
         }
@@ -474,21 +475,21 @@ void MixTimeline::paintEvent(QPaintEvent *)
         if (!tr_[j].vtItemId) continue;
         const qint64 at = clipStart(j + 1) + tr_[j].vtOffsetMs;
         const double x0 = xOf(at), x1 = xOf(at + vtLen(j));
-        p.fillRect(QRectF(x0, vtLane.top() + 1, x1 - x0, vtLane.height() - 1), QColor("#16303a"));
-        drawWave(p, vtLane, vt_[j].peaks, vt_[j].durMs, viewStart_ - at, QColor("#4fb6c9"));
+        p.fillRect(QRectF(x0, vtLane.top() + 1, x1 - x0, vtLane.height() - 1), theme::c("#16303a"));
+        drawWave(p, vtLane, vt_[j].peaks, vt_[j].durMs, viewStart_ - at, theme::c("#4fb6c9"));
     }
     // Ráfektetett elemek: a saját csatornájukon szólnak az átmenet fölött
-    static const QColor kOvl("#b99cff");
+    const QColor kOvl = theme::c("#b99cff");
     const bool ovlShown = hasOverlay();
     const QRectF ovlLane = laneRect(n + 1);
     if (ovlShown) {
-        p.setPen(QColor("#30353e"));
+        p.setPen(theme::c("#30353e"));
         p.drawLine(QPointF(0, ovlLane.top()), QPointF(w, ovlLane.top()));
         for (int j = 0; j < tr_.size(); ++j) {
             if (!tr_[j].ovlItemId) continue;
             const qint64 at = clipStart(j + 1) + tr_[j].ovlOffsetMs;
             const double x0 = xOf(at), x1 = xOf(at + ovlLen(j));
-            p.fillRect(QRectF(x0, ovlLane.top() + 1, x1 - x0, ovlLane.height() - 1), QColor("#2a2340"));
+            p.fillRect(QRectF(x0, ovlLane.top() + 1, x1 - x0, ovlLane.height() - 1), theme::c("#2a2340"));
             drawWave(p, ovlLane, ovl_[j].peaks, ovl_[j].durMs, viewStart_ - at, kOvl);
             p.fillRect(QRectF(x0 - 1, ovlLane.top() + 1, 2, ovlLane.height() - 1), kOvl);
         }
@@ -498,7 +499,7 @@ void MixTimeline::paintEvent(QPaintEvent *)
     // Mix pontok: függőleges vonal a két érintett sávon és a voice track sávon át
     for (int j = 0; j < tr_.size(); ++j) {
         const double x = xOf(clipStart(j + 1));
-        p.setPen(QPen(j == active_ ? theme::amber : QColor("#8a6a2a"), 1.5, Qt::DashLine));
+        p.setPen(QPen(j == active_ ? theme::amber : theme::c("#8a6a2a"), 1.5, Qt::DashLine));
         p.drawLine(QPointF(x, laneRect(j).top()), QPointF(x, laneRect(j + 1).bottom()));
         p.drawLine(QPointF(x, vtLane.top()), QPointF(x, ovlShown ? ovlLane.bottom() : vtLane.bottom()));
     }
@@ -548,7 +549,7 @@ void MixTimeline::paintEvent(QPaintEvent *)
     }
 
     // Hangerőgörbék: szerkesztő módban mindig, egyébként ha nem egyenesek.
-    static const QColor kEnv("#f7f7f7");
+    const QColor kEnv = theme::c("#f7f7f7");
     for (int k = 0; k < n; ++k) {
         const env::Envelope &e = env_[k];
         const bool flat = env::isFlat(e);
@@ -616,7 +617,7 @@ void MixTimeline::paintEvent(QPaintEvent *)
     // Lejátszófej
     if (playhead_ >= 0) {
         const double xp = xOf(playhead_);
-        p.setPen(QPen(Qt::white, 2));
+        p.setPen(QPen(theme::c(QColor(Qt::white)), 2));
         p.drawLine(QPointF(xp, kRuler), QPointF(xp, height()));
     }
 
@@ -646,7 +647,7 @@ void MixTimeline::paintEvent(QPaintEvent *)
     QStringList vtNames;
     for (int j = 0; j < tr_.size(); ++j)
         if (tr_[j].vtItemId) vtNames << vt_[j].title;
-    tag(vtLane, TR("VT"), QColor("#7fd6e8"),
+    tag(vtLane, TR("VT"), theme::c("#7fd6e8"),
         TR("VOICE TRACK   ") + (vtNames.isEmpty() ? TR("nincs") : vtNames.join(QStringLiteral(" · "))));
     if (ovlShown) {
         QStringList names;
@@ -1085,6 +1086,7 @@ MixEditorPage::MixEditorPage(Database *db, eter::Engine *engine, QWidget *parent
     hh->setSectionResizeMode(1, QHeaderView::Stretch);
     table_->setColumnWidth(0, 72);
     table_->setColumnWidth(2, 60);
+    makeColumnsResizable(table_, QStringLiteral("mixEditor"));
     lv->addWidget(table_, 1);
 
     auto *split = new QSplitter(Qt::Horizontal);
@@ -1448,9 +1450,10 @@ MixParams MixEditorPage::resolveMix(const MixPair &pair, int *kind) const
         const bool bothMusic = music(pair.from) && music(pair.to);
         const bool savedHere = saved || pair.from.userMixOutMs > 0 || pair.to.cueInMs > 0;
         const Wave wo = waves_.value(pair.from.id), wi = waves_.value(pair.to.id);
-        if (autoActive_ && !bothMusic && smart_.allItems && !(smart_.savedWins && savedHere) && wo.ready && wo.profile.valid) {
+        const eter::SmartMixSettings &sm = smartFor(pair.from);
+        if (autoActive_ && !bothMusic && sm.allItems && !(sm.savedWins && savedHere) && wo.ready && wo.profile.valid) {
             const eter::SmartMixPlan sp = eter::planAutoMix(wo.profile, wi.profile, music(pair.from), music(pair.to), pair.from.bpm,
-                                                            pair.to.bpm, pair.from.musicKey, pair.to.musicKey, smart_);
+                                                            pair.to.bpm, pair.from.musicKey, pair.to.musicKey, sm);
             if (sp.valid) {
                 if (kind) *kind = 0;
                 p.mixOutMs = sp.mixOutMs;
@@ -1486,10 +1489,10 @@ MixParams MixEditorPage::resolveMix(const MixPair &pair, int *kind) const
     const Wave w = waves_.value(pair.from.id);
     // Automatikus mix módban két zene között az okos mix terve látszik (az adásban is az szól).
     auto isMusic = [](const Item &it) { return it.kind.isEmpty() || it.kind == QLatin1String("music"); };
-    if (autoActive_ && smart_.enabled && isMusic(pair.from) && isMusic(pair.to) && w.ready && w.profile.valid) {
+    if (autoActive_ && smartFor(pair.from).enabled && isMusic(pair.from) && isMusic(pair.to) && w.ready && w.profile.valid) {
         const Wave wi = waves_.value(pair.to.id);
         const eter::SmartMixPlan sp = eter::planAutoMix(w.profile, wi.profile, true, true, pair.from.bpm, pair.to.bpm,
-                                                        pair.from.musicKey, pair.to.musicKey, smart_);
+                                                        pair.from.musicKey, pair.to.musicKey, smartFor(pair.from));
         if (sp.valid) {
             if (kind) *kind = 0;
             p.mixOutMs = sp.mixOutMs;
@@ -1907,12 +1910,12 @@ void MixEditorPage::refreshTable()
             auto *item = new QTableWidgetItem(cells[c]);
             if (c == 0) item->setFont(mono);
             if (pair.fromOnAir || pair.toOnAir) {
-                item->setBackground(QColor("#3a2c10"));
+                item->setBackground(theme::c("#3a2c10"));
                 item->setForeground(theme::amberSoft);
             } else if (c == 2 && (isCustom || defaults)) {
                 item->setForeground(theme::amberSoft);
             } else if (c == 2) {
-                item->setForeground(QColor("#c9ced6"));
+                item->setForeground(theme::c("#c9ced6"));
             }
             if (c == 1) {
                 item->setToolTip(QStringLiteral("%1 → %2").arg(pair.from.title, pair.to.title) +
@@ -2617,6 +2620,7 @@ void MixEditorPage::setAutoMixActive(bool on)
 void MixEditorPage::reloadSmartMix()
 {
     smart_ = loadSmartMix(db_);
+    mixCache_.clear();
     defaultFadeMs_ = std::clamp(db_->setting("default_fade_out_ms", "2500").toInt(), 100, 15000);
     updateAutoBanner();
     if (currentIndex() >= 0 && !anyDirty()) loadCurrent();
@@ -2627,8 +2631,10 @@ static QString secText(int ms) { return QString::number(ms / 1000.0, 'f', 1); }
 QString MixEditorPage::smartPlanText() const
 {
     const int i = currentIndex();
-    if (i < 0 || !smart_.enabled) return {};
+    if (i < 0) return {};
     const MixPair &pr = pairs_[i];
+    const eter::SmartMixSettings &smart_ = smartFor(pr.from);    // a kimenő elem kategóriájának sablonja szerint
+    if (!smart_.enabled) return {};
     auto music = [](const Item &it) { return it.kind.isEmpty() || it.kind == QLatin1String("music"); };
     const bool bothMusic = music(pr.from) && music(pr.to);
     if (!bothMusic) {
@@ -2665,7 +2671,12 @@ QString MixEditorPage::smartPlanText() const
                          ? TR("szoros illesztés a hallható végén (%1)").arg(clockText(sp.mixOutMs))
                          : TR("a következő %1 mp-cel a hallható vége előtt indul (%2)").arg(secText(sp.overlapMs), clockText(sp.mixOutMs));
     if (sp.flowLimited) result += TR(", a tempó vagy a hangnem miatt rövidebb átfedéssel");
-    return TR("Okos mix ennél az átmenetnél: %1 → %2.").arg(why.join(QStringLiteral(" · ")), result) + hidden;
+    QString tplName;
+    if (const int tid = mixCache_.get(db_, pr.from.categoryId).templateId)
+        for (const MixTemplate &t : loadMixTemplates(db_))
+            if (t.id == tid) tplName = t.name;
+    return TR("Okos mix ennél az átmenetnél: %1 → %2.").arg(why.join(QStringLiteral(" · ")), result) + hidden
+           + (tplName.isEmpty() ? QString() : TR(" (Mix sablon: %1)").arg(tplName));
 }
 
 void MixEditorPage::updateAutoBanner()

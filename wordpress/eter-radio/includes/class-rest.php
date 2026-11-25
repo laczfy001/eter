@@ -18,6 +18,49 @@ class Eter_Radio_Rest
 {
     const NS = 'eter/v1';
 
+    // Biztonsági bővítmények (vagy saját kód) gyakran letiltják a REST API-t a be nem jelentkezett látogatóknak
+    // (rest_authentication_errors, rest_pre_dispatch). Az Éter útvonalai ettől még elérhetők maradnak: a szinkron és a
+    // katalógus aláírt (a közös kulcs nélkül semmit nem lehet vele kezdeni), a többi pedig szándékosan nyilvános (a
+    // blokkok ebből olvasnak). Más útvonalakat ez nem érint.
+    public static function allow_through_blockers()
+    {
+        add_filter('rest_authentication_errors', function ($result) {
+            return is_wp_error($result) && self::is_eter_request() ? null : $result;
+        }, PHP_INT_MAX);
+        add_filter('rest_pre_dispatch', function ($result, $server, $request) {
+            if (is_wp_error($result) && $request instanceof WP_REST_Request && self::is_eter_route($request->get_route())) {
+                return null;
+            }
+            return $result;
+        }, PHP_INT_MAX, 3);
+    }
+
+    private static function is_eter_route($route)
+    {
+        $route = '/' . ltrim((string) $route, '/');
+        return $route === '/' . self::NS || strpos($route, '/' . self::NS . '/') === 0;
+    }
+
+    // A most kiszolgált REST-kérés útvonala: ?rest_route=… vagy /wp-json/… alakban.
+    private static function is_eter_request()
+    {
+        global $wp;
+        $route = '';
+        if (isset($wp) && is_object($wp) && !empty($wp->query_vars['rest_route'])) {
+            $route = $wp->query_vars['rest_route'];
+        } elseif (isset($_GET['rest_route'])) {
+            $route = wp_unslash($_GET['rest_route']);
+        } else {
+            $path = (string) parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH);
+            $prefix = '/' . trim(rest_get_url_prefix(), '/') . '/';
+            $at = strpos($path, $prefix);
+            if ($at !== false) {
+                $route = substr($path, $at + strlen($prefix) - 1);
+            }
+        }
+        return self::is_eter_route($route);
+    }
+
     public static function register()
     {
         register_rest_route(self::NS, '/sync', [

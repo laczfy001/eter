@@ -4,6 +4,11 @@
 #include "Widgets.h"
 
 #include <QComboBox>
+#include <QPainter>
+#include <QPainterPath>
+#include <QTextBrowser>
+#include <QToolButton>
+#include "net/ArtistInfo.h"
 #include <QDataStream>
 #include <cmath>
 #include <QDragEnterEvent>
@@ -30,7 +35,6 @@ PlayerWidget::PlayerWidget(Engine *engine, Engine::Channel channel, QWidget *par
     setObjectName("panel");
     setAcceptDrops(true);
     index_ = ch_ == Engine::Player1 ? 0 : ch_ == Engine::Player2 ? 1 : 2;
-    static const QColor colors[3] = {QColor("#f5a524"), QColor("#5cb0ff"), QColor("#3fd0b5")};
 
     auto *badge = new QLabel(letter());
     badge->setObjectName(index_ == 0 ? "badge1" : index_ == 1 ? "badge2" : "badge3");
@@ -74,14 +78,49 @@ PlayerWidget::PlayerWidget(Engine *engine, Engine::Channel channel, QWidget *par
     artist_->setTextFormat(Qt::PlainText);
     artist_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     wave_ = new WaveformWidget;
-    wave_->setPlayedColor(colors[index_]);
+    wave_->setPlayedColor(theme::playerColor(index_));
 
+    // Előadói adatok: fotó a cím mellett, a tények az előadó után, az életrajz egy gombnyomásra.
+    artistPhoto_ = new QLabel;
+    artistPhoto_->setObjectName("artistPhoto");
+    artistPhoto_->setFixedSize(48, 48);
+    artistPhoto_->setScaledContents(false);
+    artistPhoto_->hide();
+    artistFacts_ = new QLabel;
+    artistFacts_->setObjectName("small");
+    artistFacts_->setTextFormat(Qt::PlainText);
+    artistFacts_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    artistFacts_->hide();
+    bioBtn_ = new QToolButton;
+    bioBtn_->setObjectName("bioButton");
+    bioBtn_->setText(TR("Életrajz"));
+    bioBtn_->setToolTip(TR("Az előadó életrajza és adatai"));
+    bioBtn_->setFocusPolicy(Qt::NoFocus);
+    bioBtn_->setAutoRaise(true);
+    bioBtn_->hide();
+    connect(bioBtn_, &QToolButton::clicked, this, &PlayerWidget::showBio);
+    auto *artistRow = new QHBoxLayout;
+    artistRow->setSpacing(8);
+    artistRow->addWidget(artist_, 0);
+    artistRow->addWidget(artistFacts_, 1);
+    artistRow->addWidget(bioBtn_);
+    auto *names = new QVBoxLayout;
+    names->setSpacing(2);
+    names->addWidget(title_);
+    names->addLayout(artistRow);
+    auto *top = new QHBoxLayout;
+    top->setSpacing(10);
+    top->addWidget(artistPhoto_, 0, Qt::AlignVCenter);
+    top->addLayout(names, 1);
     auto *left = new QVBoxLayout;
     left->setSpacing(2);
-    left->addWidget(title_);
-    left->addWidget(artist_);
+    left->addLayout(top);
     left->addSpacing(4);
     left->addWidget(wave_);
+    if (ArtistInfoService *info = ArtistInfoService::instance())
+        connect(info, &ArtistInfoService::artistUpdated, this, [this](const QString &key) {
+            if (key == artistKey_) updateArtistInfo();
+        });
 
     remainCaption_ = new QLabel(TR("HÁTRA"));
     remainCaption_->setObjectName("caption");
@@ -210,14 +249,20 @@ void PlayerWidget::startScan(const QString &path)
             src_->setDuration(total);     // a teljes végigolvasás pontos hosszt ad
             // Automatikus mix pont: az utolsó hely, ahol a jel még a küszöb fölött van.
             mixOut_ = eter::autoMixOut(std::vector<float>(v.begin(), v.end()), total, autoMixDb);
-            // A szám eleji csend: az első pont, ahol a jel −45 dB fölé ér.
-            const float quiet = static_cast<float>(std::pow(10.0, -45.0 / 20.0));
+            // A szám eleji csend: az első pont, ahol a jel a kezdőpont küszöbe (alapból −45 dB) fölé ér.
+            const float quiet = static_cast<float>(std::pow(10.0, autoCueDb / 20.0));
             int first = 0;
             while (first < v.size() - 1 && v[first] < quiet) ++first;
             leadIn_ = first > 0 ? std::min<qint64>(total / 4, static_cast<qint64>(first) * total / v.size()) : 0;
             emit scanned(total);
         }, Qt::QueuedConnection);
     });
+}
+
+void PlayerWidget::changeEvent(QEvent *e)
+{
+    if (e->type() == QEvent::StyleChange && wave_) wave_->setPlayedColor(theme::playerColor(index_));
+    QFrame::changeEvent(e);
 }
 
 bool PlayerWidget::loadFile(const QString &path, QString *err)
@@ -241,6 +286,7 @@ bool PlayerWidget::loadFile(const QString &path, QString *err)
     title_->setText(t);
     title_->setToolTip(path);
     artist_->setText(QString::fromStdString(src_->artist()));
+    updateArtistInfo();
     if (src_->isStream()) {
         // Élő stream: nincs hullámforma; a hosszát a hangtárban megadott tervezett hossz adja (setStreamLength).
         wave_->clear();
@@ -276,6 +322,7 @@ void PlayerWidget::eject()
     title_->clear();
     title_->setToolTip({});
     artist_->clear();
+    updateArtistInfo();
     refreshState();
     emit stateChanged();
 }
@@ -431,6 +478,109 @@ void PlayerWidget::setMeta(const QString &title, const QString &artist)
 {
     if (!title.isEmpty()) title_->setText(title);
     artist_->setText(artist);
+    updateArtistInfo();
+}
+
+void PlayerWidget::updateArtistInfo()
+{
+    ArtistInfoService *info = ArtistInfoService::instance();
+    const QString artist = artist_->text();
+    ArtistData d;
+    if (info && info->anyEnabled() && !artist.isEmpty() && !src_->isStream()) {
+        artistKey_ = ArtistInfoService::keyFor(info->primaryName(artist));
+        d = info->artist(artist);
+    } else {
+        artistKey_.clear();
+    }
+    // A szöveg a rendelkezésre álló helyhez igazodik; a teljes szöveg a buborékban.
+    artist_->setSizePolicy(d.found ? QSizePolicy::Preferred : QSizePolicy::Ignored, QSizePolicy::Preferred);
+    artistFacts_->setText(d.found ? QStringLiteral("·  ") + d.facts() : QString());
+    artistFacts_->setToolTip(d.facts());
+    artistFacts_->setVisible(d.found && !d.facts().isEmpty());
+    bioBtn_->setVisible(d.found);
+    QPixmap pm;
+    if (d.found && !d.imageFile.isEmpty() && pm.load(d.imageFile)) {
+        // Négyzetesre vágva, lekerekítve.
+        const int side = std::min(pm.width(), pm.height());
+        pm = pm.copy((pm.width() - side) / 2, (pm.height() - side) / 2, side, side)
+                 .scaled(96, 96, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        QPixmap round(96, 96);
+        round.fill(Qt::transparent);
+        QPainter p(&round);
+        p.setRenderHint(QPainter::Antialiasing);
+        QPainterPath path;
+        path.addRoundedRect(QRectF(0, 0, 96, 96), 12, 12);
+        p.setClipPath(path);
+        p.drawPixmap(0, 0, pm);
+        p.end();
+        round.setDevicePixelRatio(2.0);
+        artistPhoto_->setPixmap(round);
+        artistPhoto_->show();
+    } else {
+        artistPhoto_->clear();
+        artistPhoto_->hide();
+    }
+}
+
+void PlayerWidget::showBio()
+{
+    ArtistInfoService *info = ArtistInfoService::instance();
+    if (!info) return;
+    const ArtistData d = info->artist(artist_->text());
+    if (!d.found) return;
+    auto *pop = new QFrame(this, Qt::Popup);
+    pop->setObjectName("bioPopup");
+    pop->setAttribute(Qt::WA_DeleteOnClose);
+    pop->setStyleSheet(QStringLiteral("QFrame#bioPopup { background: #1b1e24; border: 1px solid #454b57; border-radius: 6px; }"));
+    auto *v = new QVBoxLayout(pop);
+    v->setContentsMargins(16, 14, 16, 12);
+    v->setSpacing(8);
+    auto *head = new QHBoxLayout;
+    head->setSpacing(14);
+    QPixmap pm;
+    if (!d.imageFile.isEmpty() && pm.load(d.imageFile)) {
+        auto *img = new QLabel;
+        img->setPixmap(pm.scaled(120, 120, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        head->addWidget(img, 0, Qt::AlignTop);
+    }
+    auto *facts = new QVBoxLayout;
+    facts->setSpacing(4);
+    auto *name = new QLabel(d.name);
+    name->setObjectName("trackTitle");
+    facts->addWidget(name);
+    QStringList lines;
+    if (!d.country.isEmpty()) lines << TR("Ország: %1").arg(d.country);
+    if (d.formed > 0) lines << TR("Alakult: %1").arg(d.formed) + (d.disbanded.isEmpty() ? QString() : TR(" (feloszlott)"));
+    if (d.born > 0) lines << TR("Született: %1").arg(d.born) + (d.died > 0 ? TR(", meghalt: %1").arg(d.died) : QString());
+    if (d.members > 2 || (d.members == 2 && !d.sources.contains(QStringLiteral("MusicBrainz")))) lines << TR("Tagok: %1").arg(d.members);
+    if (!d.website.isEmpty()) lines << TR("Weboldal: %1").arg(d.website);
+    QStringList style;
+    for (const QString &x : {d.genre, d.style})
+        if (!x.isEmpty() && !style.contains(x)) style << x;
+    if (!style.isEmpty()) lines << TR("Műfaj: %1").arg(style.join(QStringLiteral(", ")));
+    if (!d.mood.isEmpty()) lines << TR("Hangulat: %1").arg(d.mood);
+    if (!d.label.isEmpty()) lines << TR("Kiadó: %1").arg(d.label);
+    for (const QString &l : std::as_const(lines)) {
+        auto *lab = new QLabel(l);
+        lab->setObjectName("small");
+        facts->addWidget(lab);
+    }
+    facts->addStretch(1);
+    head->addLayout(facts, 1);
+    v->addLayout(head);
+    auto *bio = new QTextBrowser;
+    bio->setObjectName("bioText");
+    bio->setPlainText(d.bio.isEmpty() ? TR("Ehhez az előadóhoz nincs életrajz.") : d.bio);
+    bio->setFrameShape(QFrame::NoFrame);
+    bio->setStyleSheet(QStringLiteral("QTextBrowser { background: transparent; color: #d4d8de; font-size: 13px; }"));
+    v->addWidget(bio, 1);
+    auto *src = new QLabel(TR("Forrás: %1").arg(d.sources.isEmpty() ? QStringLiteral("TheAudioDB") : d.sources.join(QStringLiteral(", "))));
+    src->setObjectName("small");
+    v->addWidget(src);
+    pop->resize(560, 440);
+    QPoint at = bioBtn_->mapToGlobal(QPoint(0, bioBtn_->height() + 4));
+    pop->move(at);
+    pop->show();
 }
 
 void PlayerWidget::setOutputName(const QString &name)

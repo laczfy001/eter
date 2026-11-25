@@ -24,7 +24,9 @@ public:
     void setDb(int strip, double db);
     void setMuted(int strip, bool on);
     void setOnAir(int strip, bool on);
-    void resetAll();                                  // minden csatorna 0 dB, némítás nélkül
+    void resetAll();
+    static double posOf(double db);                   // 0..1 (alulról); kMinDb alatt 0
+    static double dbOfPos(double p);                                  // minden csatorna 0 dB, némítás nélkül
     QString debugText() const;                        // fejlesztéshez
 
     // Némítás előtt megkérdezhető (pl. az adásban lévő lejátszónál); igaz: mehet.
@@ -65,8 +67,6 @@ private:
     QRectF clipRect(int i) const;
     double yOf(const QRectF &m, double db) const;
     double dbAt(const QRectF &m, double y) const;
-    static double posOf(double db);                   // 0..1 (alulról); kMinDb alatt 0
-    static double dbOfPos(double p);
     static QString label(int i);
     static QColor color(int i);
     static QString name(int i);
