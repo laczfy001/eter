@@ -12,7 +12,6 @@ for Icecast and a backup playout in one desktop application.
 
 ### On air
 
-![The player on air: artist photo and details, the waveform with the automatic mix point to player B](docs/screenshots/on-air.png)
 
 - **Three players (A, B, C)**, of which the main window shows one: the one on air. A strip under it shows all three
   (ON AIR / FADING / STANDBY, title, time, output) and, while one plays, the voice track; click a player in the strip
