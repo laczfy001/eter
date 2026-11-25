@@ -6,11 +6,13 @@ for Icecast and a backup playout in one desktop application.
 
 *Magyar leírás: [README.hu.md](README.hu.md)*
 
-![The On air page: the player on air, the playlist with an expanded transition, and the library](docs/screenshots/on-air.png)
+![The On air page with the High contrast colour scheme: the player on air with artist info, the playlist with fixed-time items, the mini mixer and the cartwall](docs/screenshots/on-air.png)
 
 ## Features
 
 ### On air
+
+![The player on air: artist photo and details, the waveform with the automatic mix point to player B](docs/screenshots/player.png)
 
 - **Three players (A, B, C)**, of which the main window shows one: the one on air. A strip under it shows all three
   (ON AIR / FADING / STANDBY, title, time, output) and, while one plays, the voice track; click a player in the strip
@@ -29,8 +31,8 @@ for Icecast and a backup playout in one desktop application.
   library), and limit how many of the same vocal play in a row.
 - **Smart automatic mix**: recognises fade-out and sudden endings, soft and strong intros, and (optionally) shortens the
   overlap when tempos or keys clash; every threshold is adjustable in *Settings → Automatic mix* (with a live
-  diagram of how two example items are mixed), and the Mix editor shows the plan for each transition. Jingles, ads, news and voice tracks follow each other back to back with the
-  silence cut at both ends; a hidden track after a long silence is left out; a dead-air guard moves on when the item
+  diagram of how two example items are mixed), and the Mix editor shows the plan for each transition. Jingles, ads,
+  news and voice tracks follow each other back to back with the silence cut at both ends; a hidden track after a long silence is left out; a dead-air guard moves on when the item
   on air stays silent.
 - **Live streams**: an Icecast/Shoutcast stream (MP3, AAC, Ogg; http or https; .pls/.m3u resolved) can be a
   playlist item with a planned length; it reconnects when it drops and moves on if it stays down.
@@ -91,6 +93,14 @@ for Icecast and a backup playout in one desktop application.
   air, and the whole library can be checked as well.
 - **Program logger**: what goes on air is recorded into hourly MP3 files, old ones are deleted after a set time.
 - **Play log** with CSV export.
+
+| Colour schemes and the theme editor | Preview of the automatic mix |
+|---|---|
+| ![Settings → Appearance: colour scheme, base colours, player colours](docs/screenshots/colour-schemes.png) | ![Settings → Automatic mix: the preview of a transition between two example items](docs/screenshots/automatic-mix-preview.png) |
+
+| MIDI control with learn mode | External SQL server |
+|---|---|
+| ![Settings → MIDI: device, last message, actions with Learn buttons](docs/screenshots/midi.png) | ![Settings → SQL server: connection, test, upload and download](docs/screenshots/sql-server.png) |
 
 ### Preparation
 

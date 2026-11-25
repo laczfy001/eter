@@ -6,11 +6,13 @@ tartalék playout egyetlen asztali alkalmazásban.
 
 *English: [README.md](README.md)*
 
-![Az Adás oldal: az adásban lévő lejátszó, a playlist egy lenyitott átmenettel, és a hangtár](docs/screenshots/on-air.png)
+![Az Adás oldal Nagy kontraszt színsémával: az adásban lévő lejátszó előadói adatokkal, a playlist fix idejű elemekkel, a mini mixer és a cartwall](docs/screenshots/on-air.png)
 
 ## Funkciók
 
 ### Adás
+
+![Az adásban lévő lejátszó: az előadó fotója és adatai, a hullámforma az automatikus mix pontjával (→ B)](docs/screenshots/player.png)
 
 - **Három lejátszó (A, B, C)**, ebből a főablakban egy látszik: az, amelyik adásban van. Alatta egy sáv mutatja
   mindhármat (ADÁSBAN / KIÚSZIK / KÉSZENLÉT, cím, idő, kimenet), és amíg szól, a voice trackot is; a sávon egy
@@ -27,9 +29,9 @@ tartalék playout egyetlen asztali alkalmazásban.
 - **Ének-szabály**: a számok énekét (férfi, női, együttes, vegyes, instrumentális) egyenként vagy a hangtárban sokat
   egyszerre megadva korlátozható, hány azonos ének jöhet egymás után.
 - **Okos automatikus mix**: felismeri a lecsengő és a hirtelen véget, a lágy és az erős kezdést, és (ha kéred) ütköző
-  tempónál vagy hangnemnél rövidebb az átfedés; minden küszöb állítható a *Beállítások → Automatikus mix* lapon (élő ábrával
-  arról, hogyan keveredik két mintaelem), és a Mix editor minden átmenetnél megmutatja a tervet. A jingle, reklám, hírek és voice track szorosan, a csend levágásával
-  követik egymást; a hosszú csend utáni rejtett szám kimarad; a csendvédelem továbblép, ha a szóló elem sokáig néma.
+  tempónál vagy hangnemnél rövidebb az átfedés; minden küszöb állítható a *Beállítások → Automatikus mix* lapon
+  (élő ábrával arról, hogyan keveredik két mintaelem), és a Mix editor minden átmenetnél megmutatja a tervet. A
+  jingle, reklám, hírek és voice track szorosan, a csend levágásával követik egymást; a hosszú csend utáni rejtett szám kimarad; a csendvédelem továbblép, ha a szóló elem sokáig néma.
 - **Élő stream**: Icecast/Shoutcast stream (MP3, AAC, Ogg; http vagy https; a .pls/.m3u listát is feloldja) a playlist
   elemeként, tervezett hosszal; megszakadáskor újrakapcsolódik, és ha nem jön vissza, továbblép.
 - **Automatikus mix / Mix editor** kapcsoló a felső sávban: *Automatikus mix* állásban a két zene közti átmeneteket
@@ -90,6 +92,14 @@ tartalék playout egyetlen asztali alkalmazásban.
   adásba kerülése előtt. A teljes hangtár is átnézhető.
 - **Adásrögzítés (logger)**: az adás óránkénti MP3 fájlokba kerül, a régieket a beállított idő után törli.
 - **Adásnapló** CSV-exporttal.
+
+| Színsémák és témaszerkesztő | Az automatikus mix előnézete |
+|---|---|
+| ![Beállítások → Megjelenés: színséma, alapszínek, a lejátszók színei](docs/screenshots/colour-schemes.png) | ![Beállítások → Automatikus mix: két mintaelem átmenetének előnézete](docs/screenshots/automatic-mix-preview.png) |
+
+| MIDI-vezérlés tanuló móddal | Külső SQL szerver |
+|---|---|
+| ![Beállítások → MIDI: eszköz, utolsó üzenet, műveletek a Tanítás gombokkal](docs/screenshots/midi.png) | ![Beállítások → SQL szerver: kapcsolat, tesztelés, feltöltés és letöltés](docs/screenshots/sql-server.png) |
 
 ### Előkészítés
 
