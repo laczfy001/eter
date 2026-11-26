@@ -15,6 +15,7 @@
 
 #include "Engine.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -121,6 +122,120 @@ static void captureCallback(ma_device *dev, void *, const void *input, ma_uint32
         r->data.insert(r->data.end(), in, in + frames);
 }
 
+// Stream-bemenet: a hangszál ír a gyűrűbe, a felület szála olvas.
+struct Engine::InputDev {
+    ma_device dev;
+    bool open = false;
+    int refs = 0;
+    static constexpr int64_t kFrames = kRate * 10;
+    std::vector<float> ring = std::vector<float>(static_cast<size_t>(kFrames) * 2, 0.f);
+    std::atomic<int64_t> wr{0}, rd{0};
+};
+
+static void inputCallback(ma_device *dev, void *, const void *input, ma_uint32 frames)
+{
+    auto *in = static_cast<Engine::InputDev *>(dev->pUserData);
+    const float *src = static_cast<const float *>(input);
+    if (!src) return;
+    const int64_t wr = in->wr.load(std::memory_order_relaxed), rd = in->rd.load(std::memory_order_acquire);
+    if (wr - rd + frames > Engine::InputDev::kFrames) return;      // tele: senki nem olvassa
+    for (ma_uint32 i = 0; i < frames; ++i) {
+        const int64_t at = ((wr + i) % Engine::InputDev::kFrames) * 2;
+        in->ring[at] = src[i * 2];
+        in->ring[at + 1] = src[i * 2 + 1];
+    }
+    in->wr.store(wr + frames, std::memory_order_release);
+}
+
+std::vector<DeviceInfo> Engine::captureDevices()
+{
+    std::vector<DeviceInfo> out;
+    if (!impl_->ok) return out;
+    ma_device_info *infos = nullptr;
+    ma_uint32 n = 0;
+    if (ma_context_get_devices(&impl_->ctx, nullptr, nullptr, &infos, &n) != MA_SUCCESS) return out;
+    for (ma_uint32 i = 0; i < n; ++i)
+        out.push_back({infos[i].name, infos[i].isDefault != 0});
+    return out;
+}
+
+bool Engine::openInput(const std::string &deviceName, std::string *err)
+{
+    if (!impl_->ok) {
+        if (err) *err = i18n::textStd("A hangrendszer nem fut");
+        return false;
+    }
+    auto it = inputs_.find(deviceName);
+    if (it != inputs_.end()) {
+        ++it->second->refs;
+        return true;
+    }
+    auto in = std::make_unique<InputDev>();
+    ma_device_config cfg = ma_device_config_init(ma_device_type_capture);
+    cfg.capture.format = ma_format_f32;
+    cfg.capture.channels = 2;           // a mono eszközt a miniaudio kettőzi
+    cfg.sampleRate = kRate;
+    cfg.periodSizeInMilliseconds = 20;
+    cfg.dataCallback = inputCallback;
+    cfg.pUserData = in.get();
+    ma_device_id id;
+    bool found = deviceName.empty();
+    if (!found) {
+        ma_device_info *infos = nullptr;
+        ma_uint32 n = 0;
+        if (ma_context_get_devices(&impl_->ctx, nullptr, nullptr, &infos, &n) == MA_SUCCESS)
+            for (ma_uint32 i = 0; i < n; ++i)
+                if (deviceName == infos[i].name) {
+                    id = infos[i].id;
+                    cfg.capture.pDeviceID = &id;
+                    found = true;
+                    break;
+                }
+    }
+    if (!found) {
+        if (err) *err = i18n::textStd("A bemenet nem található: ") + deviceName;
+        return false;
+    }
+    ma_result r = ma_device_init(&impl_->ctx, &cfg, &in->dev);
+    if (r == MA_SUCCESS) {
+        in->open = true;
+        r = ma_device_start(&in->dev);
+    }
+    if (r != MA_SUCCESS) {
+        if (in->open) ma_device_uninit(&in->dev);
+        if (err) *err = i18n::textStd("A bemenet nem nyitható meg: ") + ma_result_description(r);
+        return false;
+    }
+    in->refs = 1;
+    inputs_[deviceName] = std::move(in);
+    return true;
+}
+
+void Engine::closeInput(const std::string &deviceName)
+{
+    auto it = inputs_.find(deviceName);
+    if (it == inputs_.end()) return;
+    if (--it->second->refs > 0) return;
+    if (it->second->open) ma_device_uninit(&it->second->dev);
+    inputs_.erase(it);
+}
+
+int Engine::readInput(const std::string &deviceName, float *dst, int maxFrames)
+{
+    auto it = inputs_.find(deviceName);
+    if (it == inputs_.end() || maxFrames <= 0) return 0;
+    InputDev *in = it->second.get();
+    const int64_t rd = in->rd.load(std::memory_order_relaxed);
+    const int n = static_cast<int>(std::min<int64_t>(in->wr.load(std::memory_order_acquire) - rd, maxFrames));
+    for (int i = 0; i < n; ++i) {
+        const int64_t at = ((rd + i) % InputDev::kFrames) * 2;
+        dst[i * 2] = in->ring[at];
+        dst[i * 2 + 1] = in->ring[at + 1];
+    }
+    in->rd.store(rd + n, std::memory_order_release);
+    return std::max(0, n);
+}
+
 Engine::Engine() : impl_(new Impl) {}
 
 bool Engine::recording() const { return rec_ && rec_->open; }
@@ -211,6 +326,9 @@ bool Engine::init(const std::string &backend, std::string *err)
 void Engine::shutdown()
 {
     stopRecording();
+    for (auto &kv : inputs_)
+        if (kv.second->open) ma_device_uninit(&kv.second->dev);
+    inputs_.clear();
     for (auto &kv : outs_) {
         if (kv.second->open) ma_device_uninit(&kv.second->dev);
     }

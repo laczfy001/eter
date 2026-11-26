@@ -1726,3 +1726,9 @@ void SchedulerPage::reloadClockFill()
     const QString cur = id ? db_->setting(QStringLiteral("fix_fill_category_clock_%1").arg(id), QString()) : QString();
     clockFill_->setCurrentIndex(std::max(0, clockFill_->findData(cur)));
 }
+
+void SchedulerPage::refreshFixSettings()
+{
+    fixAdjust_->setCurrentIndex(std::max(0, fixAdjust_->findData(db_->setting("fix_adjust", "manual"))));
+    if (auto *gap = findChild<QCheckBox *>("gapFill")) gap->setChecked(db_->setting("fix_gap_fill", "0") == QLatin1String("1"));
+}

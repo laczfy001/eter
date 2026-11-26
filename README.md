@@ -4,13 +4,15 @@ Radio playout and automation for Linux and Windows: three players (A, B, C) with
 a cartwall, a music library, a scheduler, a mix editor, remote playlist editing, a program logger, now playing output
 for Icecast and a backup playout in one desktop application.
 
-*Magyar leírás: [README.hu.md](README.hu.md)*
+**Website and downloads: [laczfy001.github.io/eter](https://laczfy001.github.io/eter/)** · *Magyar leírás: [README.hu.md](README.hu.md)*
 
-![The On air page: the player on air, the playlist with an expanded transition, and the library](docs/screenshots/on-air.png)
+![The On air page with the High contrast colour scheme: the player on air with artist info, the playlist with fixed-time items, the mini mixer and the cartwall](docs/screenshots/on-air.png)
 
 ## Features
 
 ### On air
+
+![The player on air: artist photo and details, the waveform with the automatic mix point to player B](docs/screenshots/player.png)
 
 - **Three players (A, B, C)**, of which the main window shows one: the one on air. A strip under it shows all three
   (ON AIR / FADING / STANDBY, title, time, output) and, while one plays, the voice track; click a player in the strip
@@ -29,8 +31,8 @@ for Icecast and a backup playout in one desktop application.
   library), and limit how many of the same vocal play in a row.
 - **Smart automatic mix**: recognises fade-out and sudden endings, soft and strong intros, and (optionally) shortens the
   overlap when tempos or keys clash; every threshold is adjustable in *Settings → Automatic mix* (with a live
-  diagram of how two example items are mixed), and the Mix editor shows the plan for each transition. Jingles, ads, news and voice tracks follow each other back to back with the
-  silence cut at both ends; a hidden track after a long silence is left out; a dead-air guard moves on when the item
+  diagram of how two example items are mixed), and the Mix editor shows the plan for each transition. Jingles, ads,
+  news and voice tracks follow each other back to back with the silence cut at both ends; a hidden track after a long silence is left out; a dead-air guard moves on when the item
   on air stays silent.
 - **Live streams**: an Icecast/Shoutcast stream (MP3, AAC, Ogg; http or https; .pls/.m3u resolved) can be a
   playlist item with a planned length; it reconnects when it drops and moves on if it stays down.
@@ -73,6 +75,14 @@ for Icecast and a backup playout in one desktop application.
   country, years, genre and biography in the player; empty album and year filled in. The separate **Info window**
   (library header *Info* button, *Tools → Info window*, Ctrl+I) shows everything known about the selected or the
   on-air item.
+- **Stream encoders** (*Stream* tab, *Tools → Stream encoder…*): Éter streams to Icecast 2 or Shoutcast (v1, v2)
+  servers itself, in MP3 (32–320 kbit/s, CBR or ABR) or Ogg Vorbis (48–320 kbit/s), with sample rate and mono/stereo
+  per encoder. Several encoders can run at once (for example a 128 kbit/s MP3 and a 64 kbit/s mobile stream), each from
+  the main output or from a sound card input (a mixing desk). The title on air goes to the listeners, a peak limiter
+  keeps the stream clean, dropped connections are retried, and the total outgoing bandwidth is shown against your
+  upload limit. A STREAM badge in the tab row shows the state on every tab.
+
+  ![The Stream tab: encoder cards, the outgoing bandwidth and the settings of the selected encoder](docs/screenshots/stream-encoders.png)
 - **MIDI control** (*Settings → MIDI*): a MIDI mixer such as the RØDECaster Pro, or any controller, with learn mode:
   buttons start and stop players, *Next*, fade-out and cartwall; faders set volumes or work as fader start.
 - **External SQL server** (MySQL / MariaDB, *Settings → SQL server*): the server is the main store, with a local
@@ -91,6 +101,16 @@ for Icecast and a backup playout in one desktop application.
   air, and the whole library can be checked as well.
 - **Program logger**: what goes on air is recorded into hourly MP3 files, old ones are deleted after a set time.
 - **Play log** with CSV export.
+- **Error log:** every error and warning (unexpected exit, crash, interface, database, audio, stream, website, SQL
+  server, MIDI, …) in daily text files in the program folder (`logs/`); *Help → Error log folder…*.
+
+| Colour schemes and the theme editor | Preview of the automatic mix |
+|---|---|
+| ![Settings → Appearance: colour scheme, base colours, player colours](docs/screenshots/colour-schemes.png) | ![Settings → Automatic mix: the preview of a transition between two example items](docs/screenshots/automatic-mix-preview.png) |
+
+| MIDI control with learn mode | External SQL server |
+|---|---|
+| ![Settings → MIDI: device, last message, actions with Learn buttons](docs/screenshots/midi.png) | ![Settings → SQL server: connection, test, upload and download](docs/screenshots/sql-server.png) |
 
 ### Preparation
 
@@ -217,7 +237,7 @@ engine with an audio file), `--help`.
 On Ubuntu 24.04 or newer:
 
     sudo apt install build-essential cmake ninja-build nasm git curl \
-        qt6-base-dev libqt6sql6-sqlite qt6-wayland libgl1-mesa-dev libmp3lame-dev
+        qt6-base-dev libqt6sql6-sqlite qt6-wayland libgl1-mesa-dev libmp3lame-dev libvorbis-dev
     scripts/build_ffmpeg.sh      # small static FFmpeg with audio decoders only, into third_party/ffmpeg
     cmake -S . -B build/release -G Ninja
     cmake --build build/release
@@ -233,7 +253,7 @@ In an [MSYS2](https://www.msys2.org/) **UCRT64** shell:
 
     pacman -S --needed git make diffutils zip mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake \
         mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-qt6-base \
-        mingw-w64-ucrt-x86_64-lame
+        mingw-w64-ucrt-x86_64-lame mingw-w64-ucrt-x86_64-libvorbis
     scripts/build_ffmpeg.sh
     scripts/build_windows.sh     # result: build/Eter-<version>-win64.zip
 
@@ -246,6 +266,15 @@ accented letters, for example `C:\eter`.
 
 Pushing a tag such as `v0.29.3` makes the GitHub workflow in `.github/workflows/build.yml`
 build the AppImage and the Windows zip and attach them to a release.
+
+### Website
+
+The project website ([laczfy001.github.io/eter](https://laczfy001.github.io/eter/)) is built from `site/` by
+`.github/workflows/pages.yml` after every push to `main`: an English summary of the features, the screenshots from
+`docs/screenshots`, and the newest section of `CHANGELOG.md` as "What's new". The download buttons look up the files
+of the latest release in the browser, so a new release needs no change to the site. One-time setup on GitHub:
+*Settings → Pages → Build and deployment → Source: GitHub Actions*. Local preview:
+`python3 scripts/build_site.py`, then open `build/site/index.html`.
 
 ## Source layout
 

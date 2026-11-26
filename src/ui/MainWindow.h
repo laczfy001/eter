@@ -72,6 +72,8 @@ public:
     void reloadMixSettings();   // az automatikus mix beállításai megváltoztak (Beállítások)
     class ChannelMixer *mixer() const { return mixer_; }
     class MixdownPage *mixdownPage() const { return mixdownPage_; }
+    class StreamManager *streams() const { return streams_; }
+    void showStreamPage();
     void applyMixerGains();
     void setAutoMix(bool on);
     QString routeOf(int ch) const { return ch == kCartRoute ? cartRoute_ : routes_[ch]; }
@@ -250,6 +252,9 @@ private:
     void togglePfl();
     void stopPfl();
     void say(const QString &msg, int ms = 6000);
+    // Hiba vagy figyelmeztetés: az állapotsoron és a hibanaplóban is (area: „Hang”, „Lejátszás”, …).
+    void sayError(const QString &area, const QString &msg, int ms = 10000);
+    void sayWarning(const QString &area, const QString &msg, int ms = 10000);
 
     Database *db_;
     eter::Engine engine_;
@@ -349,6 +354,15 @@ private:
     QLabel *sqlStatus_ = nullptr;
     QToolButton *tabSettings_ = nullptr;
     QToolButton *tabPl_ = nullptr;
+    // Stream enkóderek (Stream fül; Eszközök → Stream enkóder…) és a fülsor STREAM jelzője.
+    class StreamManager *streams_ = nullptr;
+    class StreamPage *streamPage_ = nullptr;
+    QToolButton *tabStream_ = nullptr, *streamBadge_ = nullptr;
+    QSet<QString> streamInputs_;                       // a megnyitott hangkártya-bemenetek
+    std::vector<float> inBuf_;
+    void syncStreamInputs();
+    void updateProgramTap();
+    void updateStreamBadge();
     int mixVersion_ = 0, planVersion_ = -1, planFrom_ = -2, planTo_ = -2;
     Transition planTransition_;
     bool vtPlaying_ = false;

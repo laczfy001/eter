@@ -6,10 +6,15 @@
 #include "db/Database.h"
 #include "ui/Library.h"
 #include "ui/MainWindow.h"
+#include "stream/StreamManager.h"
+#include "ui/StreamPage.h"
 #include "ui/MixEditorPage.h"
 #include "ui/SchedulerPage.h"
 #include "ui/SettingsDialog.h"
 #include "ui/InfoWindow.h"
+#include "core/ErrorLog.h"
+#include <QSqlError>
+#include <QSqlQuery>
 #include "ui/MixPreview.h"
 #include "midi/MidiControl.h"
 #include "ui/PlayerWidget.h"
@@ -346,6 +351,28 @@ static void runEditorTest2(RemoteEditorWindow &editor)
     });
 }
 
+// Az eseménykezelésben keletkező C++ kivétel nem zárja be a programot: a hibanaplóba kerül, és az esemény elvész.
+class EterApplication : public QApplication {
+public:
+    using QApplication::QApplication;
+    bool notify(QObject *receiver, QEvent *event) override
+    {
+        try {
+            return QApplication::notify(receiver, event);
+        } catch (const std::exception &ex) {
+            elog::error(QStringLiteral("Felület"), TR("Kivétel az eseménykezelésben (%1, esemény %2): %3")
+                                                       .arg(QString::fromLatin1(receiver ? receiver->metaObject()->className() : "?"))
+                                                       .arg(int(event ? event->type() : 0))
+                                                       .arg(QString::fromLocal8Bit(ex.what())));
+        } catch (...) {
+            elog::error(QStringLiteral("Felület"), TR("Ismeretlen kivétel az eseménykezelésben (%1, esemény %2)")
+                                                       .arg(QString::fromLatin1(receiver ? receiver->metaObject()->className() : "?"))
+                                                       .arg(int(event ? event->type() : 0)));
+        }
+        return false;
+    }
+};
+
 int main(int argc, char **argv)
 {
     // Alapból X11 (Wayland alatt XWayland) – ott a rendszer rajzolja az ablakkeretet;
@@ -365,15 +392,24 @@ int main(int argc, char **argv)
         if (pct > 100 && pct <= 200) qputenv("QT_SCALE_FACTOR", QByteArray::number(pct / 100.0, 'f', 2));
     }
     std::unique_ptr<QCoreApplication> holder(headless ? new QCoreApplication(argc, argv)
-                                                      : new QApplication(argc, argv));
+                                                      : new EterApplication(argc, argv));
     QCoreApplication &app = *holder;
     QApplication::setOrganizationName("Eter");
     QApplication::setApplicationName("Eter");
     if (!headless) QApplication::setApplicationDisplayName(QStringLiteral("Éter"));
     QApplication::setApplicationVersion(ETER_VERSION);
     if (!headless) QApplication::setDesktopFileName("eter");
-    // Összeomláskor a hívási lánc a terminálra és a crash.log-ba kerül (hibakereséshez).
-    {
+    // Hibanapló a program mappájában (logs/eter-ÉÉÉÉ-HH-NN.txt): hibák, figyelmeztetések, váratlan kilépés, összeomlás.
+    if (!headless) {
+        QString role = QStringLiteral("playout");
+        for (int i = 1; i < argc; ++i) {
+            const QByteArray a(argv[i]);
+            if (a == "--editor") role = QStringLiteral("editor");
+            else if (a == "--backup") role = QStringLiteral("backup");
+            else if (a.startsWith("--") && a.endsWith("test")) role = QStringLiteral("test");
+        }
+        elog::init(role);
+    } else {
         QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
         if (dir.isEmpty()) dir = QDir::homePath();
         crash::install(QDir(dir).filePath(QStringLiteral("crash.log")));
@@ -674,6 +710,11 @@ int main(int argc, char **argv)
             db.setSetting("mix_mode", qEnvironmentVariable("ETER_MIX", "editor"));
         // A háttérelemzés ne írja át a forgatókönyvek adatait (ETER_ANALYZE=1 bekapcsolja nekik).
         if (testRun && !qEnvironmentVariableIsSet("ETER_ANALYZE")) qputenv("ETER_ANALYZE", "0");
+    }
+    if (qEnvironmentVariableIsSet("ETER_ENC_TEST") && qEnvironmentVariableIsSet("ETER_ENC_CONFIG")) {
+        // Fejlesztéshez: stream enkóderek a megadott JSON tömbből (lásd lent, ETER_ENC_TEST).
+        QSettings().setValue(QStringLiteral("stream/encoders"), qEnvironmentVariable("ETER_ENC_CONFIG").toUtf8());
+        if (qEnvironmentVariableIsSet("ETER_ENC_LIMIT")) QSettings().setValue(QStringLiteral("stream/uploadLimit"), qEnvironmentVariableIntValue("ETER_ENC_LIMIT"));
     }
     MainWindow window(&db, parser.value(backendOpt));
     ServerSync serverSync(dbPath);
@@ -1208,6 +1249,57 @@ int main(int argc, char **argv)
                 window.grab().save(dir + "/main.png");
                 QApplication::exit(0);
             });
+        });
+    }
+    if (qEnvironmentVariableIsSet("ETER_ELOG_TEST")) {
+        // Fejlesztéshez: a hibanapló végigpróbálása (Qt-figyelmeztetés, SQL-hiba, párbeszédablak, kivétel az
+        // eseménykezelésben, betöltési hiba, ismétlődő üzenet; ETER_ELOG_TEST=crash: összeomlás, =hang: lefagyás).
+        const QString what = qEnvironmentVariable("ETER_ELOG_TEST");
+        QTimer::singleShot(600, &window, [&window, &db, what] {
+            if (what == QLatin1String("crash")) {
+                eter::Decoder dec;
+                dec.open("/teszt/eset/hibas-fajl.mp3");
+                volatile int *p = nullptr;
+                *p = 42;
+            }
+            if (what == QLatin1String("hang")) {
+                std::printf("vár a leállításra\n");
+                std::fflush(stdout);
+                return;     // a hívó kill -9-cel állítja le
+            }
+            qWarning("Teszt: Qt-figyelmeztetés");
+            for (int i = 0; i < 5; ++i) qWarning("Teszt: ismétlődő figyelmeztetés");
+            {
+                QSqlQuery q;
+                q.prepare(QStringLiteral("SELECT nincs_ilyen_oszlop FROM items"));
+                if (!q.exec()) qWarning("SQL hiba: %s\n  %s", qPrintable(q.lastError().text()), qPrintable(q.lastQuery()));
+            }
+            struct Thrower : QObject {
+                bool event(QEvent *e) override
+                {
+                    if (e->type() == QEvent::User) throw std::runtime_error("teszt kivétel");
+                    return QObject::event(e);
+                }
+            };
+            auto *t = new Thrower;
+            QCoreApplication::postEvent(t, new QEvent(QEvent::User));
+            QApplication::processEvents();
+            std::printf("a kivétel után is fut\n");
+            Item it;
+            it.title = QStringLiteral("Hiányzó szám");
+            it.path = QStringLiteral("/nincs/ilyen/fajl.mp3");
+            it.categoryId = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+            const int id = db.addItem(it);
+            window.appendItems({id});
+            QApplication::processEvents();
+            QTimer::singleShot(200, [] {
+                for (QWidget *w : QApplication::topLevelWidgets())
+                    if (auto *b = qobject_cast<QMessageBox *>(w)) b->accept();
+            });
+            QMessageBox::warning(&window, QStringLiteral("Teszt"), QStringLiteral("Teszt párbeszédablak: valami nem sikerült."));
+            std::printf("napló: %s\n", qPrintable(elog::currentFile()));
+            std::fflush(stdout);
+            QApplication::exit(0);
         });
     }
     if (qEnvironmentVariableIsSet("ETER_MIDI_TEST")) {
@@ -1949,6 +2041,69 @@ int main(int argc, char **argv)
             });
         });
     }
+    if (qEnvironmentVariableIsSet("ETER_ENC_TEST")) {
+        // Fejlesztéshez: stream enkóderek (ETER_ENC_CONFIG: a beállításuk JSON tömbként, autoStart-tal). A fájlok zenék,
+        // sorban szólnak; 3 mp-enként az enkóderek állapota. A végén (ETER_ENC_SECS) kép a Stream fülről
+        // (ETER_ENC_TEST = a képek mappája), és az enkóderek eseménynaplója.
+        const int music = db.addCategory(QStringLiteral("Zene"), "music", "#5cb0ff");
+        QVector<int> ids;
+        int n = 0;
+        for (const QString &f : parser.positionalArguments()) {
+            eter::Decoder dec;
+            if (!dec.open(f.toStdString())) continue;
+            Item it;
+            it.categoryId = music;
+            it.path = QFileInfo(f).absoluteFilePath();
+            it.title = QStringLiteral("Dal %1").arg(++n);
+            it.artist = QStringLiteral("Előadó %1").arg(n);
+            it.durationMs = dec.durationFrames() * 1000 / eter::kRate;
+            ids << db.addItem(it);
+        }
+        db.notifyItemsChanged();
+        if (!ids.isEmpty()) {
+            window.appendItems(ids, -1, 0, {}, QStringLiteral("scheduler"));
+            QTimer::singleShot(800, &window, [&window] {
+                window.setMode(MainWindow::Auto);
+                window.next();
+            });
+        }
+        window.showStreamPage();
+        auto *t = new QTimer(&window);
+        QObject::connect(t, &QTimer::timeout, &window, [&window] {
+            for (stream::Encoder *e : window.streams()->encoders()) {
+                const stream::Status st = e->status();
+                std::printf("[%s] %s: %s · %lld bájt · hallgató %d · csúcs %.2f · %s\n", qPrintable(QTime::currentTime().toString("HH:mm:ss")),
+                            qPrintable(e->config().name), qPrintable(stream::stateLabel(st.state)), (long long)st.bytes, st.listeners,
+                            double(std::max(st.peakL, st.peakR)), qPrintable(st.message));
+            }
+            std::fflush(stdout);
+        });
+        t->start(3000);
+        if (qEnvironmentVariableIsSet("ETER_ENC_STOP_AT"))
+            QTimer::singleShot(qEnvironmentVariableIntValue("ETER_ENC_STOP_AT") * 1000, &window, [&window] {
+                std::printf("-- mind leállítva\n");
+                window.streams()->stopAll();
+            });
+        if (qEnvironmentVariableIsSet("ETER_ENC_START_AT"))
+            QTimer::singleShot(qEnvironmentVariableIntValue("ETER_ENC_START_AT") * 1000, &window, [&window] {
+                std::printf("-- mind indítva\n");
+                window.streams()->startAll();
+            });
+        const int secs = qEnvironmentVariableIsSet("ETER_ENC_SECS") ? qEnvironmentVariableIntValue("ETER_ENC_SECS") : 30;
+        QTimer::singleShot(secs * 1000, &window, [&window] {
+            const QString dir = qEnvironmentVariable("ETER_ENC_TEST");
+            window.resize(1600, 980);
+            window.showStreamPage();
+            if (auto *sp = window.findChild<StreamPage *>())
+                if (qEnvironmentVariableIsSet("ETER_ENC_SELECT")) sp->selectEncoder(qEnvironmentVariable("ETER_ENC_SELECT"));
+            QApplication::processEvents();
+            window.grab().save(dir + "/stream-page.png");
+            for (stream::Encoder *e : window.streams()->encoders())
+                std::printf("== %s napló:\n%s\n", qPrintable(e->config().name), qPrintable(e->events().join(QLatin1Char('\n'))));
+            std::fflush(stdout);
+            QApplication::exit(0);
+        });
+    }
     if (qEnvironmentVariableIsSet("ETER_SMARTMIX_TEST")) {
         // Fejlesztéshez: okos automatikus mix adásban. A megadott fájlok zeneként, sorban; minden szám 26 mp-re ugrik,
         // és kiírja, a kimenő szám hol tart, amikor a következő elindul, és hol áll meg.
@@ -2189,7 +2344,7 @@ int main(int argc, char **argv)
         QTimer::singleShot(qEnvironmentVariableIntValue("ETER_WATCH_STATE") * 1000, [] { QApplication::exit(0); });
     }
     const QStringList files = parser.positionalArguments();
-    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt) && !parser.isSet(threeTestOpt) && !parser.isSet(dbTestOpt) && !parser.isSet(envTestOpt) && !parser.isSet(freshTestOpt) && !parser.isSet(fillTestOpt) && !qEnvironmentVariableIsSet("ETER_ANALYZE_WATCH") && !qEnvironmentVariableIsSet("ETER_FLOW_SHOT") && !qEnvironmentVariableIsSet("ETER_SMARTMIX_TEST") && !qEnvironmentVariableIsSet("ETER_MIXER_TEST") && !qEnvironmentVariableIsSet("ETER_MIXDOWN_TEST") && !qEnvironmentVariableIsSet("ETER_WEB_TEST") && !qEnvironmentVariableIsSet("ETER_CART_SHOT") && !qEnvironmentVariableIsSet("ETER_LIBLOG_SHOT") && !qEnvironmentVariableIsSet("ETER_UI32_SHOT") && !qEnvironmentVariableIsSet("ETER_V033_SHOT") && !qEnvironmentVariableIsSet("ETER_THEME_SHOT") && !qEnvironmentVariableIsSet("ETER_SQL_TEST") && !qEnvironmentVariableIsSet("ETER_ADB_TEST") && !qEnvironmentVariableIsSet("ETER_INFO_TEST") && !qEnvironmentVariableIsSet("ETER_MIXPV_SHOT") && !qEnvironmentVariableIsSet("ETER_MIDI_TEST") && !qEnvironmentVariableIsSet("ETER_TPL_TEST") && !qEnvironmentVariableIsSet("ETER_STREAM_TEST") && !qEnvironmentVariableIsSet("ETER_STREAMDLG_SHOT")) window.library()->importPaths(files);
+    if (!files.isEmpty() && !parser.isSet(uiTestOpt) && !parser.isSet(schedTestOpt) && !parser.isSet(mixTestOpt) && !parser.isSet(recTestOpt) && !parser.isSet(plTestOpt) && !parser.isSet(cartTestOpt) && !parser.isSet(editTestOpt) && !parser.isSet(eventTestOpt) && !parser.isSet(lookTestOpt) && !parser.isSet(nextTestOpt) && !parser.isSet(overlayTestOpt) && !parser.isSet(serveTestOpt) && !parser.isSet(countTestOpt) && !parser.isSet(clickTestOpt) && !parser.isSet(fileTestOpt) && !parser.isSet(fixTestOpt) && !parser.isSet(loggerTestOpt) && !parser.isSet(threeTestOpt) && !parser.isSet(dbTestOpt) && !parser.isSet(envTestOpt) && !parser.isSet(freshTestOpt) && !parser.isSet(fillTestOpt) && !qEnvironmentVariableIsSet("ETER_ANALYZE_WATCH") && !qEnvironmentVariableIsSet("ETER_FLOW_SHOT") && !qEnvironmentVariableIsSet("ETER_SMARTMIX_TEST") && !qEnvironmentVariableIsSet("ETER_MIXER_TEST") && !qEnvironmentVariableIsSet("ETER_MIXDOWN_TEST") && !qEnvironmentVariableIsSet("ETER_WEB_TEST") && !qEnvironmentVariableIsSet("ETER_CART_SHOT") && !qEnvironmentVariableIsSet("ETER_LIBLOG_SHOT") && !qEnvironmentVariableIsSet("ETER_UI32_SHOT") && !qEnvironmentVariableIsSet("ETER_V033_SHOT") && !qEnvironmentVariableIsSet("ETER_THEME_SHOT") && !qEnvironmentVariableIsSet("ETER_SQL_TEST") && !qEnvironmentVariableIsSet("ETER_ADB_TEST") && !qEnvironmentVariableIsSet("ETER_INFO_TEST") && !qEnvironmentVariableIsSet("ETER_MIXPV_SHOT") && !qEnvironmentVariableIsSet("ETER_MIDI_TEST") && !qEnvironmentVariableIsSet("ETER_ELOG_TEST") && !qEnvironmentVariableIsSet("ETER_TPL_TEST") && !qEnvironmentVariableIsSet("ETER_STREAM_TEST") && !qEnvironmentVariableIsSet("ETER_ENC_TEST") && !qEnvironmentVariableIsSet("ETER_STREAMDLG_SHOT")) window.library()->importPaths(files);
 
     if (parser.isSet(importTestOpt)) {
         // Az importáló ablak teljes útja: mappa, kategóriaválasztás, beolvasás.
@@ -3717,9 +3872,10 @@ int main(int argc, char **argv)
         std::printf("módosítás után elemek: %d\n", count());
         // Hibás fájlok
         QFile bad(dir + QStringLiteral("/nem-adatbazis.sqlite"));
-        bad.open(QIODevice::WriteOnly);
-        bad.write("ez csak szöveg");
-        bad.close();
+        if (bad.open(QIODevice::WriteOnly)) {
+            bad.write("ez csak szöveg");
+            bad.close();
+        }
         QString e1, e2;
         const bool r1 = window.stageDatabaseImport(bad.fileName(), &e1);
         std::printf("szövegfájl importja: %s (%s)\n", r1 ? "ELFOGADVA" : "elutasítva", qPrintable(e1.replace('\n', ' ')));
@@ -3844,8 +4000,8 @@ int main(int argc, char **argv)
                 });
             QObject::connect(window.nowPlaying(), &NowPlaying::changed, &window, [nc](const QString &text) {
                 QFile f(nc.path);
-                f.open(QIODevice::ReadOnly);
-                std::printf("  MOST SZÓL: „%s” (fájlban: „%s”)\n", qPrintable(text), f.readAll().constData());
+                const QByteArray inFile = f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+                std::printf("  MOST SZÓL: „%s” (fájlban: „%s”)\n", qPrintable(text), inFile.constData());
             });
         }
         window.setMode(assist ? MainWindow::Assist : MainWindow::Auto);

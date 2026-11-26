@@ -106,6 +106,7 @@ void MainWindow::updateWeb()
         const QDateTime at = plannedStart_.value(row.id);
         next << track(row, at.isValid() ? at.toMSecsSinceEpoch() : 0);
     }
+    web_->setOnAir(std::any_of(std::begin(players_), std::end(players_), [](PlayerWidget *p) { return p->isPlaying(); }));
     web_->setTracks(webNow_, webHasNow_, next);
 }
 

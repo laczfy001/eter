@@ -20,7 +20,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake ninja-build nasm git curl file \
-            qt6-base-dev libqt6sql6-sqlite libqt6sql6-mysql qt6-wayland libgl1-mesa-dev libxkbcommon-dev libmp3lame-dev
+            qt6-base-dev libqt6sql6-sqlite libqt6sql6-mysql qt6-wayland libgl1-mesa-dev libxkbcommon-dev libmp3lame-dev libvorbis-dev libogg-dev
 
       - name: Cache FFmpeg
         id: ffmpeg
@@ -87,6 +87,8 @@ jobs:
             mingw-w64-ucrt-x86_64-nasm
             mingw-w64-ucrt-x86_64-qt6-base
             mingw-w64-ucrt-x86_64-lame
+            mingw-w64-ucrt-x86_64-libvorbis
+            mingw-w64-ucrt-x86_64-libogg
             mingw-w64-ucrt-x86_64-libmariadbclient
 
       - name: Cache FFmpeg

@@ -97,6 +97,28 @@ function eter_api($route)
             eter_error('eter_body', 'Invalid JSON.', 400);
             return;
         }
+        // Several Éter installations: the ones that are not the owner only get a warning back (their acks still count).
+        $inst = is_array($in['instance'] ?? null) ? $in['instance'] : [];
+        $instId = substr(preg_replace('/[^A-Za-z0-9_-]/', '', (string) ($inst['id'] ?? '')), 0, 64);
+        [$isOwner, $owner, $others] = eter_claim($instId === '' ? 'legacy' : $instId, eter_clean($inst['name'] ?? '', 80),
+                                                 eter_clean($in['version'] ?? '', 40), !empty($inst['on_air']));
+        if (!$isOwner) {
+            eter_update('requests', ['next_id' => 1, 'list' => []], function (&$r) use ($in) {
+                $byId = [];
+                foreach ($r['list'] as $i => $q) {
+                    $byId[$q['id']] = $i;
+                }
+                foreach ((array) ($in['acks'] ?? []) as $a) {
+                    if (is_array($a) && isset($a['id'], $a['status'], $byId[(int) $a['id']]) && in_array($a['status'], ETER_STATUSES, true)) {
+                        $r['list'][$byId[(int) $a['id']]]['status'] = $a['status'];
+                        $r['list'][$byId[(int) $a['id']]]['updated'] = time();
+                    }
+                }
+            });
+            eter_json(['ok' => true, 'secondary' => true, 'owner' => ['name' => (string) ($owner['name'] ?? ''),
+                       'on_air' => !empty($owner['on_air'])], 'requests' => [], 'need_catalog' => false, 'others' => $others]);
+            return;
+        }
         $next = [];
         foreach (array_slice((array) ($in['next'] ?? []), 0, 20) as $t) {
             if ($tt = eter_track($t)) {
@@ -146,7 +168,7 @@ function eter_api($route)
         $catalog = eter_read('catalog', ['rev' => '', 'items' => []]);
         $rev = (string) ($in['catalog_rev'] ?? '');
         eter_json(['ok' => true, 'requests' => $new, 'need_catalog' => $rev !== '' && $rev !== $catalog['rev'],
-                   'catalog_count' => count($catalog['items'])]);
+                   'catalog_count' => count($catalog['items']), 'others' => $others]);
         return;
     }
 

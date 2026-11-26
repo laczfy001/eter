@@ -117,6 +117,21 @@ class Eter_Radio_Admin
                                 esc_html($state['version'] ?? '')
                             );
                             ?>
+                            <?php
+                            $owner = Eter_Radio_Store::owner_info();
+                            if ($owner && !empty($owner['name'])) {
+                                echo '<br>';
+                                /* translators: %s: computer name */
+                                printf(esc_html__('Updated by: %s', 'eter-radio'), '<strong>' . esc_html($owner['name']) . '</strong>');
+                            }
+                            foreach (Eter_Radio_Store::other_instances() as $other) {
+                                echo '<br><strong style="color:#b32d2e">';
+                                /* translators: 1: computer name, 2: Éter version */
+                                printf(esc_html__('Another Éter is also connected to this site: %1$s (Éter %2$s). Only one of them updates the site and receives the song requests; switch off the website connection in the other one.', 'eter-radio'),
+                                       esc_html($other['name'] ?: __('unnamed computer', 'eter-radio')), esc_html($other['version'] ?? ''));
+                                echo '</strong>';
+                            }
+                            ?>
                             <br>
                             <?php
                             $req = $state['requests'] ?? [];

@@ -22,6 +22,9 @@
 #include "SchedulerPage.h"
 #include "SettingsDialog.h"
 #include "InfoWindow.h"
+#include "core/ErrorLog.h"
+#include <QUrl>
+#include <QDesktopServices>
 #include "midi/MidiControl.h"
 #include "core/LibraryAnalyzer.h"
 #include "core/SmartMixConfig.h"
@@ -32,6 +35,8 @@
 #include "Theme.h"
 #include "Widgets.h"
 #include "audio/ProgramLogger.h"
+#include "stream/StreamManager.h"
+#include "StreamPage.h"
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -153,11 +158,15 @@ MainWindow::MainWindow(Database *db, const QString &backendOverride, QWidget *pa
     autoMix_ = db_->setting("mix_mode", "auto") != QLatin1String("editor");
     // Előadói adatok (Beállítások → Előadói adatok). A lejátszók előtt: a létrejöttükkor feliratkoznak a frissítéseire.
     artistInfo_ = new ArtistInfoService(db_, this);
+    streams_ = new StreamManager(this);
     buildUi();
     buildMenus();
     startAudio();
     setAutoMix(autoMix_);
     setupMidi();
+    // A „program indulásakor” bekapcsolt stream enkóderek – kicsit később, hogy a hang már menjen.
+    updateStreamBadge();
+    QTimer::singleShot(1500, this, [this] { streams_->autoStart(); });
     reloadMixSettings();
 
     // Az előző futásból megmaradt, még le nem játszott sorok
@@ -331,12 +340,26 @@ void MainWindow::buildUi()
     connect(tabPl_, &QToolButton::clicked, this, [this] { showPage(3); });
     tabMixdown_ = addTab(TR("Mixdown"), true, TR("Elemek sorozatából (voice trackekkel) egyetlen hangfájl, MP3 vagy WAV"));
     connect(tabMixdown_, &QToolButton::clicked, this, [this] { showPage(5); });
+    tabStream_ = addTab(TR("Stream"), true, TR("Icecast / Shoutcast enkóderek: az adás az interneten"));
+    connect(tabStream_, &QToolButton::clicked, this, [this] { showPage(6); });
     tabEvents_ = addTab(TR("Időzítések"), true, TR("Elem vagy playlist időzített beküldése a playlistbe vagy adásba"));
     connect(tabEvents_, &QToolButton::clicked, this, [this] { showPage(4); });
     auto *settingsTab = addTab(TR("Beállítások"), true, TR("Hangkimenetek beállítása"));
     settingsTab->setCheckable(false);
     connect(settingsTab, &QToolButton::clicked, this, &MainWindow::openSettings);
     tabSettings_ = settingsTab;
+    // STREAM jelző: hány enkóder ad; csak akkor látszik, ha van enkóder. Kattintásra a Stream fül.
+    streamBadge_ = new QToolButton;
+    streamBadge_->setObjectName("streamBadge");
+    streamBadge_->setFocusPolicy(Qt::NoFocus);
+    streamBadge_->setCursor(Qt::PointingHandCursor);
+    streamBadge_->hide();
+    tabs->addSpacing(8);
+    tabs->addWidget(streamBadge_);
+    connect(streamBadge_, &QToolButton::clicked, this, [this] {
+        showStreamPage();
+        if (streamPage_) streamPage_->selectFirstProblem();
+    });
     tabs->addStretch(1);
 
     // Átmenetek: automatikus mix vagy a Mix editor mentett beállításai
@@ -510,6 +533,16 @@ void MainWindow::buildUi()
         if (itemEditor_) itemEditor_->releasePreview();
     });
     stack_->addWidget(mixdownPage_);   // 5
+    streamPage_ = new StreamPage(streams_, &engine_);
+    connect(streamPage_, &StreamPage::message, this, [this](const QString &m) { say(m, 8000); });
+    stack_->addWidget(streamPage_);    // 6
+    connect(streams_, &StreamManager::statusChanged, this, &MainWindow::updateStreamBadge);
+    connect(streams_, &StreamManager::listChanged, this, [this] {
+        updateStreamBadge();
+        updateProgramTap();
+        syncStreamInputs();
+        updateNowPlaying();
+    });
     events_ = db_->timedEvents();
     connect(db_, &Database::timedEventsChanged, this, [this] { events_ = db_->timedEvents(); });
     bodyLayout->addWidget(stack_, 1);
@@ -682,7 +715,8 @@ QWidget *MainWindow::buildDeck()
 QVector<std::pair<QString, QString>> MainWindow::tabList()
 {
     return {{"live", TR("Adás")},          {"scheduler", TR("Ütemező")},  {"mix", TR("Mix editor")},
-            {"playlists", TR("Playlist szerkesztő")}, {"mixdown", TR("Mixdown")}, {"events", TR("Időzítések")},
+            {"playlists", TR("Playlist szerkesztő")}, {"mixdown", TR("Mixdown")}, {"stream", TR("Stream")},
+            {"events", TR("Időzítések")},
             {"settings", TR("Beállítások")}};
 }
 
@@ -703,15 +737,16 @@ void MainWindow::applyTabVisibility()
     const QStringList hidden = hiddenTabs();
     const std::pair<const char *, QToolButton *> tabs[] = {{"live", tabLive_},   {"scheduler", tabSched_},
                                                            {"mix", tabMix_},     {"playlists", tabPl_},
-                                                           {"mixdown", tabMixdown_}, {"events", tabEvents_},
+                                                           {"mixdown", tabMixdown_}, {"stream", tabStream_},
+                                                           {"events", tabEvents_},
                                                            {"settings", tabSettings_}};
     for (const auto &[key, button] : tabs)
         if (button) button->setVisible(!hidden.contains(QLatin1String(key)));
     if (hidden.contains(QLatin1String("scheduler")) && schedWindow_) schedWindow_->hide();
     if (hidden.contains(QLatin1String("mix")) && mixWindow_) mixWindow_->hide();
-    static const char *pageKeys[] = {"live", "scheduler", "mix", "playlists", "events", "mixdown"};
+    static const char *pageKeys[] = {"live", "scheduler", "mix", "playlists", "events", "mixdown", "stream"};
     const int cur = stack_ ? stack_->currentIndex() : 0;
-    if (cur > 0 && cur < 6 && hidden.contains(QLatin1String(pageKeys[cur]))) showPage(0);
+    if (cur > 0 && cur < 7 && hidden.contains(QLatin1String(pageKeys[cur]))) showPage(0);
 }
 
 void MainWindow::refreshPlayersArtistInfo()
@@ -1026,7 +1061,7 @@ void MainWindow::buildMenus()
         const QString appImage = qEnvironmentVariable("APPIMAGE");
         const QString exe = appImage.isEmpty() ? QCoreApplication::applicationFilePath() : appImage;
         if (!QProcess::startDetached(exe, {QStringLiteral("--editor")}))
-            say(TR("A szerkesztő nem indítható: %1").arg(exe));
+            sayError(QStringLiteral("Felület"), TR("A szerkesztő nem indítható: %1").arg(exe));
     });
     file->addAction(TR("Újraindítás tartalék playoutként…"), this, [this] {
         // Ezen a gépen ezután a fő playout tükre fut készenlétben (a saját adás leáll).
@@ -1073,6 +1108,16 @@ void MainWindow::buildMenus()
                      &MainWindow::openSettings);
     infoAction_ = tools->addAction(TR("Infó ablak"), QKeySequence(Qt::CTRL | Qt::Key_I), this, &MainWindow::toggleInfoWindow);
     infoAction_->setCheckable(true);
+    tools->addAction(TR("Stream enkóder…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), this, &MainWindow::showStreamPage);
+    tools->addAction(TR("Minden stream indítása"), this, [this] {
+        if (streams_->encoders().isEmpty()) {
+            showStreamPage();
+            say(TR("Még nincs stream enkóder: a Stream fülön adhatsz hozzá."), 8000);
+            return;
+        }
+        streams_->startAll();
+    });
+    tools->addAction(TR("Minden stream leállítása"), this, [this] { streams_->stopAll(); });
     // Ha a program bezárásakor nyitva volt, újra megnyílik (a helyén és a méretében).
     if (QSettings().value(QStringLiteral("ui/info/open"), false).toBool())
         QTimer::singleShot(800, this, [this] {
@@ -1080,6 +1125,12 @@ void MainWindow::buildMenus()
         });
 
     auto *help = menuBar()->addMenu(TR("&Súgó"));
+    help->addAction(TR("Hibanapló mappája…"), this, [this] {
+        // A program mappájában (logs/), napi szövegfájlokban: hibák, figyelmeztetések, váratlan kilépés.
+        const QString dir = elog::directory();
+        if (dir.isEmpty() || !QDesktopServices::openUrl(QUrl::fromLocalFile(dir)))
+            QMessageBox::information(this, TR("Hibanapló"), TR("A hibanapló mappája: %1").arg(QDir::toNativeSeparators(dir)));
+    });
     help->addAction(TR("Névjegy"), this, &MainWindow::about);
 }
 
@@ -1100,6 +1151,18 @@ void MainWindow::setMode(Mode mode)
 
 void MainWindow::say(const QString &msg, int ms) { statusBar()->showMessage(msg, ms); }
 
+void MainWindow::sayError(const QString &area, const QString &msg, int ms)
+{
+    elog::error(area, msg);
+    say(msg, ms);
+}
+
+void MainWindow::sayWarning(const QString &area, const QString &msg, int ms)
+{
+    elog::warning(area, msg);
+    say(msg, ms);
+}
+
 void MainWindow::startAudio()
 {
     applyMixerGains();   // a mini mixer faderjei (a hangmotor újraindítása után is)
@@ -1108,13 +1171,16 @@ void MainWindow::startAudio()
         // A kért háttérrendszer nem megy: automatikus választás.
         if (!engine_.init({}, &err)) {
             audioStatus_->setText(TR("Hang: nem indult el"));
-            say(QString::fromStdString(err), 0);
+            sayError(QStringLiteral("Hang"), QString::fromStdString(err), 0);
             refreshDeviceLists();
             return;
         }
-        say(TR("A beállított hangrendszer nem érhető el, automatikus választás történt."), 10000);
+        sayWarning(QStringLiteral("Hang"), TR("A beállított hangrendszer nem érhető el, automatikus választás történt."), 10000);
     }
     audioStatus_->setText(TR("Hang: %1 · 48 kHz").arg(QString::fromStdString(engine_.backendName())));
+    // A hangmotor (újra)indult: a stream bemenetei újra megnyílnak.
+    streamInputs_.clear();
+    syncStreamInputs();
 
     QStringList missing;
     for (int ch : {int(Engine::Player1), int(Engine::Player2), int(Engine::Player3), int(Engine::Pfl)}) {
@@ -1130,7 +1196,7 @@ void MainWindow::startAudio()
         applyCartRoute(&err);
     }
     if (!missing.isEmpty())
-        say(TR("Nem található kimenet, az alapértelmezett szól helyette: %1").arg(missing.join(", ")), 0);
+        sayWarning(QStringLiteral("Hang"), TR("Nem található kimenet, az alapértelmezett szól helyette: %1").arg(missing.join(", ")), 0);
     refreshDeviceLists();
 }
 
@@ -1205,7 +1271,7 @@ bool MainWindow::changeRoute(int ch, const QString &deviceName)
                     .arg(deviceName == QLatin1String("@player1") ? TR("az A lejátszóé")
                          : deviceName.isEmpty() ? TR("alapértelmezett") : deviceName), 4000);
         } else {
-            say(QString::fromStdString(err), 10000);
+            sayError(QStringLiteral("Hang"), QString::fromStdString(err), 10000);
             cartRoute_ = previous;
             if (!applyCartRoute(&err)) {
                 cartRoute_ = QStringLiteral("@player1");
@@ -1241,7 +1307,7 @@ bool MainWindow::changeRoute(int ch, const QString &deviceName)
                 .arg(label,
                      deviceName.isEmpty() ? TR("alapértelmezett") : deviceName), 4000);
     } else {
-        say(QString::fromStdString(err), 10000);
+        sayError(QStringLiteral("Hang"), QString::fromStdString(err), 10000);
         // Visszaállunk az előző, működő kimenetre.
         if (!engine_.setRoute(static_cast<Engine::Channel>(ch), routes_[ch].toStdString(), &err)) {
             routes_[ch].clear();
@@ -1261,7 +1327,7 @@ bool MainWindow::changeBackend(const QString &backend)
     const QString previous = backend_;
     std::string err;
     if (!engine_.init(backend.toStdString(), &err)) {
-        say(QString::fromStdString(err), 10000);
+        sayError(QStringLiteral("Hang"), QString::fromStdString(err), 10000);
         backend_ = previous;
         startAudio();
         return false;
@@ -1435,7 +1501,7 @@ bool MainWindow::startOverlay(Row &row)
     if (!src.load(row.item.path.toStdString(), &err)) {
         row.state = Row::Failed;
         db_->setEntryStatus(row.id, "skipped");
-        say(TR("A ráfektetett elem nem tölthető be: %1").arg(QString::fromStdString(err)), 9000);
+        sayError(QStringLiteral("Lejátszás"), TR("A ráfektetett elem nem tölthető be: %1").arg(QString::fromStdString(err)), 9000);
         refreshTable();
         return false;
     }
@@ -1504,7 +1570,7 @@ void MainWindow::runOverlays()
                 // Jóval elmúlt az ideje (például menet közben fektették rá): kimarad, nem szól bele utólag.
                 b.state = Row::Skipped;
                 db_->setEntryStatus(b.id, "skipped");
-                say(TR("A ráfektetett „%1” kimaradt: az ideje már elmúlt.").arg(b.item.title), 9000);
+                sayWarning(QStringLiteral("Lejátszás"), TR("A ráfektetett „%1” kimaradt: az ideje már elmúlt.").arg(b.item.title), 9000);
                 refreshTable();
                 return;
             }
@@ -2049,7 +2115,7 @@ void MainWindow::runTimedEvents()
             startStandby(onAirPlayer(), fadeMs_);
         } else if (!rowById(pendingStartRowId_) || now > pendingStartUntil_) {
             pendingStartRowId_ = -1;
-            say(TR("Az időzített elem nem indulhatott el: egyik lejátszó sem szabadult fel időben."), 10000);
+            sayWarning(QStringLiteral("Időzítés"), TR("Az időzített elem nem indulhatott el: egyik lejátszó sem szabadult fel időben."), 10000);
         }
     }
 }
@@ -2066,7 +2132,7 @@ void MainWindow::fireTimedEvent(const TimedEvent &e)
         groupId = db_->nextGroupId();
     }
     if (ids.isEmpty()) {
-        say(TR("Időzítés: „%1” üres vagy már nincs meg, kimaradt.").arg(name), 10000);
+        sayWarning(QStringLiteral("Időzítés"), TR("Időzítés: „%1” üres vagy már nincs meg, kimaradt.").arg(name), 10000);
         return;
     }
     const int before = rows_.size();
@@ -2307,7 +2373,7 @@ void MainWindow::startVoiceTrack(int itemId, double duckDb)
     auto &vt = engine_.source(Engine::Vt);
     std::string err;
     if (!vt.load(item.path.toStdString(), &err)) {
-        say(TR("A voice track nem tölthető be: %1").arg(QString::fromStdString(err)), 9000);
+        sayError(QStringLiteral("Lejátszás"), TR("A voice track nem tölthető be: %1").arg(QString::fromStdString(err)), 9000);
         return;
     }
     vt.setEnvelope(env::toSource(env::fromString(item.volumeEnv), eter::kRate));
@@ -2470,7 +2536,14 @@ void MainWindow::updateNowPlaying()
 {
     if (!nowPlaying_) return;
     const NowPlaying::Config &c = nowPlaying_->config();
-    if (!c.fileEnabled && !c.icecastEnabled) return;
+    const bool np = c.fileEnabled || c.icecastEnabled;
+    const bool st = streams_ && streams_->wantsTitles();
+    if (!np && !st) return;
+    // Ugyanaz a cím a Now playing fájlnak / Icecastnak és a stream enkódereknek.
+    auto setTracks = [&](const NowPlaying::Track &a, const NowPlaying::Track &b) {
+        if (np) nowPlaying_->setTracks(a, b);
+        if (st) streams_->setTracks(a, b);
+    };
     auto trackOf = [this](int player) {
         NowPlaying::Track t;
         if (player < 0) return t;
@@ -2492,14 +2565,14 @@ void MainWindow::updateNowPlaying()
     const NowPlaying::Track next = trackOf(standbyPlayer());
     if (onAir >= 0) {
         nowIdleSince_ = 0;
-        nowPlaying_->setTracks(trackOf(onAir), next);
+        setTracks(trackOf(onAir), next);
         return;
     }
     const bool anything = std::any_of(std::begin(players_), std::end(players_), [](PlayerWidget *p) { return p->isPlaying(); });
     if (anything) return;                                  // csak kiúszó elem szól: marad az előző cím
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (!nowIdleSince_) nowIdleSince_ = now;
-    if (now - nowIdleSince_ >= 3000) nowPlaying_->setTracks({}, next);
+    if (now - nowIdleSince_ >= 3000) setTracks({}, next);
 }
 
 // A mini mixer faderjei a hangmotor csatornáinak erősítéseként (a mix és a hangerőgörbe fölött). A fő kimenet
@@ -2540,7 +2613,7 @@ void MainWindow::guardDeadAir(const float *playerPeak, float otherPeak)
     if (now - deadSince_ < deadAirMs_) return;
     deadSince_ = 0;
     if (standbyPlayer() < 0 || standbyIsEarlyFixed()) return;
-    say(TR("Csend az adásban (%1 mp): indul a következő elem.").arg(deadAirMs_ / 1000.0, 0, 'f', 1), 8000);
+    sayError(QStringLiteral("Lejátszás"), TR("Csend az adásban (%1 mp): indul a következő elem.").arg(deadAirMs_ / 1000.0, 0, 'f', 1), 8000);
     startStandby(onAir, 200);
 }
 
@@ -2563,6 +2636,7 @@ void MainWindow::reloadMixSettings()
 void MainWindow::configureNowPlaying()
 {
     nowPlaying_->configure(NowPlaying::loadConfig());
+    if (streams_) streams_->setNowPlayingConfig(NowPlaying::loadConfig());
     updateNowPlaying();
 }
 
@@ -3120,7 +3194,7 @@ bool MainWindow::loadIntoPlayer(Row &row, int player)
         row.state = Row::Failed;
         row.player = -1;
         db_->setEntryStatus(row.id, "skipped");
-        say(TR("Nem tölthető be: %1 – %2").arg(row.item.title, err), 9000);
+        sayError(QStringLiteral("Lejátszás"), TR("Nem tölthető be: %1 – %2").arg(row.item.title, err), 9000);
         return false;
     }
     players_[player]->rowId = row.id;
@@ -3785,7 +3859,7 @@ void MainWindow::togglePfl()
     }
     std::string err;
     if (!pfl.load(item.path.toStdString(), &err)) {
-        say(QString::fromStdString(err), 8000);
+        sayError(QStringLiteral("Előhallgatás"), QString::fromStdString(err), 8000);
         return;
     }
     pfl.setEnvelope(env::toSource(env::fromString(item.volumeEnv), eter::kRate));
@@ -4020,6 +4094,7 @@ void MainWindow::showPage(int page)
     tabPl_->setChecked(page == 3);
     tabEvents_->setChecked(page == 4);
     tabMixdown_->setChecked(page == 5);
+    tabStream_->setChecked(page == 6);
     if (page != 5 && mixdownPage_) mixdownPage_->stopPreview();
     // A főablakba ágyazott oldal füle csak akkor jelölt, ha az látszik; külön ablaknál az ablak nyitottsága számít.
     if (!schedWindow_->isVisible()) tabSched_->setChecked(page == 1);
@@ -4268,7 +4343,7 @@ void MainWindow::configureRemote()
         return;
     }
     if (!remote_->start(port, users, &remoteError_))
-        say(TR("A távoli szerkesztés nem indult el a(z) %1-es porton: %2").arg(port).arg(remoteError_), 12000);
+        sayError(QStringLiteral("Távoli kapcsolat"), TR("A távoli szerkesztés nem indult el a(z) %1-es porton: %2").arg(port).arg(remoteError_), 12000);
 }
 
 QString MainWindow::remoteStatus() const
@@ -4470,21 +4545,100 @@ void MainWindow::configureLogger()
     if (c.folder.isEmpty()) c.folder = ProgramLogger::defaultFolder();
     c.kbps = st.value("logger/kbps", 128).toInt();
     c.keepDays = st.value("logger/days", 30).toInt();
-    engine_.setProgramTap(c.enabled);
     logger_->configure(c);
+    updateProgramTap();
+}
+
+// A program hangja (fő kimenet) a rögzítésnek és a streamnek kell; ha egyik sem kéri, a gyűjtése kikapcsol.
+void MainWindow::updateProgramTap()
+{
+    const bool want = (logger_ && logger_->config().enabled) || (streams_ && streams_->wantsProgram());
+    if (want != engine_.programTap()) engine_.setProgramTap(want);
+}
+
+// A stream enkóderek hangkártya-bemenetei: ami kell, megnyílik; ami már nem kell, bezárul.
+void MainWindow::syncStreamInputs()
+{
+    if (!streams_) return;
+    const QSet<QString> want = streams_->inputDevices();
+    QSet<QString> gone = streamInputs_;
+    gone.subtract(want);
+    QSet<QString> added = want;
+    added.subtract(streamInputs_);
+    for (const QString &d : gone) {
+        engine_.closeInput(d.toStdString());
+        streamInputs_.remove(d);
+    }
+    for (const QString &d : added) {
+        std::string err;
+        if (engine_.openInput(d.toStdString(), &err)) streamInputs_.insert(d);
+        else sayWarning(QStringLiteral("Stream"), TR("A stream bemenete nem nyitható meg (%1): %2")
+                                                      .arg(d.isEmpty() ? TR("alapértelmezett bemenet") : d, QString::fromStdString(err)), 10000);
+    }
+}
+
+void MainWindow::updateStreamBadge()
+{
+    if (!streamBadge_ || !streams_) return;
+    const int total = streams_->encoders().size(), active = streams_->activeCount(), onAir = streams_->onAirCount();
+    streamBadge_->setVisible(total > 0);
+    if (!total) return;
+    QString text, bg, border, fg, dot;
+    if (streams_->anyError()) {
+        text = TR("STREAM HIBA");
+        bg = "#2e1514"; border = "#8a3a35"; fg = "#ffb3ac"; dot = "#ff8f85";
+    } else if (active == 0) {
+        text = TR("STREAM KI");
+        bg = "#1f232a"; border = "#30353e"; fg = "#c9ced6"; dot = "#6b7380";
+    } else if (onAir < active) {
+        text = QStringLiteral("STREAM %1/%2").arg(onAir).arg(active);
+        bg = "#2d2210"; border = "#8a6417"; fg = "#ffd28a"; dot = "#f5a524";
+    } else {
+        text = QStringLiteral("STREAM %1/%2").arg(onAir).arg(active);
+        bg = "#13261c"; border = "#2f7a52"; fg = "#8ff0bb"; dot = "#45d483";
+    }
+    streamBadge_->setText(QStringLiteral("● ") + text);
+    streamBadge_->setToolTip(active ? TR("Stream: %1 enkóderből %2 ad. Kattintásra a Stream fül.").arg(active).arg(onAir)
+                                    : TR("Egyik stream enkóder sem fut. Kattintásra a Stream fül."));
+    streamBadge_->setStyleSheet(QStringLiteral("QToolButton#streamBadge { background: %1; border: 1px solid %2; color: %3; border-radius: 10px; "
+                                               "padding: 2px 10px; font-size: 11px; font-weight: 600; letter-spacing: 1px; }")
+                                    .arg(theme::hex(bg.toLatin1().constData()), theme::hex(border.toLatin1().constData()),
+                                         theme::hex(fg.toLatin1().constData())));
+    theme::rawCss(streamBadge_);
+    Q_UNUSED(dot);
+}
+
+void MainWindow::showStreamPage()
+{
+    showPage(6);
 }
 
 void MainWindow::pumpLogger()
 {
-    if (!logger_ || !logger_->config().enabled) {
+    // A program hangja a rögzítésnek és a stream enkódereknek; a bemenetek csak a streamnek.
+    const bool logging = logger_ && logger_->config().enabled;
+    const bool streamProgram = streams_ && streams_->wantsProgram();
+    if (logging || streamProgram) {
+        if (tapBuf_.empty()) tapBuf_.resize(size_t(eter::kRate) * 2);   // 1 mp
+        for (int guard = 0; guard < 20; ++guard) {
+            const int n = engine_.readProgram(tapBuf_.data(), eter::kRate);
+            if (n <= 0) break;
+            if (logging) logger_->feed(tapBuf_.data(), n);
+            if (streamProgram) streams_->feedProgram(tapBuf_.data(), n);
+        }
+    }
+    if (!streamInputs_.isEmpty()) {
+        if (inBuf_.empty()) inBuf_.resize(size_t(eter::kRate) * 2);
+        for (const QString &d : streamInputs_)
+            for (int guard = 0; guard < 20; ++guard) {
+                const int n = engine_.readInput(d.toStdString(), inBuf_.data(), eter::kRate);
+                if (n <= 0) break;
+                streams_->feedInput(d, inBuf_.data(), n);
+            }
+    }
+    if (!logging) {
         if (loggerStatus_ && loggerStatus_->isVisible()) loggerStatus_->hide();
         return;
-    }
-    if (tapBuf_.empty()) tapBuf_.resize(size_t(eter::kRate) * 2);   // 1 mp
-    for (int guard = 0; guard < 20; ++guard) {
-        const int n = engine_.readProgram(tapBuf_.data(), eter::kRate);
-        if (n <= 0) break;
-        logger_->feed(tapBuf_.data(), n);
     }
     if (clockDivider_ == 0 && loggerStatus_) {
         const QString err = logger_->lastError();

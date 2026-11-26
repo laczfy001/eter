@@ -1,6 +1,77 @@
 # Changelog
 
+## 0.37.0
+- **Stream encoders** (new *Stream* tab next to Mixdown; *Tools → Stream encoder…*, Ctrl+Shift+S): Éter sends the
+  broadcast to Icecast 2 and Shoutcast v1 / v2 servers by itself, no separate encoder program needed.
+  - Formats: MP3 (LAME, 32–320 kbit/s, constant or average bitrate) and Ogg Vorbis (48–320 kbit/s nominal, Icecast
+    only); sample rate 22.05 / 32 / 44.1 / 48 kHz, stereo or mono, per encoder.
+  - Several encoders at once, each started and stopped on its own (also *Start all* / *Stop all*, and *Start when Éter
+    starts*). Each card shows the state, the listeners, the time on air and the data sent.
+  - Source: the main output (what the listeners hear) or any sound card input – for example the output of a mixing
+    desk with the microphones on it. Level to the stream, level meter and a peak limiter before encoding.
+  - The title on air goes to the server (MP3: through the server's admin interface; Ogg: as a new header in the
+    stream), from the Now playing template and rules or from the encoder's own template. Station name, description,
+    genre, website and the public listing flag are sent to the server.
+  - Dropped connections are retried after a set time; a wrong password (401) or a mountpoint in use (403) stops with a
+    clear message instead of retrying. *Test connection* checks the login without sending audio. Old Icecast servers
+    are reached in SOURCE mode automatically. Every event is in the encoder's log, errors also in the error log.
+  - Outgoing bandwidth: the bitrates of the running encoders add up, with the data per hour; given an upload limit,
+    a bar shows how much of it is used and warns when the encoders together would exceed it.
+  - A STREAM badge in the tab row (green: all on air, orange: reconnecting, red: error) is visible on every tab and
+    leads to the Stream tab.
+  - Builds now need libvorbis (Ubuntu: `libvorbis-dev`; MSYS2: `mingw-w64-ucrt-x86_64-libvorbis`, installed by
+    `build_windows.sh` when missing). Licence: BSD-3-Clause, see THIRD-PARTY-NOTICES.md.
+
+## 0.36.1
+- **Project website** on GitHub Pages ([laczfy001.github.io/eter](https://laczfy001.github.io/eter/)): an English
+  summary of the features with screenshots, the changes of the latest version, and download buttons that always
+  point at the files of the latest release. Built from `site/` by a GitHub workflow after every push.
+- **Windows build after an MSYS2 update**: the static FFmpeg built with an older GCC / binutils no longer linked
+  ("access beyond end of merged section"). `build_windows.sh` now records which compiler built FFmpeg and rebuilds it
+  automatically when the compiler changes (also on the first build).
+- **Several Éter installations on one website** (WordPress plugin 1.2.3): if two computers sync with the same site
+  (for example a test machine left connected), the song requests were shared out between them at random and the
+  "Now playing" of the idle one overwrote the one on air. Now every Éter sends its computer name and a fixed id, and
+  only one of them – the one on air – updates the site and receives the requests. The other one shows
+  "connected, but another Éter (name) updates the website" and logs a warning; the one on air shows that another
+  Éter is also connected, and the plugin's settings page names both. If the on-air computer stops syncing, the next
+  one takes over within the offline time. Older Éter versions count as one unnamed computer.
+- **Error log in the program folder:** every error and warning goes into a daily text file, `logs/eter-YYYY-MM-DD.txt`
+  next to `eter.exe` (Linux AppImage: `eter-logs/` next to the AppImage; if the folder is not writable, the user's
+  data folder). *Help → Error log folder…* opens it. Logs older than 30 days are deleted.
+  - *Unexpected exit:* the running program leaves a sign of life every 30 seconds; if the next start finds one from a
+    process that no longer runs (crash, killed, power cut), it logs when that run started and when it was last alive.
+  - *Crash:* the call stack goes into the same daily log (it used to go to `crash.log` in the data folder).
+  - *Interface:* a C++ exception in event handling is logged and no longer closes the program; every warning and error
+    dialog is logged with its text; Qt warnings (drawing, layouts, network, SSL, SQL driver) are logged too.
+  - *Database* (SQL errors with the query), *audio* (output cannot be opened, missing output, audio system), *playback*
+    (file cannot be loaded, dead air, overlay, voice track, timed events, exact time), *stream* (dropped connection,
+    reconnect, given up, unsupported stream), *website* (errors and recovery), *SQL server* (connection lost,
+    writer lock lost, recovered), *online data* (MusicBrainz, Wikipedia, TheAudioDB), *MIDI*, *remote connection*
+    (editor, backup playout; takeover and handback), *logger recording*.
+  - Each line has the time to the millisecond, the level (INFO / WARNING / ERROR) and the area; the same message is
+    written at most once a minute, with the number of repeats. The log follows the interface language.
+- **Website connection no longer "drops" every minute:** when the web host closes a kept-alive connection just as Éter
+  sends the next sync, Éter now repeats the request at once on a new connection instead of reporting an error
+  ("Connection closed") and waiting. The harmless Qt message "QIODevice::read (QSslSocket): device not open" is
+  no longer logged.
+- **Error log:** the "Exact time … no better solution" warning, whose figure changes every minute, is logged at most
+  once every 15 minutes per fixed point.
+- **Crash report: what the thread was doing.** When a decoding thread crashes, the report names the audio file it was
+  working on ("ez a szál éppen: hangfájl dekódolása: …"), so a damaged file can be found and removed.
+- **Crash report on Windows:** `crash.log` now also records the exception code, the module and offset where it
+  happened (and for an access violation the address read or written), the thread, and the text of an uncaught C++
+  exception.
+
 ## 0.36.0
+- **Fixed-time items: the playlist bar says whether Éter adjusts by itself.** Automatic adjustment (filling a gap,
+  shortening, swapping) is off unless switched on in *Scheduler → Adjust fixed points*, and it works only in Auto mode,
+  from 30 minutes before the fixed point. The bar now shows "not adjusted automatically", "adjusts automatically from
+  18:30", or that an overrun is not fixed by the current setting (with a tooltip on where to change it). The *Adjust…*
+  window has a tick box to switch automatic adjustment on in one step.
+- **Windows build script:** when pacman cannot install the MariaDB client (for example without an internet
+  connection), the script no longer stops; Éter is built without the external SQL server and a warning says how to
+  add it later.
 - **MIDI control** (*Settings → MIDI*): the buttons and faders of a MIDI-capable mixer (such as the RØDECaster Pro) or
   controller can run Éter.
   - *Device:* every device the system knows as a MIDI input (Windows: through the system's MIDI service; Linux: the

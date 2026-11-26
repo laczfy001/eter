@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <csignal>
+#include <exception>
 #include <cstdio>
 #include <cstring>
 
@@ -41,7 +42,7 @@ void out(const char *s, size_t n)
 }
 void out(const char *s) { out(s, std::strlen(s)); }
 
-void outNum(long long v)
+[[maybe_unused]] void outNum(long long v)
 {
     char buf[32];
     int i = 31;
@@ -92,6 +93,8 @@ void dumpStack()
 #endif
 }
 
+thread_local char t_activity[768] = {0};
+
 void report(int sig)
 {
     if (g_inside.exchange(true)) return;
@@ -105,6 +108,11 @@ void report(int sig)
     outNum((long long)syscall(SYS_gettid));
     out(sig == SIGABRT ? " (a hibás free() ebben a szálban történt)\n" : "\n");
 #endif
+    if (t_activity[0]) {
+        out("ez a szál éppen: ");
+        out(t_activity);
+        out("\n");
+    }
     out("hívási lánc:\n");
     dumpStack();
     out("==== vége ====\n");
@@ -118,12 +126,52 @@ void handler(int sig)
 }
 
 #ifdef _WIN32
-LONG WINAPI sehHandler(EXCEPTION_POINTERS *)
+LONG WINAPI sehHandler(EXCEPTION_POINTERS *ep)
 {
+    // A kivétel kódja és helye (modul + eltolás): ebből a kiadott programhoz tartozó szimbólumokkal visszakereshető.
+    if (ep && ep->ExceptionRecord && !g_inside.load()) {
+        const EXCEPTION_RECORD *er = ep->ExceptionRecord;
+        HMODULE mod = nullptr;
+        char name[MAX_PATH] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               static_cast<LPCSTR>(er->ExceptionAddress), &mod))
+            GetModuleFileNameA(mod, name, MAX_PATH);
+        const char *base = std::strrchr(name, '\\');
+        char line[512];
+        std::snprintf(line, sizeof line, "\nkivétel: 0x%08lx itt: %s+0x%llx", (unsigned long)er->ExceptionCode, base ? base + 1 : name,
+                      (unsigned long long)(static_cast<char *>(er->ExceptionAddress) - reinterpret_cast<char *>(mod)));
+        out(line);
+        if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2) {
+            std::snprintf(line, sizeof line, " (%s a 0x%llx címen)", er->ExceptionInformation[0] == 1 ? "írás" : "olvasás",
+                          (unsigned long long)er->ExceptionInformation[1]);
+            out(line);
+        }
+        std::snprintf(line, sizeof line, " · szál: %lu\n", (unsigned long)GetCurrentThreadId());
+        out(line);
+    }
     report(SIGSEGV);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 #endif
+
+// Elkapatlan C++ kivétel: a szövege is a naplóba kerül (utána a szokásos SIGABRT-jelentés).
+void onTerminate()
+{
+    if (std::exception_ptr e = std::current_exception()) {
+        try {
+            std::rethrow_exception(e);
+        } catch (const std::exception &ex) {
+            out("\nelkapatlan kivétel: ");
+            out(ex.what());
+            out("\n");
+        } catch (...) {
+            out("\nelkapatlan kivétel (ismeretlen típus)\n");
+        }
+    } else {
+        out("\nstd::terminate kivétel nélkül\n");
+    }
+    std::abort();
+}
 
 } // namespace
 
@@ -136,6 +184,13 @@ void install(const QString &path)
     g_path = path;
     QDir().mkpath(QFileInfo(path).absolutePath());
     const QByteArray native = QFile::encodeName(path);
+    // Újbóli hívás (új napi napló): az előző fájl bezárul.
+#ifdef _WIN32
+    if (g_fd >= 0) _close(g_fd);
+#else
+    if (g_fd >= 0) close(g_fd);
+#endif
+    g_fd = -1;
 #ifdef _WIN32
     g_fd = _open(native.constData(), _O_WRONLY | _O_CREAT | _O_APPEND | _O_BINARY, 0644);
 #else
@@ -155,6 +210,21 @@ void install(const QString &path)
     for (int s : {SIGSEGV, SIGABRT, SIGFPE, SIGILL}) std::signal(s, handler);
     SetUnhandledExceptionFilter(sehHandler);
 #endif
+    std::set_terminate(onTerminate);
+}
+
+void setActivity(const char *what, const char *detail)
+{
+    size_t n = 0;
+    auto add = [&](const char *t) {
+        for (; t && *t && n + 1 < sizeof t_activity; ++t) t_activity[n++] = *t;
+    };
+    add(what);
+    if (detail && *detail) {
+        add(": ");
+        add(detail);
+    }
+    t_activity[n] = 0;
 }
 
 } // namespace crash

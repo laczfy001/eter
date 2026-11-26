@@ -61,6 +61,9 @@ public:
     void ack(int remoteId, const QString &status);
     bool requestsOpen() const;            // most lehet-e kérni (be van kapcsolva, és a mostani óra engedi)
     bool requestable(int itemId) const;   // a szám a katalógusban van-e
+    void setOnAir(bool on) { onAir_ = on; }        // szól-e valami ezen a gépen
+    bool secondary() const { return secondary_; }  // a weboldalt egy másik Éter frissíti
+    static QString instanceId();          // a gép állandó azonosítója a weboldal felé
     void syncNow();                       // soron kívüli szinkron (például számváltáskor)
     QString status() const { return status_; }
     bool ok() const { return ok_; }
@@ -102,7 +105,11 @@ private:
     void buildTop();
 
     void tick();
-    void post(const QString &path, const QByteArray &body);
+    void post(const QString &path, const QByteArray &body, bool retry = false);
+    QString lastPath_;
+    QByteArray lastBody_;
+    bool retried_ = false;                // a szerver lezárta a megtartott kapcsolatot: egyszer azonnal újra
+    bool onAir_ = false, secondary_ = false;
     void finished(QNetworkReply *reply, const QString &path);
     void buildCatalog();
     void setStatus(bool ok, const QString &text);

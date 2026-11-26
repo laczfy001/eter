@@ -62,9 +62,17 @@ public:
     bool programTap() const { return tapOn_; }
     int readProgram(float *dst, int maxFrames);        // ennyi képkocka került dst-be
 
+    // Bemenetek a streamhez (pl. keverőpult a hangkártya bemenetén): sztereó 48 kHz, eszközönként egy gyűrűtár.
+    // Ugyanazt az eszközt több enkóder is használhatja (hivatkozásszámlálva). "" = az alapértelmezett bemenet.
+    std::vector<DeviceInfo> captureDevices();
+    bool openInput(const std::string &deviceName, std::string *err = nullptr);
+    void closeInput(const std::string &deviceName);
+    int readInput(const std::string &deviceName, float *dst, int maxFrames);   // a felület szálán
+
     struct Impl;
     struct OutDev;
     struct Recorder;
+    struct InputDev;
 
 private:
     void releaseDevice(const std::string &key, Channel ch);
@@ -76,6 +84,7 @@ private:
     std::array<bool, ChannelCount> routed_{};
     std::map<std::string, std::unique_ptr<OutDev>> outs_;
     std::unique_ptr<Recorder> rec_;
+    std::map<std::string, std::unique_ptr<InputDev>> inputs_;
     bool tapOn_ = false;
     std::vector<float> tapMix_;
 };

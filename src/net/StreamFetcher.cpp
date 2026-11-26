@@ -1,3 +1,4 @@
+#include "core/ErrorLog.h"
 #include "StreamFetcher.h"
 
 #include "i18n.h"
@@ -144,6 +145,7 @@ private:
             const QString text = QString::fromUtf8(body_);
             if (text.contains(QLatin1String("#EXT-X-"))) {
                 in_->setState(TR("HLS stream: nem támogatott"));
+                elog::error(QStringLiteral("Stream"), TR("%1: HLS stream, nem támogatott").arg(in_->url_));
                 return;
             }
             for (QString line : text.split(QLatin1Char('\n'))) {
@@ -158,11 +160,13 @@ private:
                 }
             }
             in_->setState(TR("a lejátszási listában nincs stream"));
+            elog::error(QStringLiteral("Stream"), TR("%1: a lejátszási listában nincs stream").arg(in_->url_));
             return;
         }
         ++failures_;
         const QString why = r->error() != QNetworkReply::NoError ? r->errorString() : TR("a szerver lezárta a kapcsolatot");
         in_->setState(TR("megszakadt (%1), újrakapcsolódás…").arg(why));
+        elog::warning(QStringLiteral("Stream"), TR("%1: megszakadt (%2), újrakapcsolódás").arg(in_->url_, why));
         retry_.start(std::min(5000, 1000 * failures_));
     }
 };
@@ -229,6 +233,8 @@ int QtStreamInput::read(uint8_t *out, int size)
         if (playing_ && std::chrono::steady_clock::now() - lastData_ > std::chrono::milliseconds(giveUpMs_)) {
             gaveUp_ = true;
             state_ = i18n::textStd("nem érhető el, továbblép");
+            elog::error(QStringLiteral("Stream"), TR("%1: %2 mp óta nem jön adat, az elem véget ért (a playlist továbblép)")
+                                                      .arg(url_).arg(giveUpMs_ / 1000));
             return 0;
         }
         cv_.wait_for(lk, std::chrono::milliseconds(100));

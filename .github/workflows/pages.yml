@@ -1,0 +1,47 @@
+name: Website
+
+# The project website on GitHub Pages (https://laczfy001.github.io/eter/), rebuilt after every push to main.
+# One-time setup on GitHub: Settings → Pages → Build and deployment → Source: GitHub Actions.
+# The download buttons look up the latest release in the browser, so a new release needs no rebuild; the
+# "What's new" section comes from CHANGELOG.md.
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the website
+        run: python3 scripts/build_site.py build/site
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

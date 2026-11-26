@@ -19,6 +19,9 @@ msgstr "Er is een nieuwe sleutel gemaakt. Plak deze in Éter, anders kan Éter d
 msgid "Add the Now playing, Up next, Most played and Song request blocks in the block editor (Widgets category). In classic themes and page builders use the shortcodes [eter_now_playing], [eter_up_next count=\"5\"], [eter_most_played period=\"week\" count=\"10\"] and [eter_request]."
 msgstr "Voeg de blokken Nu op de radio, Straks, Meest gedraaid en Verzoeknummer toe in de blokeditor (categorie Widgets). Gebruik in klassieke thema's en paginabouwers de shortcodes [eter_now_playing], [eter_up_next count=\"5\"], [eter_most_played period=\"week\" count=\"10\"] en [eter_request]."
 
+msgid "Another Éter is also connected to this site: %1$s (Éter %2$s). Only one of them updates the site and receives the song requests; switch off the website connection in the other one."
+msgstr "Er is nog een Éter met deze site verbonden: %1$s (Éter %2$s). Slechts één van beide werkt de site bij en ontvangt de verzoekjes; schakel in de andere de websiteverbinding uit."
+
 msgid "Artist"
 msgstr "Artiest"
 
@@ -184,6 +187,9 @@ msgstr "Behandel hem als een wachtwoord: met deze sleutel kan iedereen verandere
 msgid "Up next"
 msgstr "Straks"
 
+msgid "Updated by: %s"
+msgstr "Bijgewerkt door: %s"
+
 msgid "Visitors search the library and request a track, while requests are open."
 msgstr "Bezoekers zoeken in de muziekbibliotheek en vragen een nummer aan, zolang verzoeken open zijn."
 
@@ -243,6 +249,9 @@ msgstr "seconden zonder update van Éter (verzoeken zijn dan gesloten)"
 
 msgid "this track is not available now"
 msgstr "dit nummer is nu niet beschikbaar"
+
+msgid "unnamed computer"
+msgstr "naamloze computer"
 
 msgid "waiting for approval in the studio"
 msgstr "wacht op goedkeuring in de studio"

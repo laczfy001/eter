@@ -1,3 +1,4 @@
+#include "core/CrashReport.h"
 #include "i18n.h"
 #include "Decoder.h"
 #include "Stream.h"
@@ -68,6 +69,7 @@ void Decoder::close()
 bool Decoder::open(const std::string &path, std::string *err)
 {
     close();
+    crash::setActivity("hangfájl dekódolása", path.c_str());   // ha a fájl miatt omlik össze, a jelentésben látszik
     auto fail = [&](const std::string &msg) {
         if (err) *err = msg;
         close();

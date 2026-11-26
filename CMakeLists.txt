@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(eter VERSION 0.36.0 LANGUAGES C CXX)
+project(eter VERSION 0.37.0 LANGUAGES C CXX)
 if(WIN32)
     enable_language(RC)
 endif()
@@ -20,6 +20,15 @@ find_path(LAME_INCLUDE_DIR lame/lame.h)
 find_library(LAME_LIBRARY NAMES libmp3lame.a mp3lame)
 if(NOT LAME_INCLUDE_DIR OR NOT LAME_LIBRARY)
     message(FATAL_ERROR "Nincs LAME (MP3 kódoló). Ubuntu: sudo apt install libmp3lame-dev; MSYS2: pacman -S mingw-w64-ucrt-x86_64-lame")
+endif()
+
+# Ogg Vorbis kódoló a streameléshez (BSD licenc). Statikusan linkelve, ha van (Ubuntu: libvorbis-dev, MSYS2: libvorbis).
+find_path(VORBIS_INCLUDE_DIR vorbis/vorbisenc.h)
+find_library(VORBISENC_LIBRARY NAMES libvorbisenc.a vorbisenc)
+find_library(VORBIS_LIBRARY NAMES libvorbis.a vorbis)
+find_library(OGG_LIBRARY NAMES libogg.a ogg)
+if(NOT VORBIS_INCLUDE_DIR OR NOT VORBISENC_LIBRARY OR NOT VORBIS_LIBRARY OR NOT OGG_LIBRARY)
+    message(FATAL_ERROR "Nincs libvorbis (Ogg Vorbis kódoló). Ubuntu: sudo apt install libvorbis-dev; MSYS2: pacman -S mingw-w64-ucrt-x86_64-libvorbis")
 endif()
 
 # Statikus, csak hangot dekódoló FFmpeg (scripts/build_ffmpeg.sh állítja elő)
@@ -70,6 +79,7 @@ add_executable(eter
     src/ui/MixdownPage.cpp
     src/audio/Mixdown.cpp
     src/core/CrashReport.cpp
+    src/core/ErrorLog.cpp
     src/ui/MainWindowFiles.cpp
     src/ui/MainWindowTiming.cpp
     src/ui/MainWindowRequests.cpp
@@ -80,10 +90,13 @@ add_executable(eter
     src/audio/ProgramLogger.cpp
     src/audio/Analysis.cpp
     src/audio/SmartMix.cpp
+    src/stream/StreamEncoder.cpp
+    src/stream/StreamManager.cpp
+    src/ui/StreamPage.cpp
     resources/resources.qrc
 )
 
-target_include_directories(eter PRIVATE src third_party "${FFMPEG_ROOT}/include" "${LAME_INCLUDE_DIR}")
+target_include_directories(eter PRIVATE src third_party "${FFMPEG_ROOT}/include" "${LAME_INCLUDE_DIR}" "${VORBIS_INCLUDE_DIR}")
 target_compile_definitions(eter PRIVATE ETER_VERSION="${PROJECT_VERSION}")
 target_compile_options(eter PRIVATE -Wall -Wextra)
 set_source_files_properties(src/audio/Engine.cpp PROPERTIES COMPILE_OPTIONS "-w")  # miniaudio figyelmeztetései
@@ -97,6 +110,7 @@ target_link_libraries(eter PRIVATE
     "${FFMPEG_ROOT}/lib/libswresample.a"
     "${FFMPEG_ROOT}/lib/libavutil.a"
     "${LAME_LIBRARY}"
+    "${VORBISENC_LIBRARY}" "${VORBIS_LIBRARY}" "${OGG_LIBRARY}"
     Threads::Threads ${CMAKE_DL_LIBS} m
 )
 if(WIN32)

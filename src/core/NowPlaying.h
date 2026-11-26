@@ -49,6 +49,9 @@ public:
 
     // A sablon kitöltése (az előnézethez is). Üres előadónál a fölösleges elválasztó eltűnik.
     static QString render(const QString &format, const Track &t, const Track &next);
+    // A kiírandó szöveg a beállítások szerint (szünet, nem zenei elem). false: nincs mit küldeni, marad az előző.
+    static bool compose(const Config &c, const Track &onAir, const Track &next, const Track &lastMusic, bool everPlayed,
+                        QString *out);
     QString currentText() const { return text_; }
     QString status() const;               // emberi nyelvű állapot a beállításokhoz
     void writeIdle();                     // kilépéskor: a szünet szövege

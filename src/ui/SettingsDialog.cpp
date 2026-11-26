@@ -694,7 +694,7 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
         connect(schemeCombo, &QComboBox::activated, this, [this, schemeCombo, refresh] {
             const QString id = schemeCombo->currentData().toString();
             const theme::Scheme s = theme::scheme(id);
-            if (s.id.isEmpty() || s.id == theme::currentSchemeId() && !theme::currentModified()) return refresh();
+            if (s.id.isEmpty() || (s.id == theme::currentSchemeId() && !theme::currentModified())) return refresh();
             if (theme::currentModified() && !qEnvironmentVariableIsSet("ETER_AUTOCONFIRM")
                 && QMessageBox::question(this, TR("Színséma"), TR("A jelenlegi színek nincsenek elmentve, és a váltással elvesznek. Folytatod?"))
                        != QMessageBox::Yes)
@@ -1748,7 +1748,7 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
         };
         refresh();
         connect(info, &ArtistInfoService::statusChanged, state, refresh);
-        auto apply = [=] {
+        auto apply = [=, this] {
             ArtistInfoService::Settings ns;
             ns.enabled = on->isChecked();
             ns.key = key->text().trimmed().isEmpty() ? QStringLiteral("123") : key->text().trimmed();
@@ -1978,7 +1978,7 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
                 return !dlg.wasCanceled();
             });
         };
-        connect(up, &QPushButton::clicked, this, [=] {
+        connect(up, &QPushButton::clicked, this, [=, this] {
             saveFields();
             sqlsrv::Config c = current();
             if (!c.complete()) {
@@ -2014,7 +2014,7 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
             result->setStyleSheet(QStringLiteral("color: #45d483;"));
             refresh();
         });
-        connect(down, &QPushButton::clicked, this, [=] {
+        connect(down, &QPushButton::clicked, this, [=, this] {
             saveFields();
             sqlsrv::Config c = current();
             if (!c.complete()) {
@@ -2056,7 +2056,7 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
             }
             QTimer::singleShot(300, main_, [m = main_] { m->relaunch(QCoreApplication::arguments().mid(1)); });
         });
-        connect(off, &QPushButton::clicked, this, [=] {
+        connect(off, &QPushButton::clicked, this, [=, this] {
             if (!qEnvironmentVariableIsSet("ETER_SQL_AUTOCONFIRM")
                 && QMessageBox::question(this, TR("Kapcsolat bontása"),
                                       TR("Az Éter ezután csak a helyi adatbázissal dolgozik; ami a szerveren van, megmarad. Folytatod?"),

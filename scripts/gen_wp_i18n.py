@@ -3,6 +3,9 @@
 # Új szövegnél mindkét szótárba be kell írni.
 import os, struct
 HU = {
+ "Updated by: %s": "Frissíti: %s",
+ "Another Éter is also connected to this site: %1$s (Éter %2$s). Only one of them updates the site and receives the song requests; switch off the website connection in the other one.": "Egy másik Éter is csatlakozik ehhez az oldalhoz: %1$s (Éter %2$s). Közülük csak az egyik frissíti az oldalt és kapja a számkéréseket; a másikban kapcsold ki a weboldal-kapcsolatot.",
+ "unnamed computer": "névtelen gép",
  "Most played": "Legtöbbet játszott",
  "The most played songs of the last day, week or month.": "Az elmúlt nap, hét vagy hónap legtöbbet játszott dalai.",
  "Period": "Időszak",
@@ -89,6 +92,9 @@ HU = {
 }
 
 NL = {
+ "Updated by: %s": "Bijgewerkt door: %s",
+ "Another Éter is also connected to this site: %1$s (Éter %2$s). Only one of them updates the site and receives the song requests; switch off the website connection in the other one.": "Er is nog een Éter met deze site verbonden: %1$s (Éter %2$s). Slechts één van beide werkt de site bij en ontvangt de verzoekjes; schakel in de andere de websiteverbinding uit.",
+ "unnamed computer": "naamloze computer",
  "Most played": "Meest gedraaid",
  "The most played songs of the last day, week or month.": "De meest gedraaide nummers van de afgelopen dag, week of maand.",
  "Period": "Periode",

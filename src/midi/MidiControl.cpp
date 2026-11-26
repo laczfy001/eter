@@ -1,6 +1,7 @@
 #include "MidiControl.h"
 
 #include "i18n.h"
+#include "core/ErrorLog.h"
 
 #include <QJsonDocument>
 #include <algorithm>
@@ -115,6 +116,7 @@ void MidiControl::reconnect()
         const QString e = TR("nem található");
         if (error_ != e) {
             error_ = e;
+            elog::warning(QStringLiteral("MIDI"), TR("%1: nem található").arg(deviceName_.isEmpty() ? deviceId_ : deviceName_));
             emit statusChanged();
         }
         return;
@@ -135,11 +137,15 @@ void MidiControl::reconnect()
                 if (!self) return;
                 self->in_->close();
                 self->error_ = TR("a kapcsolat megszakadt (%1)").arg(text);
+                elog::error(QStringLiteral("MIDI"), TR("%1: %2").arg(self->deviceName_, self->error_));
                 emit self->statusChanged();
             }, Qt::QueuedConnection);
         },
         &err);
-    error_ = ok ? QString() : QString::fromStdString(err);
+    const QString newError = ok ? QString() : QString::fromStdString(err);
+    if (!ok && newError != error_) elog::error(QStringLiteral("MIDI"), TR("%1 nem nyitható meg: %2").arg(deviceName_, newError));
+    if (ok) elog::info(QStringLiteral("MIDI"), TR("Csatlakozva: %1").arg(deviceName_.isEmpty() ? deviceId_ : deviceName_));
+    error_ = newError;
     emit statusChanged();
 }
 

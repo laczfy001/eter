@@ -19,6 +19,9 @@ msgstr "Új kulcs készült. Másold be az Éterbe, különben az Éter nem tudj
 msgid "Add the Now playing, Up next, Most played and Song request blocks in the block editor (Widgets category). In classic themes and page builders use the shortcodes [eter_now_playing], [eter_up_next count=\"5\"], [eter_most_played period=\"week\" count=\"10\"] and [eter_request]."
 msgstr "A Most szól, a Következő számok, a Legtöbbet játszott és a Számkérés blokkot a blokkszerkesztőben adhatod hozzá (Widgetek kategória). Klasszikus sablonokban és oldalépítőkben a rövidkódokat használd: [eter_now_playing], [eter_up_next count=\"5\"], [eter_most_played period=\"week\" count=\"10\"] és [eter_request]."
 
+msgid "Another Éter is also connected to this site: %1$s (Éter %2$s). Only one of them updates the site and receives the song requests; switch off the website connection in the other one."
+msgstr "Egy másik Éter is csatlakozik ehhez az oldalhoz: %1$s (Éter %2$s). Közülük csak az egyik frissíti az oldalt és kapja a számkéréseket; a másikban kapcsold ki a weboldal-kapcsolatot."
+
 msgid "Artist"
 msgstr "Előadó"
 
@@ -184,6 +187,9 @@ msgstr "Kezeld jelszóként: aki ismeri, megváltoztathatja, mit mutat az oldal.
 msgid "Up next"
 msgstr "Következő számok"
 
+msgid "Updated by: %s"
+msgstr "Frissíti: %s"
+
 msgid "Visitors search the library and request a track, while requests are open."
 msgstr "A látogatók kereshetnek a hangtárban és számot kérhetnek, amíg lehet kérni."
 
@@ -243,6 +249,9 @@ msgstr "másodperc után, ha nem jön frissítés az Étertől (addig nem lehet 
 
 msgid "this track is not available now"
 msgstr "ez a szám most nem elérhető"
+
+msgid "unnamed computer"
+msgstr "névtelen gép"
 
 msgid "waiting for approval in the studio"
 msgstr "a stúdióban jóváhagyásra vár"

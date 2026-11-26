@@ -7,6 +7,8 @@
 #include "Theme.h"
 
 #include <QCheckBox>
+#include "SchedulerPage.h"
+#include "core/ErrorLog.h"
 #include <QComboBox>
 #include <QDialog>
 #include <QFrame>
@@ -67,6 +69,29 @@ void MainWindow::updateFixBar()
         text = TR("%1 — <span style=\"color:#ffd27a\"><b>%2-vel túllóg</b></span>").arg(head, mmssText(f->diffMs));
         text += fade ? TR(" (az előtte szóló elem ki lesz úsztatva)") : TR(" (a fix elem ennyit késik)");
         color = QStringLiteral("#33291a");
+    }
+    // Automata módban: mit tesz magától a program (vagy miért nem).
+    if (action && mode_ == Auto) {
+        const QString how = db_->setting("fix_adjust", "manual");
+        const bool gapFill = db_->setting("fix_gap_fill", "0") == QLatin1String("1");
+        const qint64 secs = now.secsTo(f->fixedAt);
+        QString note, tip;
+        if (how == QLatin1String("manual") && (!gapFill || f->diffMs < 0)) {
+            note = TR("magától nem igazít");
+            tip = TR("Az automatikus igazítás ki van kapcsolva. Bekapcsolható: Ütemező → Fix pontok igazítása, vagy az "
+                     "„Igazítás…” ablakban.");
+        } else if (f->diffMs < 0 && how != QLatin1String("both")) {
+            note = TR("a túllógást magától nem javítja");
+            tip = TR("A túllógást csak az „automatikus kitöltés, rövidítés és csere” beállítás javítja magától (Ütemező → Fix "
+                     "pontok igazítása).");
+        } else if (secs > 30 * 60) {
+            note = TR("magától igazít %1-tól").arg(f->fixedAt.addSecs(-30 * 60).toString(QStringLiteral("HH:mm")));
+            tip = TR("Az automatikus igazítás a fix pont előtt legfeljebb 30 perccel indul, amikor a becslés már pontos.");
+        } else {
+            note = TR("magától igazít");
+        }
+        fixText_->setToolTip(tip);
+        text += QStringLiteral(" <span style=\"color:#9aa3af\">· %1</span>").arg(note.toHtmlEscaped());
     }
     fixText_->setText(theme::css(text));
     fixBtn_->setVisible(action);
@@ -320,8 +345,12 @@ void MainWindow::autoAdjustFixes()
                 say(msg, 20000);
                 return;
             }
-            if (!gapFill || diff < 0)
-                say(TR("Pontos idő: a fix pontig %1, de nincs jobb megoldás a hangtárból.").arg(diffText(diff)), 15000);
+            if (!gapFill || diff < 0) {
+                // A becslés percenként változik: fix pontonként negyedóránként egy bejegyzés elég a naplóba.
+                const QString msg = TR("Pontos idő: a fix pontig %1, de nincs jobb megoldás a hangtárból.").arg(diffText(diff));
+                elog::writeKeyed(elog::Warning, QStringLiteral("Pontos idő"), msg, QStringLiteral("fix:%1").arg(rowId), 15 * 60000);
+                say(msg, 15000);
+            }
         }
     }
     // Hiány (csend lenne a fix pont előtt): egy szám, amely kitölti; kicsit túllóghat, azt a fix időpontban a
@@ -354,7 +383,9 @@ bool MainWindow::gapFillOne(int fixRowId, qint64 gapMs)
     }
     const int pick = best >= 0 ? best : longest;
     if (pick < 0) {
-        say(TR("Pontos idő: %1 hiányzik, de a kitöltés kategóriájában nincs beszúrható szám.").arg(mmssText(gapMs)), 15000);
+        const QString msg = TR("Pontos idő: %1 hiányzik, de a kitöltés kategóriájában nincs beszúrható szám.").arg(mmssText(gapMs));
+        elog::writeKeyed(elog::Warning, QStringLiteral("Pontos idő"), msg, QStringLiteral("fill:%1").arg(fixRowId), 15 * 60000);
+        say(msg, 15000);
         return false;
     }
     const Item it = pool[pick];
@@ -454,7 +485,22 @@ void MainWindow::openFixDialog()
         for (const Item &it : plan->add) avoid->insert(it.id);
         refill();
     });
-    connect(apply, &QPushButton::clicked, dlg, [this, dlg, plan, rowId] {
+    // Ha az automatikus igazítás ki van kapcsolva: innen egy lépésben bekapcsolható.
+    QCheckBox *autoOn = nullptr;
+    if (db_->setting("fix_adjust", "manual") == QLatin1String("manual")) {
+        autoOn = new QCheckBox(TR("Ezután magától igazítson (Automata módban, a fix pont előtt legfeljebb 30 perccel)"));
+        autoOn->setObjectName("fixAutoOn");
+        autoOn->setToolTip(TR("Bekapcsolja: Ütemező → Fix pontok igazítása, és a „Hiány esetén egy dallal kitölti” beállítást. "
+                              "A „kivehet (cserélhet)” jelölés szerint a túllógást is javítja."));
+        buttons->addWidget(autoOn);
+    }
+    connect(apply, &QPushButton::clicked, dlg, [this, dlg, plan, rowId, autoOn, allowRemove] {
+        if (autoOn && autoOn->isChecked()) {
+            db_->setSetting("fix_adjust", allowRemove->isChecked() ? "both" : "fill");
+            db_->setSetting("fix_gap_fill", "1");
+            if (schedPage_) schedPage_->refreshFixSettings();
+            updateFixBar();
+        }
         if (!plan->changes() || indexOfRow(rowId) < 0) return;
         applyAdjust(rowId, *plan);
         dlg->close();

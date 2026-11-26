@@ -179,3 +179,33 @@ function eter_base_url()
     $path = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/');
     return ($https ? 'https' : 'http') . '://' . $host . $path . '/';
 }
+
+// Several Éter installations on one site: only one of them (the owner) updates the site and receives the song
+// requests; the owner is the one on air, or, if it stops syncing, the next one to sync. Returns [isOwner, owner, others].
+function eter_claim($id, $name, $version, $onAir)
+{
+    $stale = eter_settings()['offline_after'];
+    return eter_update('instances', ['owner' => '', 'list' => []], function (&$d) use ($id, $name, $version, $onAir, $stale) {
+        $now = time();
+        foreach ($d['list'] as $k => $i) {
+            if ($now - (int) ($i['last'] ?? 0) > 86400) {
+                unset($d['list'][$k]);
+            }
+        }
+        $d['list'][$id] = ['name' => $name, 'version' => $version, 'last' => $now, 'on_air' => (bool) $onAir];
+        $owner = (string) ($d['owner'] ?? '');
+        $alive = $owner !== '' && isset($d['list'][$owner]) && $now - (int) $d['list'][$owner]['last'] <= $stale;
+        if (!$alive || ($owner !== $id && $onAir && empty($d['list'][$owner]['on_air']))) {
+            $owner = $id;
+        }
+        $d['owner'] = $owner;
+        $others = [];
+        foreach ($d['list'] as $k => $i) {
+            if ($k !== $id && $now - (int) $i['last'] <= $stale) {
+                $others[] = ['name' => (string) $i['name'], 'on_air' => !empty($i['on_air']), 'owner' => $k === $owner];
+            }
+        }
+        return [$owner === $id, $d['list'][$owner] ?? null, $others];
+    });
+}
+

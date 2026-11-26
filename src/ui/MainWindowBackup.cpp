@@ -80,7 +80,7 @@ QString MainWindow::applyHandback(const QJsonObject &m)
             }
     }
     takeOver(target, pos);
-    say(TR("A tartalék visszaadta az adást; innen folytatódik."), 12000);
+    sayWarning(QStringLiteral("Tartalék playout"), TR("A tartalék visszaadta az adást; innen folytatódik."), 12000);
     return {};
 }
 
@@ -98,7 +98,7 @@ void MainWindow::takeOver(int entryId, qint64 positionMs)
                 player = row->player;
                 players_[player]->cueTo(positionMs * eter::kRate / 1000);
                 players_[player]->playMixed(400, -24);           // rövid beúsztatás: nem kattan a folytatás
-                say(TR("Adás átvéve: „%1” innen folytatódik: %2.").arg(row->item.title, theme::formatTime(positionMs * eter::kRate / 1000)), 15000);
+                sayWarning(QStringLiteral("Tartalék playout"), TR("Adás átvéve: „%1” innen folytatódik: %2.").arg(row->item.title, theme::formatTime(positionMs * eter::kRate / 1000)), 15000);
                 return;
             }
         } else {
@@ -110,7 +110,7 @@ void MainWindow::takeOver(int entryId, qint64 positionMs)
         }
     }
     next();
-    say(TR("Adás átvéve: a következő elem indult."), 15000);
+    sayWarning(QStringLiteral("Tartalék playout"), TR("Adás átvéve: a következő elem indult."), 15000);
 }
 
 void MainWindow::watchOrigin(const QString &host, quint16 port, const QString &user, const QByteArray &salt, const QByteArray &key,

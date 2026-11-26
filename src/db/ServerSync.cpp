@@ -1,3 +1,4 @@
+#include "core/ErrorLog.h"
 #include "ServerSync.h"
 #include "i18n.h"
 
@@ -1003,6 +1004,15 @@ void ServerSync::stop()
 
 void ServerSync::setStatus(State s, qint64 pending, const QDateTime &last, const QString &detail)
 {
+    // Állapotváltás a hibanaplóba: kapcsolat elvesztése, az író zár elvesztése, hiba, majd a helyreállás.
+    if (s != state_ || (s >= Offline && detail != detail_)) {
+        const QString area = QStringLiteral("SQL szerver");
+        const QString d = detail.isEmpty() ? QString() : QStringLiteral(": ") + detail;
+        if (s == Offline) elog::error(area, TR("a kapcsolat megszakadt, a helyi tartalék dolgozik tovább") + d);
+        else if (s == LostLock) elog::error(area, TR("egy másik gép vette át az írást") + d);
+        else if (s == Failed) elog::error(area, TR("hiba") + d);
+        else if (s == Online && state_ >= Offline) elog::info(area, TR("a kapcsolat helyreállt"));
+    }
     state_ = s;
     pending_ = pending;
     if (last.isValid()) lastSync_ = last;

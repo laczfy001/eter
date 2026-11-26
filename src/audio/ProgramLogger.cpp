@@ -1,3 +1,4 @@
+#include "core/ErrorLog.h"
 #include "ProgramLogger.h"
 #include "audio/Decoder.h"
 #include "db/Database.h"
@@ -54,6 +55,7 @@ struct ProgramLogger::Worker {
     void setError(const QString &e)
     {
         std::lock_guard<std::mutex> lock(m);
+        if (!e.isEmpty() && e != error) elog::error(QStringLiteral("Adásnapló-felvétel"), e);
         error = e;
     }
 

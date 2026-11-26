@@ -94,6 +94,76 @@ class Eter_Radio_Store
         update_option('eter_radio_state', $state, false);
     }
 
+    // ---- Several Éter installations on one site ------------------------------------------------------------------------
+    // Every Éter sends an instance id and its computer name. Only one of them (the "owner") updates what the site shows
+    // and receives the song requests; the others get a warning back, and the admin page lists them. The owner is the
+    // instance that is on air; if it stops syncing, the next instance to sync takes over.
+
+    public static function instances()
+    {
+        $list = get_option('eter_radio_instances', []);
+        return is_array($list) ? $list : [];
+    }
+
+    // Records the syncing instance and decides whether it is the owner. Returns [isOwner, ownerInfo, others].
+    public static function claim($id, $name, $version, $on_air)
+    {
+        $now = time();
+        $stale = self::settings()['offline_after'];
+        $list = self::instances();
+        foreach ($list as $k => $i) {
+            if ($now - (int) ($i['last'] ?? 0) > 86400) {
+                unset($list[$k]);                       // not seen for a day: forgotten
+            }
+        }
+        $prev = $list[$id] ?? [];
+        $list[$id] = [
+            'name' => $name,
+            'version' => $version,
+            'last' => $now,
+            'on_air' => $on_air,
+            'on_air_since' => $on_air ? (int) ($prev['on_air_since'] ?? 0) ?: $now : 0,
+        ];
+        $owner = (string) get_option('eter_radio_owner', '');
+        $owner_alive = $owner !== '' && isset($list[$owner]) && $now - (int) $list[$owner]['last'] <= $stale;
+        if (!$owner_alive) {
+            $owner = $id;                               // no live owner: this one takes over
+        } elseif ($owner !== $id && $on_air && empty($list[$owner]['on_air'])) {
+            $owner = $id;                               // this one is on air, the owner is not
+        }
+        update_option('eter_radio_owner', $owner, false);
+        update_option('eter_radio_instances', $list, false);
+        $others = [];
+        foreach ($list as $k => $i) {
+            if ($k !== $id && $now - (int) $i['last'] <= $stale) {
+                $others[] = ['name' => (string) $i['name'], 'on_air' => !empty($i['on_air']), 'owner' => $k === $owner];
+            }
+        }
+        return [$owner === $id, $list[$owner] ?? null, $others];
+    }
+
+    // Live instances other than the owner (for the admin page).
+    public static function other_instances()
+    {
+        $now = time();
+        $stale = self::settings()['offline_after'];
+        $owner = (string) get_option('eter_radio_owner', '');
+        $out = [];
+        foreach (self::instances() as $k => $i) {
+            if ($k !== $owner && $now - (int) ($i['last'] ?? 0) <= $stale) {
+                $out[] = $i;
+            }
+        }
+        return $out;
+    }
+
+    public static function owner_info()
+    {
+        $owner = (string) get_option('eter_radio_owner', '');
+        $list = self::instances();
+        return $list[$owner] ?? null;
+    }
+
     // Éter has synced recently enough for the site to treat the station as online.
     public static function online(array $state = null)
     {

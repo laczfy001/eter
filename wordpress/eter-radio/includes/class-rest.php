@@ -154,6 +154,29 @@ class Eter_Radio_Rest
                 Eter_Radio_Store::set_status((int) $a['id'], (string) $a['status']);
             }
         }
+        // Several Éter installations: only the owner updates the site and gets the requests (Éter 0.36+ sends an
+        // instance; older versions count as one unnamed instance).
+        $inst = is_array($in['instance'] ?? null) ? $in['instance'] : [];
+        $inst_id = substr(preg_replace('/[^A-Za-z0-9_-]/', '', (string) ($inst['id'] ?? '')), 0, 64);
+        if ($inst_id === '') {
+            $inst_id = 'legacy';
+        }
+        [$is_owner, $owner, $others] = Eter_Radio_Store::claim(
+            $inst_id,
+            sanitize_text_field((string) ($inst['name'] ?? '')),
+            sanitize_text_field((string) ($in['version'] ?? '')),
+            !empty($inst['on_air'])
+        );
+        if (!$is_owner) {
+            return self::no_cache(new WP_REST_Response([
+                'ok' => true,
+                'secondary' => true,
+                'owner' => ['name' => (string) ($owner['name'] ?? ''), 'on_air' => !empty($owner['on_air'])],
+                'requests' => [],
+                'need_catalog' => false,
+                'others' => $others,
+            ]));
+        }
         $next = [];
         foreach (array_slice((array) ($in['next'] ?? []), 0, 20) as $t) {
             if ($tt = self::track($t)) {
@@ -195,6 +218,7 @@ class Eter_Radio_Rest
             'requests' => Eter_Radio_Store::new_requests(),
             'need_catalog' => $rev !== '' && $rev !== Eter_Radio_Store::catalog_rev(),
             'catalog_count' => count(Eter_Radio_Store::catalog()),
+            'others' => $others,
         ]));
     }
 

@@ -171,6 +171,14 @@ $base = eter_base_url();
         echo sprintf(h(__e('%1$s – last update %2$s ago, Éter %3$s.')),
             $online ? '<span class="ok">' . h(__e('Online')) . '</span>' : '<span class="bad">' . h(__e('Offline')) . '</span>',
             h($agoText), h($state['version'] ?? ''));
+        $inst = eter_read('instances', ['owner' => '', 'list' => []]);
+        $ownerInfo = $inst['list'][$inst['owner']] ?? null;
+        if ($ownerInfo && !empty($ownerInfo['name'])) echo '<br>' . sprintf(h(__e('Updated by: %s')), '<strong>' . h($ownerInfo['name']) . '</strong>');
+        foreach ($inst['list'] as $k => $i) {
+            if ($k === $inst['owner'] || time() - (int) ($i['last'] ?? 0) > eter_settings()['offline_after']) continue;
+            echo '<br><span class="bad">' . h(sprintf(__e('Another Éter is also connected to this site: %1$s (Éter %2$s). Only one of them updates the site and receives the song requests; switch off the website connection in the other one.'),
+                $i['name'] !== '' ? $i['name'] : __e('unnamed computer'), $i['version'] ?? '')) . '</span>';
+        }
         ?><br>
         <?php
         if (empty($state['requests']['enabled'])) echo h(__e('Song requests are turned off in Éter.'));

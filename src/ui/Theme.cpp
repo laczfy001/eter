@@ -42,6 +42,13 @@ QStatusBar QLabel { color: #9aa3af; font-size: 12px; padding: 0 6px; }
 #tabRow QToolButton:disabled { color: #6b7380; }
 
 #modeSwitch { background: #121418; border: 1px solid #30353e; border-radius: 5px; }
+#segment { background: #121418; border: 1px solid #30353e; border-radius: 5px; }
+#segment QToolButton { border: 0; border-radius: 3px; padding: 4px 12px; color: #c9ced6; background: transparent; }
+#segment QToolButton:checked { background: #3a4150; color: #ffffff; font-weight: 600; }
+#segment QToolButton:disabled { color: #6b7380; }
+QToolButton#rateBtn { min-width: 42px; border: 1px solid #30353e; border-radius: 4px; background: #121418; color: #c9ced6; padding: 4px 0; }
+QToolButton#rateBtn:checked { background: @ACC@; border-color: @ACC@; color: @ONACC@; font-weight: 600; }
+QToolButton#rateBtn:disabled { color: #4a5160; }
 #viewSwitch { background: #121418; border: 1px solid #30353e; border-radius: 5px; }
 #viewSwitch QToolButton { border: 0; border-radius: 3px; padding: 3px 14px; color: #c9ced6; font-size: 13px; font-weight: 600; background: transparent; }
 #viewSwitch QToolButton:checked { background: #3a4150; color: #ffffff; }

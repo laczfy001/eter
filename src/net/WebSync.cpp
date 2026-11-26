@@ -1,3 +1,6 @@
+#include "core/ErrorLog.h"
+#include <QSysInfo>
+#include <QUuid>
 #include "WebSync.h"
 
 #include "db/Database.h"
@@ -150,6 +153,18 @@ bool WebSync::requestsOpen() const
 
 bool WebSync::requestable(int itemId) const { return catalogIds_.contains(itemId); }
 
+// A gép állandó azonosítója a weboldal felé (első használatkor készül, gépenként tárolódik).
+QString WebSync::instanceId()
+{
+    QSettings s;
+    QString id = s.value(QStringLiteral("web/instance")).toString();
+    if (id.isEmpty()) {
+        id = QUuid::createUuid().toString(QUuid::WithoutBraces).remove(QLatin1Char('-'));
+        s.setValue(QStringLiteral("web/instance"), id);
+    }
+    return id;
+}
+
 void WebSync::syncNow()
 {
     if (cfg_.enabled && timer_->isActive()) soon_->start(0);
@@ -227,6 +242,8 @@ void WebSync::tick()
         {"requests", QJsonObject{{"enabled", cfg_.requests}, {"open", requestsOpen()}}},
         {"catalog_rev", cfg_.requests ? catalogRev_ : QString()},
         {"acks", acks},
+        // Melyik gép küldi (ha több Éter csatlakozik ugyanahhoz az oldalhoz, csak az adásban lévő frissít).
+        {"instance", QJsonObject{{"id", instanceId()}, {"name", QSysInfo::machineHostName()}, {"on_air", onAir_}}},
     };
     if (topHash_ != topSentHash_ || nowS - topSentAt_ >= 600) o.insert("top", top_);
     post(QStringLiteral("sync"), QJsonDocument(o).toJson(QJsonDocument::Compact));
@@ -236,8 +253,11 @@ void WebSync::tick()
     }
 }
 
-void WebSync::post(const QString &path, const QByteArray &body)
+void WebSync::post(const QString &path, const QByteArray &body, bool retry)
 {
+    if (!retry) retried_ = false;
+    lastPath_ = path;
+    lastBody_ = body;
     QString base = redirectBase_.isEmpty() ? cfg_.url.trimmed() : redirectBase_;
     if (!base.contains(QStringLiteral("://"))) base.prepend(QStringLiteral("https://"));
     while (base.endsWith(QLatin1Char('/'))) base.chop(1);
@@ -250,6 +270,7 @@ void WebSync::post(const QString &path, const QByteArray &body)
     const QUrl url(base + QStringLiteral("/?rest_route=/eter/v1/") + path + QStringLiteral("&eter_time=")
                    + QString::fromLatin1(time) + QStringLiteral("&eter_sig=") + QString::fromLatin1(sig));
     if (url.scheme() == QLatin1String("https") && !QSslSocket::supportsSsl()) {
+        elog::error(QStringLiteral("Weboldal"), TR("HTTPS nem érhető el ezen a gépen (hiányzik az OpenSSL)"));
         setStatus(false, TR("HTTPS nem érhető el ezen a gépen (hiányzik az OpenSSL)"));
         return;
     }
@@ -294,10 +315,18 @@ void WebSync::finished(QNetworkReply *reply, const QString &path)
         if (!nb.isEmpty() && nb != redirectBase_ && redirects_ < 3) {
             ++redirects_;
             redirectBase_ = nb;
+            elog::warning(QStringLiteral("Weboldal"), TR("a weboldal átirányít ide: %1 (érdemes ezt beírni címként)").arg(nb));
             setStatus(false, TR("a weboldal átirányít ide: %1 (érdemes ezt beírni címként)").arg(nb));
             soon_->start(0);
             return;
         }
+    }
+    // A tárhely lezárta a megtartott (keep-alive) kapcsolatot, mielőtt a kérés átment: egyszer azonnal újra, új
+    // kapcsolaton. Ez nem hiba, csak a kapcsolat elévült.
+    if (reply->error() == QNetworkReply::RemoteHostClosedError && http == 0 && !retried_) {
+        retried_ = true;
+        post(lastPath_, lastBody_, true);
+        return;
     }
     if (reply->error() != QNetworkReply::NoError || !o.value("ok").toBool()) {
         ++failures_;
@@ -317,11 +346,13 @@ void WebSync::finished(QNetworkReply *reply, const QString &path)
         else if (!server.isEmpty()) why = server;
         else why = reply->errorString();
         if (http > 0) why += TR(" (HTTP %1)").arg(http);
+        elog::error(QStringLiteral("Weboldal"), TR("%1 · %2").arg(path, why));
         setStatus(false, TR("hiba: %1").arg(why));
         // Hiba után ritkábban próbálkozik (legfeljebb negyedpercenként).
         timer_->setInterval(std::min(60000, kIntervalMs * (1 << std::min(failures_, 4))));
         return;
     }
+    if (failures_ > 0) elog::info(QStringLiteral("Weboldal"), TR("a kapcsolat helyreállt"));
     failures_ = 0;
     redirects_ = 0;
     timer_->setInterval(kIntervalMs);
@@ -359,7 +390,30 @@ void WebSync::finished(QNetworkReply *reply, const QString &path)
         }
         in << i;
     }
+    // Több Éter ugyanazon a weboldalon: csak az egyik (az adásban lévő) frissíti az oldalt és kapja a kéréseket.
+    QStringList otherNames;
+    for (const QJsonValue &v : o.value("others").toArray()) {
+        const QString n = v.toObject().value("name").toString();
+        otherNames << (n.isEmpty() ? TR("névtelen gép") : n);
+    }
+    secondary_ = o.value("secondary").toBool();
+    if (secondary_) {
+        const QString owner = o.value("owner").toObject().value("name").toString();
+        const QString text = TR("kapcsolódva, de a weboldalt egy másik Éter frissíti (%1), és a számkéréseket is az kapja. "
+                                "Ha ennek a gépnek kell adnia, a másikban kapcsold ki a weboldal-kapcsolatot.")
+                                 .arg(owner.isEmpty() ? TR("névtelen gép") : owner);
+        elog::writeKeyed(elog::Warning, QStringLiteral("Weboldal"), text, QStringLiteral("web-secondary"), 10 * 60000);
+        setStatus(false, text);
+        return;
+    }
     QString text = TR("kapcsolódva · utolsó frissítés %1").arg(lastOk_.toString("HH:mm:ss"));
+    if (!otherNames.isEmpty()) {
+        const QString warn = TR("egy másik Éter is ehhez a weboldalhoz csatlakozik: %1 – az oldalt és a kéréseket ez a gép "
+                                "kezeli, a másikban kapcsold ki a weboldal-kapcsolatot")
+                                 .arg(otherNames.join(QStringLiteral(", ")));
+        elog::writeKeyed(elog::Warning, QStringLiteral("Weboldal"), warn, QStringLiteral("web-others"), 10 * 60000);
+        text += QStringLiteral(" · ") + warn;
+    }
     if (cfg_.requests) text += requestsOpen() ? TR(" · most lehet kérni") : TR(" · most nem lehet kérni");
     if (!redirectBase_.isEmpty()) text += TR(" · a weboldal átirányít ide: %1 (érdemes ezt beírni címként)").arg(redirectBase_);
     if (std::llabs(clockOffset_) >= 60)

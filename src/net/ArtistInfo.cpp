@@ -1,4 +1,5 @@
 #include "ArtistInfo.h"
+#include "core/ErrorLog.h"
 
 #include "core/ArtistSplit.h"
 #include "core/Vocal.h"
@@ -463,6 +464,7 @@ void ArtistInfoService::finished(QNetworkReply *reply, const Job &job)
     if (status == 429) {
         // Túl sok kérés: egy perc szünet, és újra.
         lastError_ = TR("túl sok kérés, egy perc szünet");
+        elog::warning(QStringLiteral("Online adatok · TheAudioDB"), lastError_);
         pauseUntil_ = QDateTime::currentMSecsSinceEpoch() + 61000;
         enqueue(job, true);
         timer_.start(61000);
@@ -471,6 +473,7 @@ void ArtistInfoService::finished(QNetworkReply *reply, const Job &job)
     }
     if (reply->error() != QNetworkReply::NoError) {
         lastError_ = status == 401 || status == 403 ? TR("a kulcs nem érvényes") : reply->errorString();
+        elog::warning(QStringLiteral("Online adatok · TheAudioDB"), lastError_);
         pauseUntil_ = QDateTime::currentMSecsSinceEpoch() + 60000;
         enqueue(job, true);
         timer_.start(60000);
@@ -865,6 +868,7 @@ void ArtistInfoService::mbFinished(QNetworkReply *reply, const MbJob &job)
     if (status == 503 || status == 429 || (reply->error() != QNetworkReply::NoError && !(wiki && status == 404))) {
         // Túlterhelés (a MusicBrainz 503-at ad) vagy hálózati hiba: szünet, majd újra.
         mbError_ = status == 503 || status == 429 ? TR("túl sok kérés, rövid szünet") : reply->errorString();
+        elog::warning(QStringLiteral("Online adatok · MusicBrainz/Wikipédia"), mbError_);
         const int wait = status == 503 || status == 429 ? 15000 : 60000;
         mbPauseUntil_ = QDateTime::currentMSecsSinceEpoch() + wait;
         mbPush(job, true);

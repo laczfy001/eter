@@ -3,8 +3,8 @@
 # Run it in an MSYS2 "UCRT64" shell. Packages needed:
 #   pacman -S --needed git make diffutils zip mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake \
 #       mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-qt6-base mingw-w64-ucrt-x86_64-lame \
-#       mingw-w64-ucrt-x86_64-libmariadbclient
-# and a built FFmpeg (scripts/build_ffmpeg.sh, in the same shell).
+#       mingw-w64-ucrt-x86_64-libvorbis mingw-w64-ucrt-x86_64-libmariadbclient
+# FFmpeg is built automatically (scripts/build_ffmpeg.sh) the first time and after every compiler update.
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build/win"
@@ -21,9 +21,32 @@ find "$ROOT" -path "$ROOT/build" -prune -o -type f -newermt "$(date '+%Y-%m-%d %
 if [ ! -f "$PREFIX/include/lame/lame.h" ]; then
     pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-lame
 fi
+# The Ogg Vorbis encoder for the stream encoders (added in 0.37): installed here if an older setup lacks it.
+if [ ! -f "$PREFIX/include/vorbis/vorbisenc.h" ] || [ ! -f "$PREFIX/lib/libvorbisenc.a" ]; then
+    pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-libvorbis mingw-w64-ucrt-x86_64-libogg
+fi
 # The MySQL / MariaDB client for the external SQL server (added in 0.33): Qt's qsqlmysql driver needs it.
+# Without it (e.g. no internet connection for pacman) the program is still built, only without the external SQL server.
 if [ ! -f "$PREFIX/bin/libmariadb.dll" ]; then
-    pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-libmariadbclient
+    if ! pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-libmariadbclient; then
+        echo
+        echo "WARNING: mingw-w64-ucrt-x86_64-libmariadbclient could not be installed (no internet connection?)."
+        echo "         Eter is built anyway, but the external SQL server (MySQL / MariaDB) will not be available."
+        echo "         Later: pacman -S mingw-w64-ucrt-x86_64-libmariadbclient, then run this script again."
+        echo "FIGYELEM: a libmariadbclient csomag nem települt (nincs internetkapcsolat?). A program elkészül, de a"
+        echo "         külső SQL szerver (MySQL / MariaDB) nem lesz használható. Később telepítsd, és futtasd újra."
+        echo
+    fi
+fi
+
+# The static FFmpeg must be built with the same compiler and linker as Éter. After an MSYS2 update (pacman -Syu: new
+# GCC / binutils) the old libraries no longer link ("access beyond end of merged section"), so they are rebuilt here.
+FFMPEG_STAMP="$ROOT/third_party/ffmpeg/toolchain.txt"
+TOOLCHAIN="$(sh "$ROOT/scripts/toolchain_id.sh")"
+if [ ! -f "$ROOT/third_party/ffmpeg/lib/libavformat.a" ] || [ "$(cat "$FFMPEG_STAMP" 2>/dev/null)" != "$TOOLCHAIN" ]; then
+    echo "FFmpeg is (re)built for: $TOOLCHAIN"
+    echo "Az FFmpeg újrafordítása ehhez a fordítóhoz: $TOOLCHAIN (néhány perc)"
+    sh "$ROOT/scripts/build_ffmpeg.sh"
 fi
 
 cmake -S "$ROOT" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release

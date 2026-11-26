@@ -5,6 +5,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="${FFMPEG_SRC:-$ROOT/build/ffmpeg-src}"
 [ -d "$SRC" ] || git clone --depth 1 --branch n7.1.1 https://github.com/FFmpeg/FFmpeg.git "$SRC"
 cd "$SRC"
+# Egy korábbi fordítás maradékai (más fordítóval készült objektumfájlok) ne kerüljenek az új könyvtárakba.
+[ -f config.h ] && make distclean >/dev/null 2>&1 || true
+rm -rf "$ROOT/third_party/ffmpeg"
 ./configure --prefix="$ROOT/third_party/ffmpeg" \
   --disable-everything --disable-programs --disable-doc --disable-network --disable-autodetect \
   --disable-avdevice --disable-avfilter --disable-swscale --disable-postproc \
@@ -15,3 +18,5 @@ cd "$SRC"
   --enable-parser=mpegaudio,flac,vorbis,opus,aac,aac_latm
 make -j"$(nproc)"
 make install
+# Melyik fordítóval készült: a build_windows.sh ebből látja, ha az MSYS2 frissítése óta újra kell fordítani.
+sh "$ROOT/scripts/toolchain_id.sh" > "$ROOT/third_party/ffmpeg/toolchain.txt"

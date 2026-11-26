@@ -6,4 +6,6 @@
 namespace crash {
 void install(const QString &logPath);
 QString logPath();
+// Mit csinál éppen ez a szál (pl. melyik fájlt dekódolja): összeomláskor a jelentésbe kerül. Gyors, zár nélküli.
+void setActivity(const char *what, const char *detail);
 }

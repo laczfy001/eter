@@ -72,7 +72,7 @@ void MainWindow::onFilesChecked(const QStringList &checked, const QSet<QString> 
                                                    QStringLiteral("yyyy-MM-dd HH:mm:ss"));
         if (at.isValid() && now.secsTo(at) > 30 * 60) continue;
         warnedMissing_.insert(r.id);
-        say(TR("Figyelem: „%1” fájlja nem érhető el, adásba kerülésekor kimarad. (Adatbázis → Hiányzó fájlok)")
+        sayWarning(QStringLiteral("Fájlok"), TR("Figyelem: „%1” fájlja nem érhető el, adásba kerülésekor kimarad. (Adatbázis → Hiányzó fájlok)")
                 .arg(r.item.title), 20000);
     }
     if (missing_ != before) {

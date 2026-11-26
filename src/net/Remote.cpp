@@ -1,3 +1,4 @@
+#include "core/ErrorLog.h"
 #include "Remote.h"
 #include "i18n.h"
 
@@ -442,8 +443,13 @@ void Client::connectTo(const QString &host, quint16 port, const QString &user, c
         const QString reason = s->errorString();
         conn_ = nullptr;
         c->deleteLater();
-        if (wasReady_) emit lost(reason);
-        else emit failed(TR("Nem sikerült csatlakozni: %1").arg(reason));
+        if (wasReady_) {
+            elog::error(QStringLiteral("Távoli kapcsolat"), TR("A kapcsolat megszakadt: %1").arg(reason));
+            emit lost(reason);
+        } else {
+            elog::warning(QStringLiteral("Távoli kapcsolat"), TR("Nem sikerült csatlakozni: %1").arg(reason));
+            emit failed(TR("Nem sikerült csatlakozni: %1").arg(reason));
+        }
     });
     s->connectToHost(host, port);
     // Ha 8 másodperc alatt nincs belépés, feladjuk.

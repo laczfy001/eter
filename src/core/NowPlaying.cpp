@@ -124,25 +124,32 @@ void NowPlaying::writeIdle()
     publish(true);
 }
 
+bool NowPlaying::compose(const Config &c, const Track &onAir, const Track &next, const Track &lastMusic, bool everPlayed,
+                         QString *out)
+{
+    if (!onAir.valid()) {
+        if (!everPlayed) return false;               // induláskor nem írja felül a fájlt, amíg nem szólt semmi
+        *out = c.idleText;
+    } else if (onAir.music) {
+        *out = render(c.format, onAir, next);
+    } else {
+        switch (c.nonMusic) {
+        case OwnTitle: *out = render(c.format, onAir, next); break;
+        case FixedText: *out = c.nonMusicText; break;
+        case KeepLast:
+            if (!lastMusic.valid()) return false;     // még nem volt zene: marad, ami volt
+            *out = render(c.format, lastMusic, next);
+            break;
+        }
+    }
+    return true;
+}
+
 void NowPlaying::publish(bool force)
 {
     if (!cfg_.fileEnabled && !cfg_.icecastEnabled) return;
     QString text;
-    if (!onAir_.valid()) {
-        if (!everPlayed_) return;                    // induláskor nem írja felül a fájlt, amíg nem szólt semmi
-        text = cfg_.idleText;
-    } else if (onAir_.music) {
-        text = render(cfg_.format, onAir_, next_);
-    } else {
-        switch (cfg_.nonMusic) {
-        case OwnTitle: text = render(cfg_.format, onAir_, next_); break;
-        case FixedText: text = cfg_.nonMusicText; break;
-        case KeepLast:
-            if (!lastMusic_.valid()) return;          // még nem volt zene: marad, ami volt
-            text = render(cfg_.format, lastMusic_, next_);
-            break;
-        }
-    }
+    if (!compose(cfg_, onAir_, next_, lastMusic_, everPlayed_, &text)) return;
     if (hasText_ && text == text_ && !force) return;
     text_ = text;
     hasText_ = true;

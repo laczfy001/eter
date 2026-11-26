@@ -25,6 +25,7 @@ public:
     void generateDialog();          // a „Playlistek generálása” gomb: melyik napok, melyik órák
     QString generateInfo() const;   // a legutóbbi generálás összegzése (fejlesztéshez)
     void refreshAll() { categoryAvgMs_.clear(); reloadGrid(); reloadClocks(); }   // kívülről változott adatok után
+    void refreshFixSettings();      // a fix pontok igazításának beállításai kívülről változtak
 
 signals:
     void generated(const GenerateResult &result);

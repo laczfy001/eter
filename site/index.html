@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Éter – radio playout and automation</title>
+<meta name="description" content="Éter is free radio playout and automation software for Windows and Linux: three players with automatic mixing, cartwall, scheduler, mix editor, song requests from your website, MIDI control and a backup playout.">
+<meta property="og:title" content="Éter – radio playout and automation">
+<meta property="og:description" content="Free radio playout for Windows and Linux: automatic mixing, scheduler, mix editor, cartwall, song requests, MIDI control, backup playout.">
+<meta property="og:image" content="screenshots/on-air.png">
+<link rel="icon" type="image/png" href="favicon.png">
+<style>
+:root {
+  --bg: #121418; --panel: #1b1e24; --raised: #23272e; --border: #30353e;
+  --text: #e8eaed; --muted: #9aa3af; --accent: #f5a524; --info: #5cb0ff; --ok: #45d483; --teal: #3fd0b5;
+  --radius: 10px; --wrap: 1120px;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--info); text-decoration: none; }
+a:hover { text-decoration: underline; }
+img { max-width: 100%; display: block; }
+code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--raised); padding: 0.1em 0.35em; border-radius: 4px; }
+.wrap { max-width: var(--wrap); margin: 0 auto; padding: 0 20px; }
+
+/* Top bar */
+header.top { position: sticky; top: 0; z-index: 10; background: rgba(18,20,24,0.88); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+header.top .wrap { display: flex; align-items: center; gap: 24px; height: 58px; }
+.brand { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 700; font-size: 19px; letter-spacing: 0.01em; }
+.brand:hover { text-decoration: none; }
+.brand img { width: 28px; height: 28px; }
+nav.links { display: flex; gap: 22px; margin-left: auto; font-size: 15px; }
+nav.links a { color: var(--muted); }
+nav.links a:hover { color: var(--text); text-decoration: none; }
+@media (max-width: 720px) { nav.links a.opt { display: none; } }
+
+/* Hero */
+.hero { padding: 72px 0 40px; text-align: center; }
+.onair { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; color: var(--accent); border: 1px solid rgba(245,165,36,0.4); border-radius: 999px; padding: 4px 12px; text-transform: uppercase; }
+.onair::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+.hero h1 { font-size: clamp(34px, 6vw, 58px); line-height: 1.08; margin: 22px auto 16px; max-width: 900px; letter-spacing: -0.02em; }
+.hero h1 em { font-style: normal; color: var(--accent); }
+.hero p.lead { color: var(--muted); font-size: clamp(17px, 2.2vw, 20px); max-width: 760px; margin: 0 auto; }
+
+/* Downloads */
+.downloads { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; margin: 36px 0 12px; }
+.dl { display: flex; align-items: center; gap: 14px; min-width: 260px; padding: 14px 20px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--border); color: var(--text); text-align: left; transition: border-color 0.15s, transform 0.15s; }
+.dl:hover { text-decoration: none; border-color: var(--accent); transform: translateY(-1px); }
+.dl.primary { background: var(--accent); border-color: var(--accent); color: #1a1205; }
+.dl.primary .sub { color: rgba(26,18,5,0.72); }
+.dl svg { flex: none; width: 30px; height: 30px; }
+.dl .t { font-weight: 700; font-size: 16px; line-height: 1.25; }
+.dl .sub { font-size: 13px; color: var(--muted); }
+.relinfo { color: var(--muted); font-size: 14px; text-align: center; min-height: 1.6em; }
+.relinfo a { color: var(--muted); text-decoration: underline; }
+
+.shot-hero { margin: 44px auto 0; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); box-shadow: 0 30px 80px rgba(0,0,0,0.5); }
+
+/* Sections */
+section { padding: 72px 0 0; }
+section h2 { font-size: clamp(26px, 3.6vw, 34px); margin: 0 0 8px; letter-spacing: -0.01em; }
+section .intro { color: var(--muted); max-width: 760px; margin: 0 0 32px; font-size: 17px; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px 22px 20px; }
+.card h3 { margin: 0 0 8px; font-size: 17px; display: flex; align-items: center; gap: 10px; }
+.card h3 .dot { width: 10px; height: 10px; border-radius: 3px; background: var(--accent); flex: none; }
+.card.b h3 .dot { background: var(--info); }
+.card.c h3 .dot { background: var(--teal); }
+.card.d h3 .dot { background: var(--ok); }
+.card p { margin: 0; color: var(--muted); font-size: 15px; }
+
+/* Feature rows with screenshots */
+.feature { display: grid; grid-template-columns: 1fr 1.25fr; gap: 40px; align-items: center; margin-top: 56px; }
+.feature.rev { grid-template-columns: 1.25fr 1fr; }
+.feature.rev .txt { order: 2; }
+.feature h3 { font-size: 22px; margin: 0 0 10px; }
+.feature ul { margin: 0; padding-left: 20px; color: var(--muted); }
+.feature li { margin: 6px 0; }
+.feature li strong { color: var(--text); font-weight: 600; }
+.feature figure { margin: 0; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); background: var(--panel); }
+.feature figure img { cursor: zoom-in; width: 100%; max-height: 430px; object-fit: cover; object-position: left top; }
+@media (max-width: 860px) { .feature, .feature.rev { grid-template-columns: 1fr; gap: 20px; } .feature.rev .txt { order: 0; } }
+
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+.gallery figure { margin: 0; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.gallery img { aspect-ratio: 16 / 10; object-fit: cover; object-position: top left; width: 100%; cursor: zoom-in; }
+.gallery figcaption { padding: 10px 14px; font-size: 14px; color: var(--muted); }
+
+/* What's new */
+.news { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 28px 20px; }
+.news h3 { color: var(--accent); margin: 18px 0 4px; font-size: 18px; }
+.news ul { padding-left: 20px; color: var(--muted); margin: 8px 0 0; }
+.news li { margin: 10px 0; }
+.news li strong { color: var(--text); }
+.news .more { margin-top: 14px; font-size: 15px; }
+.news.collapsed .rest { display: none; }
+
+/* Install */
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.cols .card p + p { margin-top: 10px; }
+pre { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text); margin: 12px 0 0; }
+
+footer { margin-top: 88px; border-top: 1px solid var(--border); padding: 28px 0 40px; color: var(--muted); font-size: 14px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 28px; justify-content: space-between; }
+
+/* Image viewer */
+#viewer { position: fixed; inset: 0; background: rgba(0,0,0,0.88); display: none; align-items: center; justify-content: center; padding: 24px; z-index: 50; cursor: zoom-out; }
+#viewer.open { display: flex; }
+#viewer img { max-width: 100%; max-height: 100%; border-radius: 6px; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#"><img src="icon.png" alt="">Éter</a>
+    <nav class="links">
+      <a href="#features">Features</a>
+      <a class="opt" href="#screenshots">Screenshots</a>
+      <a class="opt" href="#news">What's new</a>
+      <a href="#download">Download</a>
+      <a href="https://github.com/laczfy001/eter">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<div class="wrap">
+  <div class="hero" id="download">
+    <span class="onair">Free radio playout</span>
+    <h1>Run your station <em>on air</em>, around the clock</h1>
+    <p class="lead">Éter is radio playout and automation software for Windows and Linux: three players with smart
+      automatic mixing, a cartwall, a music scheduler, a mix editor, built-in Icecast / Shoutcast streaming, song requests
+      from your website, MIDI control and a backup playout – in one desktop application.</p>
+
+    <div class="downloads">
+      <a class="dl primary" id="dl-win" href="https://github.com/laczfy001/eter/releases/latest">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.4 4v7.1H3V5.1Zm0 13.8 7.4 1.1v-7.1H3v6Zm8.3 1.2L21 21.5v-8.6h-9.7v7.2Zm0-16.2v7.2H21V2.5l-9.7 1.4Z"/></svg>
+        <span><span class="t">Download for Windows</span><br><span class="sub" data-sub>64-bit Windows 10 / 11 · zip</span></span>
+      </a>
+      <a class="dl" id="dl-linux" href="https://github.com/laczfy001/eter/releases/latest">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3c-2.2 0-3.4 1.9-3.4 4.3 0 1.6.5 2.6-.6 4.2-1.2 1.7-2.7 3.4-2.7 5.6 0 .6.1 1.1.4 1.6M12 3c2.2 0 3.4 1.9 3.4 4.3 0 1.6-.5 2.6.6 4.2 1.2 1.7 2.7 3.4 2.7 5.6 0 .6-.1 1.1-.4 1.6"/><path d="M5.2 18.6c-.9.3-1.5.9-1.2 1.6.4.9 2.4.8 3.8 1.5 1.1.5 2 .2 2.2-.8.3-1.2-.6-2.7-1.6-3.7-.9-.8-2.2-.9-3.2 1.4ZM18.8 18.6c.9.3 1.5.9 1.2 1.6-.4.9-2.4.8-3.8 1.5-1.1.5-2 .2-2.2-.8-.3-1.2.6-2.7 1.6-3.7.9-.8 2.2-.9 3.2 1.4Z"/><circle cx="10.4" cy="7.4" r=".6" fill="currentColor"/><circle cx="13.6" cy="7.4" r=".6" fill="currentColor"/><path d="M10.8 9.4h2.4l-1.2 1.1-1.2-1.1Z" fill="currentColor"/></svg>
+        <span><span class="t">Download for Linux</span><br><span class="sub" data-sub>AppImage · x86_64</span></span>
+      </a>
+    </div>
+    <p class="relinfo" id="relinfo">Latest release on <a href="https://github.com/laczfy001/eter/releases/latest">GitHub Releases</a></p>
+
+    <figure class="shot-hero"><img src="screenshots/on-air.png" alt="The On air page: the player on air with artist info, the playlist with fixed-time items, the mini mixer and the cartwall" width="1920" height="1007"></figure>
+  </div>
+</div>
+
+<section id="features">
+  <div class="wrap">
+    <h2>Everything a station needs</h2>
+    <p class="intro">From the first song in the morning to the news at the top of every hour, Éter plays, mixes and
+      schedules by itself – or lets you take over at any moment.</p>
+
+    <div class="grid">
+      <div class="card"><h3><span class="dot"></span>Three players, automatic mixing</h3>
+        <p>Players A, B and C, so a song, a jingle and the next song can sound at once. The smart automatic mix reads
+          the waveform: fade-outs and sudden endings, soft and strong intros, clashing tempos or keys.</p></div>
+      <div class="card"><h3><span class="dot"></span>Mix editor</h3>
+        <p>Shape any transition on a timeline: mix point, fade curves, cue-in, intro, voice tracks and music ducking,
+          with preview. Lay a jingle over a crossfade so three items play together.</p></div>
+      <div class="card"><h3><span class="dot"></span>On time, every time</h3>
+        <p>Before every fixed-time item the playlist shows how much is missing or over and suggests tracks to add,
+          drop or swap – and in automatic mode it adjusts by itself, up to 30 minutes ahead.</p></div>
+      <div class="card b"><h3><span class="dot"></span>Music scheduler</h3>
+        <p>Clocks built from categories, fixed elements and fills; week grids by date period; artist and title
+          separation, energy, tempo, dayparts, vocal rules and harmonic mixing on the Camelot wheel.</p></div>
+      <div class="card b"><h3><span class="dot"></span>Library and analysis</h3>
+        <p>An SQLite library with categories, folder import and an item editor. Background analysis fills in tempo
+          and key at the lowest priority; missing files are found well before they go on air.</p></div>
+      <div class="card b"><h3><span class="dot"></span>Cartwall and live streams</h3>
+        <p>Coloured walls of instant-start buttons on their own output. Icecast and Shoutcast streams can be playlist
+          items with a planned length and reconnect by themselves when they drop.</p></div>
+      <div class="card c"><h3><span class="dot"></span>Song requests from your website</h3>
+        <p><em>Now playing</em>, <em>Up next</em>, <em>Most played</em> and <em>Song request</em> widgets with the
+          WordPress plugin, or for any PHP site with Éter Web. The studio computer never has to be reachable from the
+          internet.</p></div>
+      <div class="card c"><h3><span class="dot"></span>Now playing and Icecast</h3>
+        <p>The title on air goes to a text file from a template for your stream encoder or caption, and Éter can
+          update the Icecast server's metadata directly. A program logger records the output into hourly MP3 files.</p></div>
+      <div class="card c"><h3><span class="dot"></span>Built-in stream encoders</h3>
+        <p>Stream to Icecast or Shoutcast in MP3 or Ogg Vorbis, several encoders at once, from the main output or a
+          sound card input. Titles, automatic reconnect and the outgoing bandwidth at a glance.</p></div>
+      <div class="card c"><h3><span class="dot"></span>MIDI control</h3>
+        <p>Use a mixer such as the RØDECaster Pro, or any MIDI controller. Learn mode: pick an action, move a button
+          or fader. Buttons start and stop; faders set volumes or work as fader start.</p></div>
+      <div class="card d"><h3><span class="dot"></span>Remote editing</h3>
+        <p>Edit the live playlist of the playout computer from anywhere on the network, with the full Mix editor and
+          uploads. Users get their own passwords and rights; passwords never cross the network.</p></div>
+      <div class="card d"><h3><span class="dot"></span>Backup playout</h3>
+        <p>A second computer keeps a copy of the whole database and follows what is on air. If the main computer
+          stops answering, the backup continues the same item – and hands it back later.</p></div>
+      <div class="card d"><h3><span class="dot"></span>External SQL server</h3>
+        <p>MySQL or MariaDB as the main store, with a local copy as a reserve, so the broadcast never depends on the
+          network. Database export and import for backups and moving to another computer.</p></div>
+    </div>
+
+    <div class="feature">
+      <div class="txt">
+        <h3>A player that tells you what's next</h3>
+        <ul>
+          <li><strong>Waveform</strong> with the intro countdown and the automatic mix point to the next player.</li>
+          <li><strong>Artist info</strong> from MusicBrainz, Wikipedia and TheAudioDB: photo, country, years, genre and biography.</li>
+          <li><strong>Red countdown</strong> in the last 10 seconds, counting to the mix point in automatic mode.</li>
+          <li>Every channel – the three players, preview and cartwall – can go to <strong>its own sound card</strong>.</li>
+        </ul>
+      </div>
+      <figure><img src="screenshots/player.png" alt="The player on air: artist photo and details, the waveform with the automatic mix point to player B" width="1600" height="205" loading="lazy"></figure>
+    </div>
+
+    <div class="feature rev">
+      <div class="txt">
+        <h3>See the mix before it goes on air</h3>
+        <ul>
+          <li>Every threshold of the automatic mix is adjustable, with a <strong>live diagram</strong> of two example items.</li>
+          <li>Save settings as <strong>mix templates</strong> and switch between them.</li>
+          <li>Jingles, ads, news and voice tracks follow each other <strong>back to back</strong>, with the silence cut.</li>
+          <li>A <strong>dead-air guard</strong> moves on when the item on air stays silent.</li>
+        </ul>
+      </div>
+      <figure><img style="object-position: left 52%" src="screenshots/automatic-mix-preview.png" alt="Settings → Automatic mix: the preview of a transition between two example items" width="1603" height="1251" loading="lazy"></figure>
+    </div>
+
+    <div class="feature">
+      <div class="txt">
+        <h3>Make it yours</h3>
+        <ul>
+          <li><strong>Five colour schemes</strong> – Éter dark, Graphite, Midnight blue, High contrast and Light.</li>
+          <li>A <strong>theme editor</strong> for every base colour; save your schemes by name, export and import them.</li>
+          <li>Hide the tabs you don't use, resize every column, and set the <strong>interface size</strong>.</li>
+          <li>English and Hungarian interface.</li>
+        </ul>
+      </div>
+      <figure><img src="screenshots/colour-schemes.png" alt="Settings → Appearance: colour scheme, base colours, player colours" width="1609" height="1260" loading="lazy"></figure>
+    </div>
+  </div>
+</section>
+
+<section id="screenshots">
+  <div class="wrap">
+    <h2>Screenshots</h2>
+    <p class="intro">Click an image to see it full size.</p>
+    <div class="gallery">
+      <figure><img src="screenshots/mix-editor.png" alt="Mix editor with an overlaid item" loading="lazy"><figcaption>Mix editor with an overlaid item</figcaption></figure>
+      <figure><img src="screenshots/scheduler.png" alt="Scheduler" loading="lazy"><figcaption>Scheduler: clocks and rules</figcaption></figure>
+      <figure><img src="screenshots/remote-editor.png" alt="Remote editor" loading="lazy"><figcaption>Remote editor on another computer</figcaption></figure>
+      <figure><img src="screenshots/stream-encoders.png" alt="Stream encoders" loading="lazy"><figcaption>Stream encoders: Icecast and Shoutcast</figcaption></figure>
+      <figure><img src="screenshots/midi.png" alt="MIDI control" loading="lazy"><figcaption>MIDI control with learn mode</figcaption></figure>
+      <figure><img src="screenshots/sql-server.png" alt="External SQL server" loading="lazy"><figcaption>External SQL server</figcaption></figure>
+      <figure><img src="screenshots/item-editor.png" alt="Item editor" loading="lazy"><figcaption>Item editor</figcaption></figure>
+      <figure><img src="screenshots/backup.png" alt="Backup playout" loading="lazy"><figcaption>Backup playout</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section id="news">
+  <div class="wrap">
+    <h2>What's new</h2>
+    <p class="intro">The changes in the latest version. The full history is in the
+      <a href="https://github.com/laczfy001/eter/blob/main/CHANGELOG.md">changelog</a>.</p>
+    <div class="news collapsed" id="newsbox">
+<!--WHATS_NEW-->
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Install</h2>
+    <p class="intro">Download, unpack and start – no installer, no account. Audio files are never copied or modified;
+      the library only refers to them.</p>
+    <div class="cols">
+      <div class="card"><h3><span class="dot"></span>Windows</h3>
+        <p>Unpack <code>Eter-…-win64.zip</code> anywhere and start <code>eter.exe</code> (64-bit Windows 10 or 11).
+          <code>Eter-szerkeszto.cmd</code> starts the remote editor, <code>Eter-tartalek.cmd</code> the backup playout.</p>
+        <p>The program is not code-signed, so Windows may show an “unknown publisher” warning on first start.</p></div>
+      <div class="card b"><h3><span class="dot"></span>Linux</h3>
+        <p>64-bit Linux with glibc 2.39 or newer (Ubuntu 24.04 and later) and PipeWire, PulseAudio, ALSA or JACK.</p>
+        <pre>chmod +x Eter-*-x86_64.AppImage
+./Eter-*-x86_64.AppImage</pre></div>
+      <div class="card c"><h3><span class="dot"></span>Website widgets</h3>
+        <p><a id="dl-wp" href="https://github.com/laczfy001/eter/releases/latest">Éter Radio for WordPress</a>
+          (<code>eter-radio.zip</code>): blocks and shortcodes for now playing, up next, most played and song requests.</p>
+        <p><a id="dl-web" href="https://github.com/laczfy001/eter/releases/latest">Éter Web</a>
+          (<code>eter-web.zip</code>): the same widgets for any PHP web host, embedded with one script line.</p></div>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Éter is free software under the <a href="https://github.com/laczfy001/eter/blob/main/LICENSE">GNU GPL v3.0 or later</a>.</span>
+    <span><a href="https://github.com/laczfy001/eter">Source code</a> · <a href="https://github.com/laczfy001/eter/releases">All releases</a> · <a href="https://github.com/laczfy001/eter/issues">Report a problem</a></span>
+  </div>
+</footer>
+
+<div id="viewer" role="dialog" aria-label="Screenshot"><img alt=""></div>
+
+<script>
+(function () {
+  var REPO = 'laczfy001/eter';
+
+  // Latest release: the download buttons point straight at its files.
+  function size(b) { return b > 1048576 ? (b / 1048576).toFixed(0) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' kB'; }
+  function setLink(id, asset, extra) {
+    var a = document.getElementById(id);
+    if (!a || !asset) return;
+    a.href = asset.browser_download_url;
+    var sub = a.querySelector('[data-sub]');
+    if (sub) sub.textContent = extra + ' · ' + size(asset.size);
+  }
+  fetch('https://api.github.com/repos/' + REPO + '/releases/latest', { headers: { 'Accept': 'application/vnd.github+json' } })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function (rel) {
+      var find = function (re) { return (rel.assets || []).filter(function (x) { return re.test(x.name); })[0]; };
+      var ver = (rel.tag_name || '').replace(/^v/, '');
+      setLink('dl-win', find(/win64\.zip$/i), 'Version ' + ver + ' · Windows 10 / 11');
+      setLink('dl-linux', find(/\.AppImage$/i), 'Version ' + ver + ' · AppImage');
+      setLink('dl-wp', find(/^eter-radio.*\.zip$/i), '');
+      setLink('dl-web', find(/^eter-web.*\.zip$/i), '');
+      var date = rel.published_at ? new Date(rel.published_at).toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }) : '';
+      document.getElementById('relinfo').innerHTML = 'Éter ' + ver + (date ? ', released ' + date : '') +
+        ' · <a href="' + rel.html_url + '">release notes</a> · <a href="https://github.com/' + REPO + '/releases">older versions</a>';
+    })
+    .catch(function () { /* the buttons keep pointing at the Releases page */ });
+
+  // What's new: the first few entries, the rest on demand.
+  var box = document.getElementById('newsbox');
+  var items = box.querySelectorAll('li');
+  if (items.length > 6) {
+    for (var i = 6; i < items.length; i++) items[i].classList.add('rest');
+    var more = document.createElement('p');
+    more.className = 'more';
+    more.innerHTML = '<a href="#news">Show all ' + items.length + ' changes</a>';
+    more.firstChild.addEventListener('click', function (e) { e.preventDefault(); box.classList.remove('collapsed'); more.remove(); });
+    box.appendChild(more);
+  } else {
+    box.classList.remove('collapsed');
+  }
+
+  // Screenshots full size.
+  var viewer = document.getElementById('viewer'), big = viewer.querySelector('img');
+  document.querySelectorAll('.feature img, .gallery img, .shot-hero img').forEach(function (img) {
+    img.addEventListener('click', function () { big.src = img.src; big.alt = img.alt; viewer.classList.add('open'); });
+  });
+  viewer.addEventListener('click', function () { viewer.classList.remove('open'); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') viewer.classList.remove('open'); });
+})();
+</script>
+</body>
+</html>
