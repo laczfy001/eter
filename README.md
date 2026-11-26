@@ -112,6 +112,14 @@ for Icecast and a backup playout in one desktop application.
 |---|---|
 | ![Settings → MIDI: device, last message, actions with Learn buttons](docs/screenshots/midi.png) | ![Settings → SQL server: connection, test, upload and download](docs/screenshots/sql-server.png) |
 
+| Colour schemes and the theme editor | Preview of the automatic mix |
+|---|---|
+| ![Settings → Appearance: colour scheme, base colours, player colours](docs/screenshots/colour-schemes.png) | ![Settings → Automatic mix: the preview of a transition between two example items](docs/screenshots/automatic-mix-preview.png) |
+
+| MIDI control with learn mode | External SQL server |
+|---|---|
+| ![Settings → MIDI: device, last message, actions with Learn buttons](docs/screenshots/midi.png) | ![Settings → SQL server: connection, test, upload and download](docs/screenshots/sql-server.png) |
+
 ### Preparation
 
 - **Library** in SQLite with user-defined categories, import of files and whole folders, and an item editor

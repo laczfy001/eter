@@ -111,6 +111,14 @@ tartalék playout egyetlen asztali alkalmazásban.
 |---|---|
 | ![Beállítások → MIDI: eszköz, utolsó üzenet, műveletek a Tanítás gombokkal](docs/screenshots/midi.png) | ![Beállítások → SQL szerver: kapcsolat, tesztelés, feltöltés és letöltés](docs/screenshots/sql-server.png) |
 
+| Színsémák és témaszerkesztő | Az automatikus mix előnézete |
+|---|---|
+| ![Beállítások → Megjelenés: színséma, alapszínek, a lejátszók színei](docs/screenshots/colour-schemes.png) | ![Beállítások → Automatikus mix: két mintaelem átmenetének előnézete](docs/screenshots/automatic-mix-preview.png) |
+
+| MIDI-vezérlés tanuló móddal | Külső SQL szerver |
+|---|---|
+| ![Beállítások → MIDI: eszköz, utolsó üzenet, műveletek a Tanítás gombokkal](docs/screenshots/midi.png) | ![Beállítások → SQL szerver: kapcsolat, tesztelés, feltöltés és letöltés](docs/screenshots/sql-server.png) |
+
 ### Előkészítés
 
 - **Hangtár** SQLite adatbázisban, saját kategóriákkal, fájlok és egész mappák importálásával,
