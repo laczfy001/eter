@@ -1,5 +1,6 @@
 #include "Scheduler.h"
 #include "i18n.h"
+#include "sched/ExternalPlaylist.h"
 #include "core/ArtistSplit.h"
 #include "core/MusicKey.h"
 #include "core/Vocal.h"
@@ -313,7 +314,7 @@ FlowStats Scheduler::flowStats(const QVector<Entry> &entries, int bpmPct, int ke
 
 GenerateResult Scheduler::generate(const QDateTime &from, int hours, bool replace)
 {
-    if (!db_->hasWeekGrid()) return {};
+    if (!db_->hasWeekGrid() && !(ext_ && ext_->enabled())) return {};
     const QDateTime start(from.date(), QTime(from.time().hour(), 0));
     if (replace) db_->deleteSchedulerEntriesFrom(keyOf(start));
     QVector<QDateTime> list;
@@ -324,7 +325,9 @@ GenerateResult Scheduler::generate(const QDateTime &from, int hours, bool replac
 GenerateResult Scheduler::generateHours(QVector<QDateTime> hours, const QDateTime &now, bool replace)
 {
     GenerateResult result;
-    if (!db_->hasWeekGrid()) return result;
+    const bool extOn = ext_ && ext_->enabled();
+    const int extClock = ext_ ? ExternalPlaylists::clockId(db_) : 0;
+    if (!db_->hasWeekGrid() && !extOn) return result;
     // Óra elejére kerekítve, időrendben, ismétlés és a már elmúlt órák nélkül.
     for (QDateTime &h : hours) h = QDateTime(h.date(), QTime(h.time().hour(), 0));
     std::sort(hours.begin(), hours.end());
@@ -375,10 +378,41 @@ GenerateResult Scheduler::generateHours(QVector<QDateTime> hours, const QDateTim
     QString pendingNote;                         // „Jegyzet” elem: a következő betett elem elé kerül felirat
     db_->beginBatch();
     for (const QDateTime &hour : std::as_const(hours)) {
-        const int clockId = db_->clockAt(hour.date(), hour.time().hour());   // a napra érvényes heti rácsból
-        if (!clockId) continue;
+        int clockId = db_->clockAt(hour.date(), hour.time().hour());   // a napra érvényes heti rácsból
+        // „Külső playlist” óra (vagy séma nélküli óra, ha a figyelt mappa be van kapcsolva): a fájlból készül.
+        const bool extHour = (extClock && clockId == extClock) || (extOn && !clockId);
+        if (!clockId && !extHour) {
+            ++result.noClock;
+            continue;
+        }
         const int playlist = db_->playlistFor(hour.date(), hour.time().hour());
-        if (db_->playlistGenerated(playlist)) continue;
+        if (db_->playlistGenerated(playlist)) {
+            // Egy már generált, de azóta teljesen kiürített (pl. Lista ürítése) jövőbeli óra újra elkészül, különben
+            // a lista elfogyna. A folyó óra marad, ahogy hagyták (a lejátszott elemei a naplóba kerülhettek).
+            if (hour <= thisHour || db_->playlistEntryCount(playlist) > 0) {
+                ++result.alreadyDone;
+                continue;
+            }
+            ++result.refilled;
+        }
+        if (extHour) {
+            const int n = extOn ? ext_->importHour(hour, now) : -1;
+            if (n >= 0) {
+                ++result.hours;
+                ++result.external;
+                result.entries += n;
+                continue;
+            }
+            // Nincs fájl ehhez az órához: a tartalék sémából (ha van).
+            const bool explicitExt = clockId != 0;
+            clockId = explicitExt ? ext_->fallbackClock() : 0;
+            if (extOn && explicitExt) ext_->noteMissing(hour, clockId != 0);
+            if (!clockId) {
+                ++result.noClock;
+                continue;
+            }
+            ++result.fallback;
+        }
         const QVector<ClockSlot> slots_ = db_->clockSlots(clockId);
         if (slots_.isEmpty()) continue;
 

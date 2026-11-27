@@ -8,4 +8,9 @@ void install(const QString &logPath);
 QString logPath();
 // Mit csinál éppen ez a szál (pl. melyik fájlt dekódolja): összeomláskor a jelentésbe kerül. Gyors, zár nélküli.
 void setActivity(const char *what, const char *detail);
+// A szál éppen ezt a hangfájlt dekódolja (a dekóder minden olvasáskor hívja; ugyanarra a szövegre olcsó). Ha a szál
+// összeomlik, az útvonal a napló mellé, a „crash-file.txt”-be is kerül: a következő indításkor a program kihagyja.
+void setFile(const char *path);
+void clearFile(const char *path);   // a dekóder bezárásakor (ha ez a szál ezt a fájlt jelölte)
+QString suspectFilePath();          // a crash-file.txt helye
 }

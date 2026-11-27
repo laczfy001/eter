@@ -286,6 +286,7 @@ public:
     int saveSavedPlaylist(int id, int categoryId, const QString &name, const QVector<int> &itemIds, QString *err = nullptr);
     void deleteSavedPlaylist(int id);
     bool playlistGenerated(int playlistId);
+    int playlistEntryCount(int playlistId);   // az óra elemei (bármilyen állapotban)
     void markGenerated(int playlistId, int clockId);
     // A megadott órától kezdve törli az ütemező még várakozó sorait (újrageneráláshoz).
     void deleteSchedulerEntriesAt(int key);       // egy óra (ÉÉÉÉHHNNÓÓ) várakozó ütemezett sorai

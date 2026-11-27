@@ -103,7 +103,6 @@ void PlaylistTable::paintEvent(QPaintEvent *e)
 void PlaylistTable::keyPressEvent(QKeyEvent *e)
 {
     if (e->key() == Qt::Key_Delete) emit deletePressed();
-    else if (e->key() == Qt::Key_Space) emit spacePressed();   // a táblázat ne nyelje el az adásgombot
     else QTableWidget::keyPressEvent(e);
 }
 

@@ -200,6 +200,8 @@ public:
     void quickReset(int fromEntry, int toEntry);
     void quickPreviewToggle(int fromEntry, int toEntry);
     bool quickPreviewing(int fromEntry, int toEntry) const;
+    // Az előhallgatás helye a kimenő (első) elem idejében, ms; −1: nem szól.
+    qint64 previewOutMs() const;
     QVector<float> quickWave(const Item &item, qint64 *durMs);
     void selectEntries(int fromEntry, int toEntry);
 
@@ -308,6 +310,7 @@ private:
     // Előhallgatás
     QTimer *timer_;
     int phase_ = 0;                         // 0 áll, 1 szól
+    qint64 previewNowMs_ = -1;              // az előhallgatás helye az idővonalon
     struct {
         int n = 2;                          // elemek száma
         MixParams tr[2];

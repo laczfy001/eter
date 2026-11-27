@@ -1,6 +1,9 @@
 #include "core/CrashReport.h"
 #include "i18n.h"
 #include "Decoder.h"
+
+#include <csignal>
+#include <cstdlib>
 #include "Stream.h"
 
 #include <algorithm>
@@ -11,6 +14,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/opt.h>
+#include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 }
 
@@ -42,6 +46,10 @@ Decoder::~Decoder() { close(); }
 
 void Decoder::close()
 {
+    if (!path_.empty()) {
+        crash::clearFile(path_.c_str());
+        path_.clear();
+    }
     if (swr_) swr_free(&swr_);
     if (ctx_) avcodec_free_context(&ctx_);
     if (fmt_) avformat_close_input(&fmt_);
@@ -66,6 +74,10 @@ void Decoder::close()
     bpm_.clear();
 }
 
+static std::atomic<bool (*)(const std::string &)> g_guard{nullptr};
+
+void Decoder::setOpenGuard(bool (*guard)(const std::string &path)) { g_guard.store(guard); }
+
 bool Decoder::open(const std::string &path, std::string *err)
 {
     close();
@@ -77,6 +89,10 @@ bool Decoder::open(const std::string &path, std::string *err)
     };
 
     if (isStreamUrl(path)) return fail(i18n::textStd("Stream: csak lejátszóban nyitható meg"));
+    if (auto guard = g_guard.load(); guard && guard(path))
+        return fail(i18n::textStd("A fájl egy korábbi összeomlást okozott, ezért a program kihagyja (Súgó → Kihagyott fájlok)."));
+    path_ = path;
+    crash::setFile(path_.c_str());
     int r = avformat_open_input(&fmt_, path.c_str(), nullptr, nullptr);
     if (r < 0) return fail(i18n::textStd("Nem nyitható meg: ") + avErr(r));
     return finishOpen(err);
@@ -165,6 +181,23 @@ bool Decoder::finishOpen(std::string *err)
 
 void Decoder::convert()
 {
+    // Egy fájlon belül is változhat a hang formája: az MP3 képkockánként válthat monó és sztereó között, és az
+    // összefűzött (vágott) fájlokban a mintavétel is változhat. A régi átalakító ilyenkor a nem létező második
+    // csatornát olvasná (nullmutató → összeomlás), vagy rossz sebességgel szólna: újat kell készíteni.
+    if (swr_ && (frame_->sample_rate != swrRate_ || frame_->format != swrFormat_ || frame_->ch_layout.nb_channels != swrChannels_))
+        swr_free(&swr_);
+    if (!frame_->extended_data || !frame_->extended_data[0] || frame_->nb_samples <= 0) return;
+    // Sík (planar) formátumnál minden csatornának saját adatsíkja van: ha valamelyik hiányzik (sérült vagy szokatlan
+    // fájl, például csatornaszám-váltás egy összefűzött fájlban), az átalakító nullmutatóról másolna (összeomlás egy
+    // felhasználónál: swr_convert → resample → copy → memcpy(0)). Az ilyen képkocka kimarad.
+    if (av_sample_fmt_is_planar(static_cast<AVSampleFormat>(frame_->format))) {
+        const int planes = std::max(1, frame_->ch_layout.nb_channels);
+        for (int ch = 1; ch < planes; ++ch)
+            if (!frame_->extended_data[ch]) {
+                ++errors_;
+                return;
+            }
+    }
     if (!swr_) {
         // Nullázva kell kezdeni: az av_channel_layout_copy előbb felszabadítja a célt, és memóriaszemétnél
         // érvénytelen mutatót adna a free()-nek (ez okozta a véletlenszerű „free(): invalid pointer” leállást).
@@ -183,6 +216,9 @@ void Decoder::convert()
             ++errors_;
             return;
         }
+        swrRate_ = frame_->sample_rate;
+        swrFormat_ = frame_->format;
+        swrChannels_ = frame_->ch_layout.nb_channels;
     }
 
     const int cap = swr_get_out_samples(swr_, frame_->nb_samples);
@@ -253,6 +289,10 @@ bool Decoder::decodeMore()
 int Decoder::read(float *out, int frames)
 {
     if (!fmt_) return 0;
+    if (!path_.empty()) crash::setFile(path_.c_str());       // a dekódoló szál is jelölje (más szálon nyílhatott meg)
+    // Fejlesztéshez: összeomlás egy adott fájl dekódolásakor (a kihagyott fájlok ellenőrzéséhez).
+    static const std::string crashOn = getenv("ETER_CRASH_ON_DECODE") ? getenv("ETER_CRASH_ON_DECODE") : "";
+    if (!crashOn.empty() && path_.find(crashOn) != std::string::npos) std::raise(SIGSEGV);
     const size_t need = static_cast<size_t>(frames) * kChannels;
     while (fifo_.size() - fifoPos_ < need && !eof_)
         decodeMore();
@@ -269,6 +309,7 @@ int Decoder::read(float *out, int frames)
 bool Decoder::seek(int64_t frame)
 {
     if (!fmt_ || input_) return false;           // élő streamben nem lehet ugrani
+    if (!path_.empty()) crash::setFile(path_.c_str());
     frame = std::max<int64_t>(0, frame);
     AVRational tb = fmt_->streams[stream_]->time_base;
     int64_t ts = av_rescale_q(frame, AVRational{1, kRate}, tb) + startPts_;

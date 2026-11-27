@@ -1,5 +1,96 @@
 # Changelog
 
+## 0.39.0
+- **Next is now the right Ctrl key** (it was Space). The left Ctrl and the Ctrl shortcuts (Ctrl+L, Ctrl+Q…) work as
+  before; Space no longer starts a player, so it cannot start one by accident. The right Ctrl works in the main window
+  and in panels popped out of it, not in dialogs. The *Next* button, the *Playback* menu and the MIDI action list show
+  the new key.
+- **External playlists** (*Settings → External playlists*): Éter reads the M3U playlists that another scheduling
+  program writes into a watched folder, for example StationPlaylist Creator.
+  - One file per hour (`nov.30-14.M3U`) or one file for a whole day (`nov.29-00.M3U`). The *file name pattern*
+    (`{mon}.{day}-{hour}.M3U` by default; also `{month}` and `{year}`) tells which day and hour a file is for. A file
+    for hour 00 that is much longer than an hour is a whole-day file and is split into hours by the lengths.
+  - Plain M3U (one path per line) and `#EXTM3U`. Creator's “Studio” format gives the length, artist, title, category
+    and type of every item. Encoding: UTF-8, otherwise the Windows code page (or Windows-1250/1252 by choice).
+  - Every hour starts at a fixed time (hh:00:00); an overrun is cut by the next hour's fixed start under the *At a
+    fixed time* rule. The first item of an hour carries a label in the playlist: `EXTERNAL · nov.30-14.M3U · 19 items ·
+    1:02:53 · overruns by 2:53`.
+  - Items are found in the library by their path; what is not there is imported and analysed, into the Éter category
+    matched to the playlist's category (a new category of the same name by default). *Paths* maps the start of a path
+    when the scheduler runs on another computer.
+  - Week grid: the new *External playlist* entry in *Assign clock*. Those hours (and hours without a clock) come from
+    the files. If an hour has no file, Éter generates it from the *fallback clock* (or leaves it empty); when the file
+    arrives later, before the hour starts, it replaces the fallback. A changed file is read again until its hour starts;
+    items added by hand stay.
+  - Files are read as the Scheduler's *Ahead* setting says; *Read now* and *Read one file…* do it at once and show a
+    report (items from the library, new items, missing files). The status bar shows the state (“External playlist:
+    15:00 loaded”, or in orange “17:00 missing → fallback”); the error log records every file read and every missing
+    file.
+
+## 0.38.1
+- **Fixed (reported by a user): the playlist could run out although *Generate ahead* was set.** Automatic generation
+  only looked at the clock: it made the playlists of the next hours by the time of day. When playback ran ahead of the
+  clock (Assist mode, shortened transitions, skipped items) or hours were emptied, the list ran out and stopped.
+  - *Ahead* now also counts the length of the list: when the items still to play last less than the set hours, the
+    hours after the last one in the list are generated too (hours without a clock and hours already made are skipped).
+  - An hour that was generated and then emptied (for example with *Clear list*) is generated again, if it is still to
+    come. The current hour stays as it was left.
+  - Once an hour the error log records what automatic generation did ("ahead 2 hours: 1 new hour (20 items), 1
+    already made, 0 without a clock"), so a stopped list can be traced.
+- **Fixed (reported by a user): a crash while analysing some audio files.** When a decoded block of audio claimed more
+  channels than it carried data for (a damaged or unusual file, for example one put together from parts with different
+  channel layouts), the sample rate converter read from an empty channel and Éter crashed (during the BPM analysis in
+  the library). Such a block is now skipped; the rest of the file plays and is analysed normally.
+
+## 0.38.0
+- **Dockable panels.** Every part of the On air page is now a panel of its own: Player, Player A, B, C strip,
+  On-air control, Clock, Mixer, Playlist, Library, Cartwall and Song requests.
+  - Drag a panel by its title bar to dock it beside, above or below another one, or onto another panel to make tabs;
+    the splitters between panels resize them.
+  - Each panel's title bar has buttons to pop it out into a window of its own (also onto a second monitor), to show it
+    at full size (again: back to the layout) and to close it. Double-clicking the title also pops it out or docks it.
+  - New *Windows* menu: every panel can be switched on and off; the layout can be saved by name, loaded, deleted,
+    reset to the default (the usual main window) and locked (Ctrl+Shift+L) so nothing moves by accident during a show.
+    The same menu is behind the *Layout* button at the right of the menu bar, and opens with a right click on any
+    panel title or on the tab row.
+  - Panels have square corners.
+  - Free panels can be switched off (Windows menu, or Settings → Appearance): then every panel is fixed in the original
+    layout, without title bars. Your own layout is kept and comes back when you switch free panels on again.
+  - The layout, including popped-out windows and closed panels, is kept between runs.
+  - On the other tabs (Scheduler, Playlist editor, Mixdown, Stream…) the player, on-air control, clock and mixer panels
+    stay, as before; the On air panels (playlist, library, cartwall, requests) step aside, popped-out ones stay open.
+  - The song requests are a panel now (it was a separate dialog); its title shows how many requests wait for approval.
+  - The mixer is a panel of its own, separate from the clock; the strip of the player on air is highlighted in green.
+
+## 0.37.1
+- **An audio file that crashes Éter is skipped from then on.** If Éter crashes while decoding a file (a damaged or
+  unusual file that the decoder cannot handle), the crash handler records the file; at the next start it goes on a
+  list of skipped files, is not played or analysed any more, and the error log and the status bar name it. So one bad
+  file no longer crashes Éter again and again right after every start. If the file changes (replaced or repaired), it
+  is tried again; *Help → Skipped files…* shows the list and can clear it.
+- **The player A, B, C strip can be switched off** (*Settings → Appearance → Layout*, or *Tools → Player A, B, C
+  strip*): the strip under the main player with the state of the three players and the voice track can be hidden; the
+  main player then gets the space. The choice is remembered.
+- **Audio processing for the stream encoders** (*Stream* tab → *Audio processing*), separately for each encoder,
+  before encoding:
+  - **AGC**: slowly brings the stream to the target loudness (default −16 LUFS, measured as ITU-R BS.1770 short-term
+    loudness after the compressor), within a maximum gain and cut; it freezes during silence so noise is not raised.
+  - **Compressor**: stereo-linked, soft knee; threshold, ratio, attack, release and make-up gain.
+  - **True-peak limiter**: 5 ms look-ahead, 4× oversampled peak detection (BS.1770 filter), ceiling −1 dBTP by default,
+    so the encoder's own overshoot does not clip at the listeners.
+  - Presets: *Off*, *Light* (AGC + limiter, the default; for mastered music), *Medium* (+ 2.5:1 compressor),
+    *Strong* (faster AGC, 4:1 compressor; for talk and live microphones) and *Custom*.
+  - Meters: short-term loudness against the target, AGC gain, compressor and limiter gain reduction, true peak against
+    the ceiling. If the limiter keeps working hard (more than 6 dB for 10 seconds), the encoder log and the error log say
+    that the input is too loud.
+  - **Listen**: the processed stream audio on the preview output (headphones), even while the encoder is stopped – so the
+    settings can be tried before going live. Refused with an explanation when the preview output is the on-air sound card.
+  - Settings from 0.37.0 are carried over: the peak limiter switched on becomes *Light*, switched off becomes *Off*.
+- **Mini mix editor in the playlist: the playhead follows the preview.** While *▶ Transition* plays, a red playhead
+  with the current time moves along the timeline in real time (every 30 ms), across the outgoing and the incoming item;
+  if it would leave the picture, the view scrolls with it. When the preview stops, the line disappears (outside the
+  preview the thin white line still marks where the item on air is).
+
 ## 0.37.0
 - **Stream encoders** (new *Stream* tab next to Mixdown; *Tools → Stream encoder…*, Ctrl+Shift+S): Éter sends the
   broadcast to Icecast 2 and Shoutcast v1 / v2 servers by itself, no separate encoder program needed.

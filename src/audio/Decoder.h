@@ -27,6 +27,8 @@ public:
     Decoder &operator=(const Decoder &) = delete;
 
     bool open(const std::string &path, std::string *err = nullptr);   // stream címet nem nyit meg (lásd openStream)
+    // Kihagyandó fájlok (amelyek korábban összeomlást okoztak): a program indításkor állítja be. true: ne nyissa meg.
+    static void setOpenGuard(bool (*guard)(const std::string &path));
     // Külső stream: a bájtokat az `input` adja; blokkolhat, amíg az első adatok megérkeznek (a dekódoló szálon hívandó).
     bool openStream(std::shared_ptr<StreamInput> input, std::string *err = nullptr);
     void close();
@@ -52,6 +54,7 @@ private:
     AVFormatContext *fmt_ = nullptr;
     AVCodecContext *ctx_ = nullptr;
     SwrContext *swr_ = nullptr;
+    int swrRate_ = 0, swrFormat_ = -1, swrChannels_ = 0;   // amire az átalakító készült
     AVFrame *frame_ = nullptr;
     AVPacket *pkt_ = nullptr;
     int stream_ = -1;
@@ -64,6 +67,7 @@ private:
     std::vector<float> fifo_;
     size_t fifoPos_ = 0;
     std::string title_, artist_, key_, bpm_, codec_;
+    std::string path_;                      // a megnyitott fájl (az összeomlás-jelentéshez)
     std::shared_ptr<StreamInput> input_;
     AVIOContext *avio_ = nullptr;
     bool finishOpen(std::string *err);

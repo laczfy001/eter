@@ -75,7 +75,7 @@ QScrollBar::handle:horizontal { background: #4a5160; min-width: 36px; border-rad
 QScrollBar::handle:horizontal:hover { background: #6b7380; }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
-QFrame#panel { background: #1b1e24; border: 1px solid #30353e; border-radius: 6px; }
+QFrame#panel { background: #1b1e24; border: 1px solid #30353e; border-radius: 0; }
 QFrame#panel[onair="true"] { border: 1px solid @ACC@; }
 QFrame#panelHeader { border: 0; border-bottom: 1px solid #30353e; }
 QFrame#panelFooter { border: 0; border-top: 1px solid #30353e; }

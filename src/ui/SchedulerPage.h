@@ -45,6 +45,7 @@ private:
     class QComboBox *gridSel_ = nullptr;
     QLabel *gridState_ = nullptr;
     QPushButton *gridActive_ = nullptr, *gridDelete_ = nullptr;
+    void fillAssignMenu(class QMenu *menu);
     void reloadClocks(int selectId = 0);
     void reloadSlots(int selectSlotId = 0);
     void showSlot();

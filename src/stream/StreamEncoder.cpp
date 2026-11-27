@@ -73,7 +73,24 @@ QJsonObject Config::toJson() const
     o["mono"] = mono;
     o["source"] = source;
     o["gainDb"] = gainDb;
-    o["limiter"] = limiter;
+    {
+        QJsonObject pr;
+        pr["preset"] = proc.preset;
+        pr["agc"] = proc.agc;
+        pr["targetLufs"] = proc.targetLufs;
+        pr["agcMaxGainDb"] = proc.agcMaxGainDb;
+        pr["agcMaxCutDb"] = proc.agcMaxCutDb;
+        pr["agcSpeedSec"] = proc.agcSpeedSec;
+        pr["comp"] = proc.comp;
+        pr["compThresholdDb"] = proc.compThresholdDb;
+        pr["compRatio"] = proc.compRatio;
+        pr["compAttackMs"] = proc.compAttackMs;
+        pr["compReleaseMs"] = proc.compReleaseMs;
+        pr["compMakeupDb"] = proc.compMakeupDb;
+        pr["limiter"] = proc.limiter;
+        pr["ceilingDbTp"] = proc.ceilingDbTp;
+        o["proc"] = pr;
+    }
     o["sendTitle"] = sendTitle;
     o["titleLikeNowPlaying"] = titleLikeNowPlaying;
     o["titleFormat"] = titleFormat;
@@ -110,7 +127,31 @@ Config Config::fromJson(const QJsonObject &o)
     c.mono = o.value("mono").toBool();
     c.source = o.value("source").toString();
     c.gainDb = std::clamp(o.value("gainDb").toDouble(0), -12.0, 12.0);
-    c.limiter = o.value("limiter").toBool(true);
+    if (o.contains("proc")) {
+        const QJsonObject pr = o.value("proc").toObject();
+        const int preset = std::clamp(pr.value("preset").toInt(ProcConfig::Light), 0, int(ProcConfig::Custom));
+        ProcConfig d = ProcConfig::fromPreset(preset == ProcConfig::Custom ? ProcConfig::Light : preset);
+        if (preset == ProcConfig::Custom) {
+            d.preset = ProcConfig::Custom;
+            d.agc = pr.value("agc").toBool(d.agc);
+            d.agcMaxGainDb = std::clamp(pr.value("agcMaxGainDb").toDouble(d.agcMaxGainDb), 0.0, 24.0);
+            d.agcMaxCutDb = std::clamp(pr.value("agcMaxCutDb").toDouble(d.agcMaxCutDb), 0.0, 24.0);
+            d.agcSpeedSec = std::clamp(pr.value("agcSpeedSec").toDouble(d.agcSpeedSec), 1.0, 30.0);
+            d.comp = pr.value("comp").toBool(d.comp);
+            d.compThresholdDb = std::clamp(pr.value("compThresholdDb").toDouble(d.compThresholdDb), -40.0, 0.0);
+            d.compRatio = std::clamp(pr.value("compRatio").toDouble(d.compRatio), 1.0, 20.0);
+            d.compAttackMs = std::clamp(pr.value("compAttackMs").toDouble(d.compAttackMs), 0.5, 200.0);
+            d.compReleaseMs = std::clamp(pr.value("compReleaseMs").toDouble(d.compReleaseMs), 20.0, 2000.0);
+            d.compMakeupDb = std::clamp(pr.value("compMakeupDb").toDouble(d.compMakeupDb), 0.0, 12.0);
+            d.limiter = pr.value("limiter").toBool(d.limiter);
+        }
+        d.targetLufs = std::clamp(pr.value("targetLufs").toDouble(-16), -30.0, -8.0);
+        d.ceilingDbTp = std::clamp(pr.value("ceilingDbTp").toDouble(-1), -6.0, 0.0);
+        c.proc = d;
+    } else {
+        // 0.37.0 előtti beállítás: csak a csúcskorlátozó volt; a kikapcsolt korlátozó „Ki”, egyébként „Enyhe”.
+        c.proc = ProcConfig::fromPreset(o.value("limiter").toBool(true) ? ProcConfig::Light : ProcConfig::Off);
+    }
     c.sendTitle = o.value("sendTitle").toBool(true);
     c.titleLikeNowPlaying = o.value("titleLikeNowPlaying").toBool(true);
     c.titleFormat = o.value("titleFormat").toString(QStringLiteral("%artist% - %title%"));
@@ -179,7 +220,9 @@ struct Shared {
     Status st;
     QStringList events;
     float gain = 1;                   // élő: a szint a streamre (lineáris)
-    bool limiter = true;
+    ProcConfig proc;
+    bool procDirty = true;
+    std::function<void(const float *, int)> monitor;
 };
 
 static constexpr size_t kMaxQueue = size_t(kInRate) * 2 * 10;   // 10 mp
@@ -671,37 +714,56 @@ private:
     // Szint és korlátozó (a beállított szint után 0,98 fölé nem enged; gyors indulás, ~300 ms elengedés).
     void process(std::vector<float> &buf)
     {
-        float gain, pl = 0, pr = 0, minEnv = 1;
-        bool lim;
+        float gain, pl = 0, pr = 0;
+        std::function<void(const float *, int)> monitor;
         {
             std::lock_guard<std::mutex> lk(sh_->m);
             gain = sh_->gain;
-            lim = sh_->limiter;
+            if (sh_->procDirty) {
+                proc_.configure(sh_->proc);
+                procActive_ = sh_->proc.active();
+                sh_->procDirty = false;
+            }
+            monitor = sh_->monitor;
         }
         const size_t frames = buf.size() / 2;
-        const float rel = 1.0f - std::exp(-1.0f / (0.3f * kInRate));
+        if (gain != 1.0f)
+            for (float &v : buf) v *= gain;
+        if (procActive_) proc_.process(buf.data(), int(frames));
+        else
+            for (float &v : buf) v = std::clamp(v, -1.0f, 1.0f);
         for (size_t i = 0; i < frames; ++i) {
-            float l = buf[i * 2] * gain, r = buf[i * 2 + 1] * gain;
-            if (lim) {
-                const float p = std::max(std::fabs(l), std::fabs(r));
-                if (p * env_ > 0.98f) env_ = 0.98f / p;
-                else env_ += (1.0f - env_) * rel;
-                l *= env_;
-                r *= env_;
-                minEnv = std::min(minEnv, env_);
-            } else {
-                l = std::clamp(l, -1.0f, 1.0f);
-                r = std::clamp(r, -1.0f, 1.0f);
+            pl = std::max(pl, std::fabs(buf[i * 2]));
+            pr = std::max(pr, std::fabs(buf[i * 2 + 1]));
+        }
+        if (monitor) monitor(buf.data(), int(frames));
+        const ProcMeters pm = proc_.takeMeters();
+        // Ha a limiter tartósan sokat dolgozik, a bemenet túl hangos: a naplóba (10 percenként legfeljebb egyszer).
+        if (procActive_ && pm.limGrDb > 6) {
+            hotFrames_ += qint64(frames);
+            if (hotFrames_ > qint64(kInRate) * 10) {
+                hotFrames_ = 0;
+                const qint64 now = QDateTime::currentMSecsSinceEpoch();
+                if (now - hotLogged_ > 10 * 60 * 1000) {
+                    hotLogged_ = now;
+                    const QString msg = TR("A limiter tartósan sokat dolgozik (%1 dB): túl hangos a bemenet. Csökkentsd a szintet "
+                                           "a streamre, vagy válassz erősebb feldolgozást.").arg(QLocale().toString(pm.limGrDb, 'f', 1));
+                    log(msg);
+                    elog::warning(QStringLiteral("Stream"), who() + QStringLiteral(": ") + msg);
+                }
             }
-            buf[i * 2] = l;
-            buf[i * 2 + 1] = r;
-            pl = std::max(pl, std::fabs(l));
-            pr = std::max(pr, std::fabs(r));
+        } else if (pm.limGrDb < 3) {
+            hotFrames_ = 0;
         }
         std::lock_guard<std::mutex> lk(sh_->m);
         sh_->st.peakL = std::max(sh_->st.peakL, pl);
         sh_->st.peakR = std::max(sh_->st.peakR, pr);
-        sh_->st.reduction = std::min(sh_->st.reduction, minEnv);
+        ProcMeters &m = sh_->st.proc;
+        m.shortTermLufs = pm.shortTermLufs;
+        m.agcGainDb = pm.agcGainDb;
+        m.compGrDb = std::max(m.compGrDb, pm.compGrDb);
+        m.limGrDb = std::max(m.limGrDb, pm.limGrDb);
+        m.truePeakDb = std::max(m.truePeakDb, pm.truePeakDb);
     }
 
     void encode(const std::vector<float> &in)
@@ -880,7 +942,9 @@ private:
     qint64 retryAt_ = 0;
     QString title_;
     bool titleDirty_ = false, titleErrorLogged_ = false;
-    float env_ = 1;
+    Processor proc_;
+    bool procActive_ = false;
+    qint64 hotFrames_ = 0, hotLogged_ = 0;
     qint64 lastPage_ = 0;
 
     lame_t lame_ = nullptr;
@@ -901,7 +965,7 @@ Encoder::Encoder(const Config &c, QObject *parent) : QObject(parent), cfg_(c)
 {
     auto sh = std::make_shared<Shared>();
     sh->gain = float(std::pow(10.0, c.gainDb / 20.0));
-    sh->limiter = c.limiter;
+    sh->proc = c.proc;
     sh->st.message = TR("Nincs elindítva.");
     sh_ = sh;
     thread_ = new QThread;
@@ -933,7 +997,8 @@ void Encoder::setConfig(const Config &c)
     {
         std::lock_guard<std::mutex> lk(sh_->m);
         sh_->gain = float(std::pow(10.0, c.gainDb / 20.0));
-        sh_->limiter = c.limiter;
+        sh_->proc = c.proc;
+        sh_->procDirty = true;
     }
     QMetaObject::invokeMethod(w_, [w = w_, c] { w->setConfig(c); }, Qt::QueuedConnection);
 }
@@ -974,8 +1039,15 @@ Status Encoder::status() const
     std::lock_guard<std::mutex> lk(sh_->m);
     Status s = sh_->st;
     sh_->st.peakL = sh_->st.peakR = 0;
-    sh_->st.reduction = 1;
+    sh_->st.proc.compGrDb = sh_->st.proc.limGrDb = 0;
+    sh_->st.proc.truePeakDb = -70;
     return s;
+}
+
+void Encoder::setMonitor(std::function<void(const float *, int)> sink)
+{
+    std::lock_guard<std::mutex> lk(sh_->m);
+    sh_->monitor = std::move(sink);
 }
 
 State Encoder::state() const

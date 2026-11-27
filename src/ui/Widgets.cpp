@@ -1,5 +1,8 @@
 #include "i18n.h"
 #include "Widgets.h"
+
+#include <QMainWindow>
+#include <QStatusBar>
 #include <QEvent>
 #include "Theme.h"
 
@@ -218,7 +221,12 @@ void CountdownOverlay::place()
     QWidget *p = parentWidget();
     const int w = std::min(560, std::max(260, p->width() - 32));
     const int h = 92;
-    setGeometry((p->width() - w) / 2, p->height() - h - 18, w, h);
+    int bottom = p->height();
+    // A főablakon (a dokkolt panelek fölött) az állapotsor fölé kerül.
+    if (auto *mw = qobject_cast<QMainWindow *>(p))
+        if (mw->statusBar() && mw->statusBar()->isVisible()) bottom -= mw->statusBar()->height();
+    setGeometry((p->width() - w) / 2, bottom - h - 18, w, h);
+    raise();
 }
 
 void CountdownOverlay::showCount(int seconds, double fraction, const QString &label)

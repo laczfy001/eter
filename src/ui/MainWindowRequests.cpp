@@ -2,6 +2,9 @@
 // A kérés a most szóló elem után kerül a playlistbe; ha már vannak kérések a sorban, az utolsó alá. Ha nincs kérés,
 // a playlist a szokásos módon megy tovább. Jóváhagyásos módban a kérés először a Kérések ablakba kerül.
 #include "MainWindow.h"
+#include "DockPanels.h"
+#include <QDockWidget>
+#include <QStackedWidget>
 #include "Widgets.h"
 
 #include "audio/Engine.h"
@@ -248,6 +251,8 @@ void MainWindow::updateRequestsButton()
     requestsBtn_->setVisible((c.enabled && c.requests) || pending > 0);
     requestsBtn_->setText(pending > 0 ? TR("Kérések (%1)").arg(pending) : TR("Kérések"));
     requestsBtn_->setProperty("pending", pending > 0);
+    if (DockTitleBar *t = dockTitle(docks_.value(QStringLiteral("requests"))))
+        t->setExtra(pending > 0 ? TR("%1 ÚJ").arg(pending) : QString(), theme::hex("#5cb0ff"));
     requestsBtn_->style()->unpolish(requestsBtn_);
     requestsBtn_->style()->polish(requestsBtn_);
     requestsBtn_->setToolTip(c.approve ? TR("A weboldalról érkezett számkérések; jóváhagyás után kerülnek a playlistbe")
@@ -256,16 +261,19 @@ void MainWindow::updateRequestsButton()
 
 void MainWindow::openRequestsDialog()
 {
+    // A számkérések panel (Ablakok menü): ha még nincs, elkészül; ha van, előre kerül.
     if (requestsDlg_) {
-        requestsDlg_->raise();
-        requestsDlg_->activateWindow();
+        if (QDockWidget *d = docks_.value(QStringLiteral("requests"))) {
+            if (stack_ && stack_->currentIndex() != 0 && !d->isFloating()) showPage(0);
+            d->show();
+            d->raise();
+        }
         return;
     }
-    auto *dlg = new QDialog(this);
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->setWindowTitle(TR("Számkérések"));
-    dlg->resize(720, 420);
+    auto *dlg = new QWidget;
+    dlg->setObjectName("requestsPanel");
     auto *v = new QVBoxLayout(dlg);
+    v->setContentsMargins(8, 8, 8, 8);
     auto *info = new QLabel;
     info->setObjectName("requestsInfo");
     info->setWordWrap(true);
@@ -290,12 +298,10 @@ void MainWindow::openRequestsDialog()
     auto *all = new QPushButton(TR("Mind jóváhagyása"));
     auto *no = new QPushButton(TR("Elutasítás"));
     no->setProperty("danger", true);
-    auto *close = new QPushButton(TR("Bezárás"));
     row->addWidget(ok);
     row->addWidget(all);
     row->addWidget(no);
     row->addStretch(1);
-    row->addWidget(close);
     v->addLayout(row);
     auto selectedPending = [table] {
         QVector<int> ids;
@@ -312,10 +318,8 @@ void MainWindow::openRequestsDialog()
     connect(all, &QPushButton::clicked, dlg, [this] {
         for (const WebRequest &r : db_->webRequests({QStringLiteral("pending")})) approveRequest(r.id);
     });
-    connect(close, &QPushButton::clicked, dlg, &QDialog::close);
     requestsDlg_ = dlg;
     refreshRequestsDialog();
-    dlg->show();
 }
 
 void MainWindow::refreshRequestsDialog()

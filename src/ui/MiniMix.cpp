@@ -57,6 +57,17 @@ void MiniMixCanvas::setPlayhead(qint64 outMs)
     update();
 }
 
+void MiniMixCanvas::setPreviewHead(qint64 outMs)
+{
+    if (outMs == previewHead_) return;
+    previewHead_ = outMs;
+    if (outMs >= 0 && !drag_) {
+        // Kifutna a képből: a nézet lapoz (a fej a kép harmadára kerül).
+        if (outMs > viewStart_ + window_ * 9 / 10 || outMs < viewStart_) viewStart_ = outMs - window_ / 3;
+    }
+    update();
+}
+
 double MiniMixCanvas::xOf(qint64 outMs) const { return double(outMs - viewStart_) / double(window_) * width(); }
 
 QRectF MiniMixCanvas::inRect() const
@@ -170,9 +181,30 @@ void MiniMixCanvas::paintEvent(QPaintEvent *)
     p.setPen(kMix);
     p.drawText(box, Qt::AlignCenter, label);
 
-    if (playhead_ >= 0) {
+    if (playhead_ >= 0 && previewHead_ < 0) {
         const double x = xOf(playhead_);
         if (x >= 0 && x <= r.width()) p.fillRect(QRectF(x, 12, 1, mid), theme::c("#ffffff"));
+    }
+    // Előhallgatás: piros lejátszófej a teljes magasságban, fölül kis háromszöggel és az idővel.
+    if (previewHead_ >= 0) {
+        const double x = xOf(previewHead_);
+        if (x >= -2 && x <= r.width() + 2) {
+            const QColor head = theme::c("#ff3b30");
+            p.setRenderHint(QPainter::Antialiasing);
+            p.fillRect(QRectF(x - 1, 12, 2, r.height() - 12), head);
+            QPolygonF tri;
+            tri << QPointF(x - 5, 12) << QPointF(x + 5, 12) << QPointF(x, 18);
+            p.setPen(Qt::NoPen);
+            p.setBrush(head);
+            p.drawPolygon(tri);
+            p.setFont(mono);
+            const QString t = clockMs(previewHead_);
+            const double tw = QFontMetrics(mono).horizontalAdvance(t) + 8;
+            const QRectF tb(x + 6 + tw > r.width() ? x - tw - 6 : x + 6, 13, tw, 13);
+            p.fillRect(tb, head);
+            p.setPen(theme::c("#ffffff"));
+            p.drawText(tb, Qt::AlignCenter, t);
+        }
     }
 }
 

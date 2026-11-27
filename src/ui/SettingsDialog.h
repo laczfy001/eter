@@ -15,6 +15,7 @@ public:
 
 private:
     void reload();
+    void addExternalPage(class QVBoxLayout *root);   // Külső playlistek (SettingsExternal.cpp)
 
     MainWindow *main_;
     QComboBox *backend_;

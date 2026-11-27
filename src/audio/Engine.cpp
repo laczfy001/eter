@@ -26,10 +26,17 @@ namespace eter {
 struct Engine::Impl {
     ma_context ctx;
     bool ok = false;
+    // belehallgatás: egy író (az enkóder szála), egy olvasó (az előhallgatás kimenetének hangszála)
+    static constexpr int64_t kMonFrames = kRate * 2;
+    std::vector<float> monRing = std::vector<float>(static_cast<size_t>(kMonFrames) * 2, 0.f);
+    std::atomic<int64_t> monWr{0}, monRd{0};
+    std::atomic<bool> monOn{false};
+    bool monPrimed = false;          // csak a hangszál használja
 };
 
 struct Engine::OutDev {
     ma_device dev;
+    Engine::Impl *impl = nullptr;
     bool open = false;
     std::atomic<Source *> slots[Engine::ChannelCount];
     std::atomic<int> toneLeft{0};
@@ -86,6 +93,29 @@ static void dataCallback(ma_device *dev, void *output, const void *, ma_uint32 f
         if (isProgramChannel(c)) continue;
         if (Source *s = o->slots[c].load(std::memory_order_acquire))
             s->mixInto(out, static_cast<int>(frames));
+    }
+    // Belehallgatás az előhallgatás kimenetén (a rögzítés és a stream ezt nem kapja meg).
+    if (o->impl && o->slots[Engine::Pfl].load(std::memory_order_acquire) && o->impl->monOn.load(std::memory_order_acquire)) {
+        Engine::Impl *im = o->impl;
+        const int64_t wr = im->monWr.load(std::memory_order_acquire);
+        int64_t rd = im->monRd.load(std::memory_order_relaxed);
+        int64_t avail = wr - rd;
+        if (avail > kRate / 2) {                     // túl sok gyűlt össze (lemaradt): vissza ~150 ms-ra
+            rd = wr - kRate * 15 / 100;
+            avail = wr - rd;
+        }
+        if (!im->monPrimed && avail >= kRate * 15 / 100) im->monPrimed = true;
+        if (im->monPrimed) {
+            const int64_t n = std::min<int64_t>(avail, frames);
+            for (int64_t i = 0; i < n; ++i) {
+                const int64_t at = ((rd + i) % Engine::Impl::kMonFrames) * 2;
+                out[i * 2] += im->monRing[at];
+                out[i * 2 + 1] += im->monRing[at + 1];
+            }
+            rd += n;
+            if (n < frames) im->monPrimed = false;  // kifogyott: újra pufferel
+        }
+        im->monRd.store(rd, std::memory_order_release);
     }
     int tone = o->toneLeft.load(std::memory_order_relaxed);
     if (tone > 0) {
@@ -234,6 +264,27 @@ int Engine::readInput(const std::string &deviceName, float *dst, int maxFrames)
     }
     in->rd.store(rd + n, std::memory_order_release);
     return std::max(0, n);
+}
+
+void Engine::setMonitor(bool on)
+{
+    if (on) impl_->monRd.store(impl_->monWr.load());
+    impl_->monOn.store(on, std::memory_order_release);
+}
+
+bool Engine::monitoring() const { return impl_->monOn.load(); }
+
+void Engine::pushMonitor(const float *stereo, int frames)
+{
+    if (!impl_->monOn.load(std::memory_order_acquire) || frames <= 0) return;
+    const int64_t wr = impl_->monWr.load(std::memory_order_relaxed), rd = impl_->monRd.load(std::memory_order_acquire);
+    if (wr - rd + frames > Impl::kMonFrames) return;         // tele (nincs kimenet, ami olvasná)
+    for (int i = 0; i < frames; ++i) {
+        const int64_t at = ((wr + i) % Impl::kMonFrames) * 2;
+        impl_->monRing[at] = stereo[i * 2];
+        impl_->monRing[at + 1] = stereo[i * 2 + 1];
+    }
+    impl_->monWr.store(wr + frames, std::memory_order_release);
 }
 
 Engine::Engine() : impl_(new Impl) {}
@@ -442,6 +493,7 @@ bool Engine::setRouteOne(Channel ch, const std::string &deviceName, std::string 
             }
         }
         auto dev = std::make_unique<OutDev>();
+        dev->impl = impl_.get();
         ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
         cfg.playback.pDeviceID = idPtr;
         cfg.playback.format = ma_format_f32;

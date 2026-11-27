@@ -69,6 +69,12 @@ public:
     void closeInput(const std::string &deviceName);
     int readInput(const std::string &deviceName, float *dst, int maxFrames);   // a felület szálán
 
+    // Belehallgatás: kívülről (egyetlen író szálról, pl. a stream enkóderéből) jövő sztereó 48 kHz-es jel az
+    // előhallgatás kimenetén. A kimenet ~150 ms-ot pufferel; ha az író lemarad vagy siet, igazodik.
+    void setMonitor(bool on);
+    bool monitoring() const;
+    void pushMonitor(const float *stereo, int frames);
+
     struct Impl;
     struct OutDev;
     struct Recorder;

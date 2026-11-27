@@ -9,6 +9,10 @@
 #include <QString>
 #include <QStringList>
 
+#include "stream/Processor.h"
+
+#include <functional>
+
 #include <memory>
 
 class QThread;
@@ -38,7 +42,7 @@ struct Config {
     bool mono = false;
     QString source;                // "" = fő kimenet (KI); "in:<eszköz neve>" = hangkártya-bemenet ("in:" = alapértelmezett)
     double gainDb = 0;
-    bool limiter = true;
+    ProcConfig proc;               // hangfeldolgozás: AGC, kompresszor, limiter
     bool sendTitle = true;
     bool titleLikeNowPlaying = true;
     QString titleFormat = QStringLiteral("%artist% - %title%");
@@ -67,7 +71,7 @@ struct Status {
     int attempt = 0;
     qint64 retryAt = 0;            // ms (epoch): a következő próbálkozás
     float peakL = 0, peakR = 0;    // a legutóbbi lekérdezés óta (a szint és a korlátozó után)
-    float reduction = 1;           // a korlátozó legnagyobb csillapítása (1 = nem dolgozott)
+    ProcMeters proc;               // a hangfeldolgozás mérői (a legutóbbi lekérdezés óta)
 };
 
 class Worker;
@@ -89,6 +93,8 @@ public:
     bool needsRestart() const { return active_ && cfg_.connectionDiffers(started_); }
     void feed(const float *stereo48k, int frames);   // a felület szálán
     void setTitle(const QString &text);
+    // Belehallgatás: a feldolgozott (48 kHz-es, sztereó) jel ide is megy, az enkóder szálán hívva. Üres: ki.
+    void setMonitor(std::function<void(const float *, int)> sink);
     Status status() const;                    // a csúcsszintet nullázza (a szintmérőnek)
     State state() const;
     QStringList events() const;               // a legutóbbi események (legfeljebb 200)

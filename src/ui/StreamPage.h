@@ -94,9 +94,19 @@ private:
     QLabel *info_ = nullptr, *codecNote_ = nullptr;
     QComboBox *source_ = nullptr;
     QSlider *gain_ = nullptr;
-    QLabel *gainLabel_ = nullptr, *reduction_ = nullptr;
+    QLabel *gainLabel_ = nullptr;
     QWidget *meter_ = nullptr;
-    QCheckBox *limiter_ = nullptr;
+    // hangfeldolgozás
+    QButtonGroup *presetGroup_ = nullptr;
+    class QDoubleSpinBox *target_ = nullptr, *ceiling_ = nullptr, *agcGain_ = nullptr, *agcCut_ = nullptr, *agcSpeed_ = nullptr,
+                         *compThr_ = nullptr, *compRatio_ = nullptr, *compAtk_ = nullptr, *compRel_ = nullptr, *compMakeup_ = nullptr;
+    QCheckBox *agcOn_ = nullptr, *compOn_ = nullptr, *limOn_ = nullptr;
+    QLabel *presetNote_ = nullptr, *monitorNote_ = nullptr;
+    QWidget *mLoud_ = nullptr, *mAgc_ = nullptr, *mComp_ = nullptr, *mLim_ = nullptr, *mPeak_ = nullptr;
+    QPushButton *monitor_ = nullptr;
+    QString monitoredId_;
+    void loadProc(const stream::ProcConfig &p);
+    void setMonitor(bool on);
     QCheckBox *sendTitle_ = nullptr, *likeNp_ = nullptr, *public_ = nullptr;
     QLineEdit *titleFormat_ = nullptr, *station_ = nullptr, *desc_ = nullptr, *genre_ = nullptr, *url_ = nullptr;
     QLabel *titleNote_ = nullptr;

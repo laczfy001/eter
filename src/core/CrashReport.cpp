@@ -94,6 +94,27 @@ void dumpStack()
 }
 
 thread_local char t_activity[768] = {0};
+thread_local char t_file[1024] = {0};
+thread_local const char *t_filePtr = nullptr;
+char g_suspect[1024] = {0};
+
+// Az összeomláskor dekódolt fájl útvonala külön fájlba (a következő indítás ebből tudja, mit hagyjon ki).
+void writeSuspect()
+{
+    if (!t_file[0] || !g_suspect[0]) return;
+#ifdef _WIN32
+    const int fd = _open(g_suspect, _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, 0644);
+    if (fd < 0) return;
+    _write(fd, t_file, unsigned(std::strlen(t_file)));
+    _close(fd);
+#else
+    const int fd = open(g_suspect, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return;
+    ssize_t w = write(fd, t_file, std::strlen(t_file));
+    (void)w;
+    close(fd);
+#endif
+}
 
 void report(int sig)
 {
@@ -113,6 +134,7 @@ void report(int sig)
         out(t_activity);
         out("\n");
     }
+    writeSuspect();
     out("hívási lánc:\n");
     dumpStack();
     out("==== vége ====\n");
@@ -196,6 +218,10 @@ void install(const QString &path)
 #else
     g_fd = open(native.constData(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
 #endif
+    {
+        const QByteArray sp = QFile::encodeName(QFileInfo(path).absoluteDir().filePath(QStringLiteral("crash-file.txt")));
+        std::snprintf(g_suspect, sizeof g_suspect, "%s", sp.constData());
+    }
     std::snprintf(g_header, sizeof g_header, "verzió: %s · indítva: %s\n", ETER_VERSION,
                   QDateTime::currentDateTime().toString(Qt::ISODate).toUtf8().constData());
 #ifndef _WIN32
@@ -212,6 +238,23 @@ void install(const QString &path)
 #endif
     std::set_terminate(onTerminate);
 }
+
+void setFile(const char *path)
+{
+    if (path == t_filePtr && path && std::strcmp(path, t_file) == 0) return;   // ugyanaz a dekóder: nincs teendő
+    t_filePtr = path;
+    std::snprintf(t_file, sizeof t_file, "%s", path ? path : "");
+}
+
+void clearFile(const char *path)
+{
+    if (path && path == t_filePtr) {
+        t_filePtr = nullptr;
+        t_file[0] = 0;
+    }
+}
+
+QString suspectFilePath() { return QFile::decodeName(QByteArray(g_suspect)); }
 
 void setActivity(const char *what, const char *detail)
 {

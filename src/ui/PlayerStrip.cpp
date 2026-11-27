@@ -86,7 +86,7 @@ void PlayerStrip::paintEvent(QPaintEvent *)
                         const QString &extra, const QString &title, const QString &time, bool dim) {
         p.setPen(QPen(lit ? c : shown ? mixc(border, c, 0.6) : border, 1));
         p.setBrush(lit ? mixc(panel, c, 0.16) : panel);
-        p.drawRoundedRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6);
+        p.drawRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5));
         const QRect b(r.left() + 10, r.center().y() - 13, 26, 26);
         if (lit) {
             p.setPen(Qt::NoPen);

@@ -35,7 +35,7 @@ MidiControl *MidiControl::instance() { return g_instance; }
 QVector<MidiControl::Action> MidiControl::actions()
 {
     QVector<Action> a;
-    a << Action{QStringLiteral("next"), TR("Következő (Szóköz)"), Button}
+    a << Action{QStringLiteral("next"), TR("Következő (jobb Ctrl)"), Button}
       << Action{QStringLiteral("stop_all"), TR("Stop: mindhárom lejátszó"), Button};
     for (int i = 0; i < 3; ++i) {
         const QString l = QString(QChar('A' + i)), k = l.toLower();

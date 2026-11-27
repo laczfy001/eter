@@ -7,6 +7,9 @@
 #include "Library.h"
 #include "PlayerWidget.h"
 #include "PlayerStrip.h"
+#include "DockPanels.h"
+#include <QDockWidget>
+#include <QToolBar>
 #include "core/NowPlaying.h"
 #include "core/VolumeEnvelope.h"
 #include "MixEditorPage.h"
@@ -36,9 +39,11 @@
 #include "Widgets.h"
 #include "audio/ProgramLogger.h"
 #include "stream/StreamManager.h"
+#include "core/BadFiles.h"
 #include "StreamPage.h"
 
 #include <QApplication>
+#include <QKeyEvent>
 #include <QCloseEvent>
 #include <functional>
 #include <QComboBox>
@@ -66,6 +71,8 @@
 #include <QStyledItemDelegate>
 #include <QTimer>
 #include <QToolButton>
+#include <QPlainTextEdit>
+#include <QDialog>
 #include <QVBoxLayout>
 #include <cmath>
 
@@ -138,7 +145,7 @@ static void repolish(QWidget *w)
 }
 
 MainWindow::MainWindow(Database *db, const QString &backendOverride, QWidget *parent)
-    : QMainWindow(parent), db_(db), scheduler_(db)
+    : QMainWindow(parent), db_(db), scheduler_(db), ext_(db)
 {
     setWindowTitle(TR("Éter"));
     setWindowIcon(theme::appIcon());
@@ -154,6 +161,8 @@ MainWindow::MainWindow(Database *db, const QString &backendOverride, QWidget *pa
     routes_[Engine::Pfl] = s.value("audio/pfl").toString();
     cartRoute_ = s.value("audio/cartwall", QStringLiteral("@player1")).toString();
     fadeMs_ = std::clamp(db_->setting("default_fade_out_ms", "2500").toInt(), 100, 15000);
+    scheduler_.setExternal(&ext_);
+    qApp->installEventFilter(this);   // jobb Ctrl: Következő
 
     autoMix_ = db_->setting("mix_mode", "auto") != QLatin1String("editor");
     // Előadói adatok (Beállítások → Előadói adatok). A lejátszók előtt: a létrejöttükkor feliratkoznak a frissítéseire.
@@ -167,6 +176,12 @@ MainWindow::MainWindow(Database *db, const QString &backendOverride, QWidget *pa
     // A „program indulásakor” bekapcsolt stream enkóderek – kicsit később, hogy a hang már menjen.
     updateStreamBadge();
     QTimer::singleShot(1500, this, [this] { streams_->autoStart(); });
+    // Az előző futás egy hangfájl dekódolása közben omlott össze: ezt a fájlt mostantól kihagyja.
+    if (const QString bad = badfiles::takeNewlyAdded(); !bad.isEmpty())
+        QTimer::singleShot(2500, this, [this, bad] {
+            sayWarning(QStringLiteral("Hangfájl"), TR("Az előző futás ennek a fájlnak a dekódolása közben omlott össze, ezért a program "
+                                                      "kihagyja: %1 (Súgó → Kihagyott fájlok)").arg(QFileInfo(bad).fileName()), 20000);
+        });
     reloadMixSettings();
 
     // Az előző futásból megmaradt, még le nem játszott sorok
@@ -245,6 +260,14 @@ MainWindow::MainWindow(Database *db, const QString &backendOverride, QWidget *pa
 MainWindow::~MainWindow()
 {
     timer_->stop();
+    // Az elrendezés mentése (akkor is, ha a program nem az ablak bezárásával lép ki).
+    if (docksReady_ && docking_) {
+        QSettings().setValue("ui/dock/state", liveLayoutState());
+        QSettings().setValue("ui/dock/visible", liveVisibleDocks());
+    }
+    // A panelek a bomló ablak tagjai után szűnnek meg: a jelzéseik már ne érjék el.
+    docksReady_ = false;
+    for (QDockWidget *d : std::as_const(docks_)) d->disconnect(this);
     if (remote_) {
         // Elsőként és csendben: a leállítás már nem értesítheti a bomló ablakot. A tartalékok megtudják, hogy ez
         // szabályos leállás (nem kell átvenniük az adást).
@@ -293,6 +316,10 @@ void MainWindow::closeEvent(QCloseEvent *e)
         if (row.logId) db_->logEnd(row.logId, "stopped");
     if (nowPlaying_) nowPlaying_->writeIdle();
     QSettings().setValue("window/geometry", saveGeometry());
+    if (docksReady_ && docking_) {
+        QSettings().setValue("ui/dock/state", liveLayoutState());
+        QSettings().setValue("ui/dock/visible", liveVisibleDocks());
+    }
     for (QWidget *w : {schedWindow_, mixWindow_})
         if (w && w->isVisible()) {
             static_cast<PageWindow *>(w)->saveGeo();
@@ -360,6 +387,19 @@ void MainWindow::buildUi()
         showStreamPage();
         if (streamPage_) streamPage_->selectFirstProblem();
     });
+    // Elrendezés: a panelek ki- és bekapcsolása, mentett elrendezések, alaphelyzet, zárolás (ugyanaz, mint az Ablakok menü).
+    layoutBtn_ = new QToolButton;
+    layoutBtn_->setObjectName("layoutBtn");
+    layoutBtn_->setAutoRaise(true);
+    layoutBtn_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    layoutBtn_->setIconSize(QSize(16, 16));
+    layoutBtn_->setFocusPolicy(Qt::NoFocus);
+    layoutBtn_->setPopupMode(QToolButton::InstantPopup);
+    {
+        auto *lm = new QMenu(layoutBtn_);
+        connect(lm, &QMenu::aboutToShow, this, [this, lm] { fillPanelsMenu(lm); });
+        layoutBtn_->setMenu(lm);
+    }
     tabs->addStretch(1);
 
     // Átmenetek: automatikus mix vagy a Mix editor mentett beállításai
@@ -429,13 +469,23 @@ void MainWindow::buildUi()
     tabs->addWidget(modeLabel);
     tabs->addSpacing(6);
     tabs->addWidget(modeBox, 0, Qt::AlignVCenter);
-    root->addWidget(tabRow);
+    // A fülsor egy rögzített eszköztáron: alatta a dokkolható panelek és a fülek oldalai.
+    tabRow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    auto *tabBar = new QToolBar(TR("Fülek"));
+    tabBar->setObjectName("tabToolbar");
+    tabBar->setMovable(false);
+    tabBar->setFloatable(false);
+    tabBar->setContextMenuPolicy(Qt::PreventContextMenu);
+    tabBar->toggleViewAction()->setVisible(false);
+    tabBar->setStyleSheet(QStringLiteral("QToolBar#tabToolbar { border: 0; padding: 0; spacing: 0; margin: 0; }"));
+    tabBar->addWidget(tabRow);
+    addToolBar(Qt::TopToolBarArea, tabBar);
 
     auto *body = new QWidget;
     auto *bodyLayout = new QVBoxLayout(body);
     bodyLayout->setContentsMargins(8, 8, 8, 8);
     bodyLayout->setSpacing(8);
-    bodyLayout->addWidget(buildDeck());
+    buildDeck();
 
     library_ = new LibraryPanel(db_);
     library_->setFooter(buildPflBar());
@@ -457,11 +507,8 @@ void MainWindow::buildUi()
         togglePfl();
     });
 
-    auto *split = new QSplitter(Qt::Horizontal);
-    split->setHandleWidth(8);
-    split->setChildrenCollapsible(false);
-    // Bal oldalon a playlist; jobb oldalon a hangtár, a lejátszott elemek vagy a cartwall (a fejlécük legördülőjével).
-    split->addWidget(buildPlaylistPanel());
+    // A playlist, a hangtár és a cartwall önálló panelek (lásd setupDocks).
+    playlistPanel_ = buildPlaylistPanel();
     cartPanel_ = new CartwallPanel(db_, &engine_);
     {
         auto *view = new QComboBox;
@@ -475,13 +522,6 @@ void MainWindow::buildUi()
     }
     connect(cartPanel_, &CartwallPanel::message, this, [this](const QString &m) { say(m, 8000); });
     connect(library_, &LibraryPanel::viewRequested, this, [this](int v) { showRight(v); });
-    rightStack_ = new QStackedWidget;
-    rightStack_->addWidget(library_);
-    rightStack_->addWidget(cartPanel_);
-    split->addWidget(rightStack_);
-    split->setStretchFactor(0, 11);
-    split->setStretchFactor(1, 10);
-    split->setSizes({740, 680});
     schedPage_ = new SchedulerPage(db_, &scheduler_);
     connect(schedPage_, &SchedulerPage::message, this, [this](const QString &m) { say(m, 8000); });
     connect(schedPage_, &SchedulerPage::generated, this, [this](const GenerateResult &) {
@@ -490,7 +530,7 @@ void MainWindow::buildUi()
         refreshTable();
     });
     stack_ = new QStackedWidget;
-    stack_->addWidget(split);
+    stack_->addWidget(new QWidget);    // 0: az Adás – a dokkolt panelek töltik ki (a középső rész ilyenkor rejtve)
     mixPage_ = new MixEditorPage(db_, &engine_);
     connect(mixPage_, &MixEditorPage::message, this, [this](const QString &m) { say(m, 8000); });
     connect(mixPage_, &MixEditorPage::mixSaved, this, &MainWindow::onMixSaved);
@@ -547,9 +587,6 @@ void MainWindow::buildUi()
     connect(db_, &Database::timedEventsChanged, this, [this] { events_ = db_->timedEvents(); });
     bodyLayout->addWidget(stack_, 1);
     root->addWidget(body, 1);
-    showPage(0);
-    applyTabVisibility();
-    showRight(db_->setting("right_view", db_->setting("left_view", "0") == QLatin1String("1") ? "2" : "0").toInt());
     // A legutóbb nyitva hagyott külön ablakok újra megnyílnak (a főablak megjelenése után).
     QTimer::singleShot(0, this, [this] {
         if (!separatePageWindows()) return;
@@ -559,13 +596,25 @@ void MainWindow::buildUi()
         activateWindow();
     });
     setCentralWidget(central);
-    countdown_ = new CountdownOverlay(central);     // az utolsó 10 másodperc; csak kijelzés, nem kattintható
+    central_ = central;
+    setupDocks();
+    showPage(0);
+    applyTabVisibility();
+    showRight(db_->setting("right_view", db_->setting("left_view", "0") == QLatin1String("1") ? "2" : "0").toInt());
+    countdown_ = new CountdownOverlay(this);        // az utolsó 10 másodperc; csak kijelzés, nem kattintható
 
     dbStatus_ = new QLabel;
     statusBar()->addPermanentWidget(dbStatus_);
     sqlStatus_ = new QLabel;
     sqlStatus_->hide();
     statusBar()->addPermanentWidget(sqlStatus_);
+    extStatus_ = new QToolButton;
+    extStatus_->setObjectName("statusLink");
+    extStatus_->setAutoRaise(true);
+    extStatus_->setFocusPolicy(Qt::NoFocus);
+    extStatus_->hide();
+    connect(extStatus_, &QToolButton::clicked, this, [this] { openSettingsPage(TR("Külső playlistek")); });
+    statusBar()->addPermanentWidget(extStatus_);
     schedStatus_ = new QLabel;
     statusBar()->addPermanentWidget(schedStatus_);
     audioStatus_ = new QLabel;
@@ -595,9 +644,8 @@ QWidget *MainWindow::buildDeck()
     dl->setSpacing(6);
     playerStack_ = new QStackedWidget;
     strip_ = new PlayerStrip;
-    dl->addWidget(playerStack_, 1);
-    dl->addWidget(strip_);
-    row->addWidget(deckLeft, 10);
+    Q_UNUSED(dl);
+    Q_UNUSED(deckLeft);
     connect(strip_, &PlayerStrip::tileClicked, this, [this](int i) {
         pinnedPlayer_ = i;
         pinnedOnAir_ = -2;
@@ -647,7 +695,8 @@ QWidget *MainWindow::buildDeck()
     cl->setSpacing(8);
     auto *ctlCaption = new QLabel(TR("ADÁSVEZÉRLÉS"));
     ctlCaption->setObjectName("caption");
-    nextBtn_ = new QPushButton(TR("Következő\nSzóköz"));
+    ctlCaption->hide();                 // a panel fejléce már mutatja a nevét
+    nextBtn_ = new QPushButton(TR("Következő\nJobb Ctrl"));
     nextBtn_->setObjectName("nextButton");
     nextBtn_->setProperty("accent", true);
     nextBtn_->setFocusPolicy(Qt::NoFocus);
@@ -664,7 +713,7 @@ QWidget *MainWindow::buildDeck()
     cl->addWidget(stopBtn);
     connect(nextBtn_, &QPushButton::clicked, this, &MainWindow::next);
     connect(stopBtn, &QPushButton::clicked, this, &MainWindow::stopAll);
-    row->addWidget(ctl, 3);
+    ctlPanel_ = ctl;
 
     // Óra és szint
     auto *clk = makePanel();
@@ -704,10 +753,17 @@ QWidget *MainWindow::buildDeck()
     connect(mixer_, &ChannelMixer::changed, this, &MainWindow::applyMixerGains);
     kl->addWidget(clock_);
     kl->addLayout(dateRow);
-    kl->addSpacing(2);
-    kl->addWidget(mixer_, 1);
-    row->addWidget(clk, 3);
-    return deck;
+    kl->addStretch(1);
+    clockPanel_ = clk;
+    // A keverő külön panel (a lejátszók, a voice track, a cartwall és a kimenet szintje).
+    auto *mix = makePanel();
+    auto *mxl = new QVBoxLayout(mix);
+    mxl->setContentsMargins(8, 6, 8, 6);
+    mxl->addWidget(mixer_, 1);
+    mixerPanel_ = mix;
+    Q_UNUSED(row);
+    deck->deleteLater();
+    return nullptr;
 }
 
 // A lapok (fülek) listája a Beállítások → Lapok oldalhoz: kulcs, felirat. A „Beállítások” fül elrejtése után is
@@ -732,6 +788,17 @@ void MainWindow::setHiddenTabs(const QStringList &keys)
 
 // A rejtett lap gombja eltűnik; a lap a háttérben tovább működik (például az időzítések lefutnak). Ha éppen az
 // látszott, az Adás lap jön elő.
+bool MainWindow::playerStripVisible()
+{
+    return QSettings().value(QStringLiteral("ui/playerStrip"), true).toBool();
+}
+
+void MainWindow::setPlayerStripVisible(bool on)
+{
+    QSettings().setValue(QStringLiteral("ui/playerStrip"), on);
+    if (QDockWidget *d = docks_.value(QStringLiteral("strip"))) d->setVisible(on);
+}
+
 void MainWindow::applyTabVisibility()
 {
     const QStringList hidden = hiddenTabs();
@@ -790,13 +857,19 @@ void MainWindow::changeEvent(QEvent *e)
 void MainWindow::showRight(int view)
 {
     view = std::clamp(view, 0, 2);
-    if (!rightStack_) return;
+    // A hangtár és a cartwall külön panel: a kért panel előre kerül (ha fülcsoportban vannak, az lesz a látható fül).
     if (view == 2) {
-        rightStack_->setCurrentWidget(cartPanel_);
         if (auto *c = cartPanel_->findChild<QComboBox *>("cartView")) c->setCurrentIndex(2);
+        if (QDockWidget *d = docks_.value(QStringLiteral("cart"))) {
+            d->show();
+            d->raise();
+        }
     } else {
         library_->setView(view);
-        rightStack_->setCurrentWidget(library_);
+        if (QDockWidget *d = docks_.value(QStringLiteral("library"))) {
+            d->show();
+            d->raise();
+        }
     }
     if (db_->setting("right_view", "0").toInt() != view) db_->setSetting("right_view", QString::number(view));
 }
@@ -815,6 +888,7 @@ QWidget *MainWindow::buildPlaylistPanel()
     h->setSpacing(6);
     auto *title = new QLabel(TR("Playlist"));
     title->setObjectName("panelTitle");
+    title->hide();                      // a panel fejléce már mutatja a nevét
     auto mk = [&](const QString &text, const QString &tip) {
         auto *b = new QPushButton(text);
         b->setFocusPolicy(Qt::NoFocus);
@@ -929,9 +1003,8 @@ QWidget *MainWindow::buildPlaylistPanel()
     v->addWidget(foot);
 
     connect(del, &QPushButton::clicked, this, &MainWindow::removeSelected);
-    connect(clear, &QPushButton::clicked, this, &MainWindow::clearList);
+    connect(clear, &QPushButton::clicked, this, [this] { clearList(); });
     connect(table_, &PlaylistTable::deletePressed, this, &MainWindow::removeSelected);
-    connect(table_, &PlaylistTable::spacePressed, this, &MainWindow::next);
     connect(table_, &PlaylistTable::rowMoved, this, &MainWindow::onViewRowMoved);
     connect(table_, &PlaylistTable::viewGeometryChanged, this, &MainWindow::placeMini);
     connect(table_->verticalHeader(), &QHeaderView::sectionResized, this, &MainWindow::placeMini);
@@ -1082,7 +1155,8 @@ void MainWindow::buildMenus()
     file->addAction(TR("Kilépés"), QKeySequence(Qt::CTRL | Qt::Key_Q), this, &QWidget::close);
 
     auto *play = menuBar()->addMenu(TR("&Lejátszás"));
-    play->addAction(TR("Következő"), QKeySequence(Qt::Key_Space), this, &MainWindow::next);
+    // A Következő gyorsbillentyűje a jobb Ctrl (eventFilter): QKeySequence-ként nem adható meg, ezért a felirat mutatja.
+    play->addAction(TR("Következő") + QStringLiteral("\t") + TR("Jobb Ctrl"), this, &MainWindow::next);
     play->addAction(TR("Mindent megállít"), QKeySequence(Qt::CTRL | Qt::Key_Period), this,
                     &MainWindow::stopAll);
     play->addSeparator();
@@ -1103,6 +1177,17 @@ void MainWindow::buildMenus()
     data->addAction(TR("Hiányzó fájlok a playlistben…"), this, &MainWindow::showMissingFiles);
     data->addAction(TR("Hiányzó fájlok keresése a hangtárban…"), this, &MainWindow::scanLibraryFiles);
 
+    // Ablakok: a panelek ki- és bekapcsolása, a mentett elrendezések, az alaphelyzet és a zárolás.
+    windowsMenu_ = menuBar()->addMenu(TR("&Ablakok"));
+    if (layoutBtn_) {
+        // Az Elrendezés gomb a menüsor jobb szélén (a fülsorban nincs rá hely).
+        layoutBtn_->setText(TR("Elrendezés"));
+        layoutBtn_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        menuBar()->setCornerWidget(layoutBtn_, Qt::TopRightCorner);
+        setLayoutLocked(layoutLocked_);
+    }
+    connect(windowsMenu_, &QMenu::aboutToShow, this, &MainWindow::fillWindowsMenu);
+    fillWindowsMenu();
     auto *tools = menuBar()->addMenu(TR("&Eszközök"));
     tools->addAction(TR("Beállítások…"), QKeySequence(Qt::CTRL | Qt::Key_Comma), this,
                      &MainWindow::openSettings);
@@ -1125,6 +1210,28 @@ void MainWindow::buildMenus()
         });
 
     auto *help = menuBar()->addMenu(TR("&Súgó"));
+    help->addAction(TR("Kihagyott fájlok…"), this, [this] {
+        // Amelyik hangfájl dekódolása közben a program összeomlott, azt kihagyja (amíg a fájl nem változik).
+        const QVector<badfiles::Entry> l = badfiles::list();
+        if (l.isEmpty()) {
+            QMessageBox::information(this, TR("Kihagyott fájlok"), TR("Nincs kihagyott fájl: egyik hangfájl sem okozott összeomlást."));
+            return;
+        }
+        QStringList lines;
+        for (const badfiles::Entry &e : l)
+            lines << QStringLiteral("%1  (%2)").arg(QDir::toNativeSeparators(e.path), QDateTime::fromString(e.at, Qt::ISODate).toString(QStringLiteral("yyyy-MM-dd HH:mm")));
+        QMessageBox box(QMessageBox::Information, TR("Kihagyott fájlok"),
+                        TR("Ezeknek a fájloknak a dekódolása közben a program összeomlott, ezért nem játssza le és nem elemzi "
+                           "őket. Ha egy fájlt kicserélsz vagy javítasz, magától újra próbálja."),
+                        QMessageBox::Close, this);
+        box.setDetailedText(lines.join(QLatin1Char('\n')));
+        QPushButton *clear = box.addButton(TR("Lista törlése"), QMessageBox::DestructiveRole);
+        box.exec();
+        if (box.clickedButton() == clear) {
+            badfiles::clear();
+            say(TR("A kihagyott fájlok listája törölve: a program újra megpróbálja őket."), 8000);
+        }
+    });
     help->addAction(TR("Hibanapló mappája…"), this, [this] {
         // A program mappájában (logs/), napi szövegfájlokban: hibák, figyelmeztetések, váratlan kilépés.
         const QString dir = elog::directory();
@@ -1416,6 +1523,9 @@ void MainWindow::tick()
     nextBtn_->setEnabled(standbyPlayer() >= 0);
     updatePlayerView();
     updateNowPlaying();
+    // A playlist mini mix editorának előhallgatása: a lejátszófej valós időben (minden ütemben) halad.
+    if (mini_ && mini_->isVisible())
+        mini_->setPreviewHead(mixPage_->quickPreviewing(mini_->fromEntry(), mini_->toEntry()) ? mixPage_->previewOutMs() : -1);
     if (++clockDivider_ >= 6) {
         clockDivider_ = 0;
         updateClock();
@@ -2472,7 +2582,7 @@ void MainWindow::updatePlayerView()
     }
     strip_->setTiles(tiles);
 
-    const QString nextText = standby >= 0 ? TR("Következő\n%1 lejátszó · Szóköz").arg(playerLetter(standby)) : TR("Következő\nSzóköz");
+    const QString nextText = standby >= 0 ? TR("Következő\n%1 lejátszó · Jobb Ctrl").arg(playerLetter(standby)) : TR("Következő\nJobb Ctrl");
     if (nextBtn_->text() != nextText) nextBtn_->setText(nextText);
 }
 
@@ -3429,13 +3539,13 @@ void MainWindow::removeSelected()
     refreshTable();
 }
 
-void MainWindow::clearList()
+void MainWindow::clearList(bool ask)
 {
     int n = 0;
     for (const Row &row : rows_)
         if (row.state != Row::Playing) ++n;
     if (!n) return;
-    if (QMessageBox::question(this, TR("Lista ürítése"),
+    if (ask && QMessageBox::question(this, TR("Lista ürítése"),
                               TR("Törlöd a playlist %1 elemét? Az adásban lévő elem marad.").arg(n),
                               QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;
@@ -4089,6 +4199,25 @@ void MainWindow::showPage(int page)
         if (p->parentWidget() != h) h->layout()->addWidget(p);
         p->show();
     }
+    // Az Adás oldalán a dokkolt panelek töltik ki az ablakot; a többi oldalon középen az oldal, és az Adás saját
+    // panelei (playlist, hangtár, cartwall, kérések) addig rejtve – a lebegő (önálló) ablakok maradnak.
+    const bool wasLive = stack_->currentIndex() == 0 && central_ && !central_->isVisible();
+    if (docksReady_) {
+        if (page == 0) {
+            if (central_) central_->hide();
+            for (QDockWidget *d : std::as_const(liveHidden_)) d->show();
+            liveHidden_.clear();
+            liveState_.clear();
+        } else {
+            if (wasLive || liveState_.isEmpty()) liveState_ = saveState(1);
+            for (const QString &k : {QStringLiteral("playlist"), QStringLiteral("library"), QStringLiteral("cart"), QStringLiteral("requests")})
+                if (QDockWidget *d = docks_.value(k); d && d->isVisible() && !d->isFloating()) {
+                    liveHidden_ << d;
+                    d->hide();
+                }
+            if (central_) central_->show();
+        }
+    }
     stack_->setCurrentIndex(page);
     tabLive_->setChecked(page == 0);
     tabPl_->setChecked(page == 3);
@@ -4242,17 +4371,249 @@ void MainWindow::autoGenerate()
     lastGenerateMinute_ = minute;
     const bool on = db_->setting("auto_generate", "1") == "1";
     const bool hasGrid = db_->hasWeekGrid();
-    schedStatus_->setText(!hasGrid ? TR("Ütemező: nincs beállítva")
+    const bool extOn = ext_.enabled();
+    schedStatus_->setText(!hasGrid && !extOn ? TR("Ütemező: nincs beállítva")
                           : on ? TR("Ütemező: automatikus") : TR("Ütemező: kézi generálás"));
-    if (!on || !hasGrid) return;
+    // Óránként egy sor a naplóba: ha a lista elfogy, ebből látszik, miért nem készült új óra.
+    const int hourKey = Scheduler::keyOf(now);
+    const bool logNow = hourKey != lastGenerateLogHour_;
+    lastGenerateLogHour_ = hourKey;
+    if (!on || (!hasGrid && !extOn)) {
+        if (logNow)
+            elog::info(QStringLiteral("Ütemező"), !hasGrid ? QStringLiteral("automatikus generálás: a heti rács üres")
+                                                           : QStringLiteral("automatikus generálás kikapcsolva"));
+        updateExtStatus();
+        return;
+    }
     const int hours = std::clamp(db_->setting("generate_ahead_hours", "24").toInt(), 1, 168);
-    const GenerateResult r = scheduler_.generate(now, hours, false);
-    if (r.entries > 0) {
+    // Külső playlistek: a már elkészült jövőbeli órák frissítése, ha a fájljuk megváltozott vagy megérkezett.
+    const int refreshed = extOn ? ext_.refresh(now, hours) : 0;
+    GenerateResult r = scheduler_.generate(now, hours, false);
+    // A lista hossza szerint is: ha a hátralévő elemek kevesebb ideig szólnak, mint az „Előre” órák (például az
+    // Asszisztált módban a lejátszás az óra elé szaladt: rövidített átmenetek, léptetés), a lista utolsó órája
+    // utáni órák is elkészülnek, hogy a lista ne fogyjon el.
+    int topUp = 0;
+    if (topUpBlockedHour_ != hourKey) {
+        const qint64 need = qint64(hours) * 3600 * 1000;
+        QDateTime next = QDateTime(now.date(), QTime(now.time().hour(), 0)).addSecs(qint64(hours) * 3600);
+        for (int round = 0; round < 3; ++round) {
+            qint64 remain = 0;
+            int lastKey = 0;
+            for (const Entry &e : db_->pendingEntries()) {
+                if (!e.overlay) remain += e.item.airMs();
+                lastKey = std::max(lastKey, e.playlistKey);
+            }
+            if (remain >= need) break;
+            if (lastKey) {
+                const QDate d = QDate::fromString(QString::number(lastKey / 100), "yyyyMMdd");
+                const QDateTime after = QDateTime(d, QTime(lastKey % 100, 0)).addSecs(3600);
+                if (after > next) next = after;
+            }
+            // Annyi még el nem készült óra, amennyi a hiányzó időhöz kell; a séma nélküli és a már kész (például
+            // már lejátszott) órák kimaradnak.
+            const int missing = std::clamp(int((need - remain + 3599999) / 3600000), 1, 48);
+            QVector<QDateTime> list;
+            const QVector<ExtFile> extFiles = extOn ? ext_.scan() : QVector<ExtFile>{};
+            for (int i = 0; i < 72 && list.size() < missing; ++i, next = next.addSecs(3600)) {
+                if (!db_->clockAt(next.date(), next.time().hour()) && !ext_.fileFor(next, extFiles)) continue;
+                const int pl = db_->playlistFor(next.date(), next.time().hour());
+                if (db_->playlistGenerated(pl) && db_->playlistEntryCount(pl) > 0) continue;
+                list << next;
+            }
+            const GenerateResult more = list.isEmpty() ? GenerateResult{} : scheduler_.generateHours(list, now, false);
+            r.hours += more.hours;
+            r.entries += more.entries;
+            r.empty += more.empty;
+            r.external += more.external;
+            r.fallback += more.fallback;
+            topUp += more.hours;
+            if (more.entries == 0) {
+                topUpBlockedHour_ = hourKey;   // nem jutott elem: ebben az órában nem próbálja újra percenként
+                break;
+            }
+        }
+    }
+    if (logNow || r.entries > 0)
+        elog::info(QStringLiteral("Ütemező"),
+                   QStringLiteral("automatikus generálás, előre %1 óra: %2 új óra (%3 elem), %4 már kész, %5 séma nélkül%6%7%8%9")
+                       .arg(hours).arg(r.hours).arg(r.entries).arg(r.alreadyDone).arg(r.noClock)
+                       .arg(r.external || r.fallback ? QStringLiteral(", külső playlist: %1 óra, tartalék: %2").arg(r.external).arg(r.fallback) : QString())
+                       .arg(topUp ? QStringLiteral(", ebből %1 óra a lista hossza miatt").arg(topUp) : QString())
+                       .arg(r.refilled ? QStringLiteral(", %1 kiürített óra újra").arg(r.refilled) : QString())
+                       .arg(r.empty ? QStringLiteral(", %1 hely üres maradt").arg(r.empty) : QString()));
+    if (r.entries > 0 || refreshed > 0) {
         syncRowsFromDb();
         reconcile();
         refreshTable();
-        say(TR("Ütemező: %1 órára %2 új elem került a playlistbe.").arg(r.hours).arg(r.entries));
+        if (r.entries > 0) say(TR("Ütemező: %1 órára %2 új elem került a playlistbe.").arg(r.hours).arg(r.entries));
     }
+    ext_.takeReports();
+    updateExtStatus();
+}
+
+// Az állapotsor jelzése: a legutóbb beolvasott óra, vagy narancsban a hiányzó (tartalékból készült) óra.
+void MainWindow::updateExtStatus()
+{
+    if (!extStatus_) return;
+    if (!ext_.enabled()) {
+        extStatus_->hide();
+        return;
+    }
+    const int nowKey = Scheduler::keyOf(eter::now());
+    QMap<int, const ExtReport *> last;
+    for (const ExtReport &r : ext_.recent()) last.insert(r.key, &r);
+    int loaded = 0, missing = 0;
+    QStringList tip;
+    for (auto it = last.cbegin(); it != last.cend(); ++it) {
+        const ExtReport &r = **it;
+        const QString hh = QStringLiteral("%1:00").arg(r.key % 100, 2, 10, QLatin1Char('0'));
+        if (r.fallback || !r.error.isEmpty()) {
+            if (it.key() >= nowKey && !missing) missing = it.key();
+            tip << QStringLiteral("%1 · %2").arg(hh, r.error);
+        } else {
+            if (it.key() >= nowKey) loaded = std::max(loaded, it.key());
+            tip << QStringLiteral("%1 · %2 · %3").arg(hh, r.file, TR("%1 elem").arg(r.total - r.missing))
+                       + (r.missing ? TR(", %1 hiányzik").arg(r.missing) : QString());
+        }
+    }
+    if (!loaded)
+        for (int k : last.keys())
+            if (k <= nowKey && !last[k]->fallback && last[k]->error.isEmpty()) loaded = k;
+    QString text;
+    if (missing)
+        text = TR("Külső playlist: %1:00 hiányzik → tartalék").arg(missing % 100, 2, 10, QLatin1Char('0'));
+    else if (loaded)
+        text = TR("Külső playlist: %1:00 betöltve").arg(loaded % 100, 2, 10, QLatin1Char('0'));
+    else
+        text = TR("Külső playlist: figyeli a mappát");
+    extStatus_->setText(text);
+    extStatus_->setStyleSheet(missing ? QStringLiteral("QToolButton { color: %1; }").arg(theme::hex("#f5a524")) : QString());
+    theme::rawCss(extStatus_);
+    extStatus_->setToolTip((tip.mid(std::max<qsizetype>(0, tip.size() - 12))).join(QLatin1Char('\n')) +
+                           QStringLiteral("\n\n") + TR("Kattintás: Beállítások → Külső playlistek"));
+    extStatus_->show();
+}
+
+// A jobb Ctrl a Következő gomb (korábban a Szóköz). A bal Ctrl és a Ctrl-os gyorsbillentyűk (Ctrl+L, Ctrl+Q…) maradnak.
+static bool isRightCtrl(const QKeyEvent *e)
+{
+    if (e->key() != Qt::Key_Control) return false;
+#if defined(Q_OS_WIN)
+    return (e->nativeScanCode() & 0x1FF) == 0x11D || e->nativeVirtualKey() == 0xA3;   // kiterjesztett 0x1D / VK_RCONTROL
+#elif defined(Q_OS_MACOS)
+    return e->nativeVirtualKey() == 0x3E;                                                // kVK_RightControl
+#else
+    return e->nativeVirtualKey() == 0xFFE4 || e->nativeScanCode() == 105;                // XK_Control_R / evdev 97+8
+#endif
+}
+
+bool MainWindow::eventFilter(QObject *obj, QEvent *ev)
+{
+    if (ev->type() == QEvent::KeyPress) {
+        auto *k = static_cast<QKeyEvent *>(ev);
+        if (!k->isAutoRepeat() && isRightCtrl(k) && !(k->modifiers() & (Qt::ShiftModifier | Qt::AltModifier | Qt::MetaModifier))) {
+            // Csak a főablakban (és a belőle kiemelt paneleken), nem a párbeszédablakokban.
+            QWidget *active = QApplication::activeWindow();
+            bool ours = active == this;
+            for (QWidget *w = active; !ours && w; w = w->parentWidget())
+                if (qobject_cast<QDialog *>(w)) break;
+                else if (w == this) ours = true;
+            if (ours && !QApplication::activePopupWidget() && !QApplication::activeModalWidget()) {
+                next();
+                return true;
+            }
+        }
+    }
+    return QMainWindow::eventFilter(obj, ev);
+}
+
+// „Beolvasás most” (Beállítások → Külső playlistek): a megváltozott órák frissítése és a hiányzók elkészítése.
+QVector<ExtReport> MainWindow::runExternalNow()
+{
+    const QDateTime now = eter::now();
+    const int hours = std::clamp(db_->setting("generate_ahead_hours", "24").toInt(), 1, 168);
+    ext_.takeReports();
+    const int refreshed = ext_.refresh(now, hours);
+    const GenerateResult r = scheduler_.generate(now, hours, false);
+    if (r.entries > 0 || refreshed > 0) {
+        syncRowsFromDb();
+        reconcile();
+        refreshTable();
+    }
+    const QVector<ExtReport> reports = ext_.takeReports();
+    updateExtStatus();
+    return reports;
+}
+
+QVector<ExtReport> MainWindow::importExternalFile(const QString &path, QString *error)
+{
+    ext_.takeReports();
+    const int hours = ext_.importFile(path, eter::now(), error);
+    if (hours > 0) {
+        syncRowsFromDb();
+        reconcile();
+        refreshTable();
+    }
+    const QVector<ExtReport> reports = ext_.takeReports();
+    updateExtStatus();
+    return reports;
+}
+
+void MainWindow::showExternalReport(QWidget *parent, const QVector<ExtReport> &reports)
+{
+    auto *dlg = new QDialog(parent);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setObjectName("externalReport");
+    dlg->setWindowTitle(TR("Külső playlistek beolvasása"));
+    dlg->setMinimumWidth(640);
+    auto *v = new QVBoxLayout(dlg);
+    v->setContentsMargins(18, 16, 18, 14);
+    v->setSpacing(10);
+    QStringList rows, missing;
+    for (const ExtReport &r : reports) {
+        const QString hh = QStringLiteral("%1:00").arg(r.key % 100, 2, 10, QLatin1Char('0'));
+        QString text;
+        if (r.fallback) {
+            text = r.error;
+        } else if (!r.error.isEmpty() && r.total == r.missing) {
+            text = TR("nem olvasható be: %1").arg(r.error);
+        } else {
+            QStringList parts{TR("%1 elem").arg(r.total - r.missing)};
+            if (r.fromLibrary) parts << TR("%1 a hangtárból").arg(r.fromLibrary);
+            if (r.added) parts << TR("%1 új (beolvasva, elemzés folyamatban)").arg(r.added);
+            if (r.missing) parts << TR("%1 hiányzó fájl kimaradt").arg(r.missing);
+            text = parts.join(QStringLiteral(", "));
+        }
+        const bool warn = r.fallback || r.missing || !r.error.isEmpty();
+        rows << QStringLiteral("<tr><td style='padding-right:14px; font-family:monospace'>%1</td><td style='padding-right:14px'>%2</td>"
+                               "<td style='color:%3'>%4</td></tr>")
+                    .arg(r.file.toHtmlEscaped(), hh, warn ? theme::hex("#f5a524") : theme::hex("#e8eaed"), text.toHtmlEscaped());
+        missing += r.missingPaths;
+    }
+    auto *summary = new QLabel(rows.isEmpty() ? TR("Nincs teendő: minden óra naprakész, vagy nincs illeszkedő fájl a mappában.")
+                                              : QStringLiteral("<table>%1</table>").arg(rows.join(QString())));
+    summary->setWordWrap(true);
+    summary->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    v->addWidget(summary);
+    if (!missing.isEmpty()) {
+        auto *head = new QLabel(TR("%1 fájl nem található, kimaradt:").arg(missing.size()));
+        head->setStyleSheet(QStringLiteral("QLabel { color: %1; font-weight: 600; }").arg(theme::hex("#f5a524")));
+        theme::rawCss(head);
+        v->addWidget(head);
+        auto *list = new QPlainTextEdit(missing.join(QLatin1Char('\n')));
+        list->setReadOnly(true);
+        list->setMaximumHeight(140);
+        v->addWidget(list);
+    }
+    auto *buttons = new QHBoxLayout;
+    buttons->addStretch(1);
+    auto *ok = new QPushButton(TR("Rendben"));
+    ok->setProperty("accent", true);
+    ok->setDefault(true);
+    buttons->addWidget(ok);
+    v->addLayout(buttons);
+    connect(ok, &QPushButton::clicked, dlg, &QDialog::accept);
+    dlg->show();
 }
 
 // A lejátszott és kihagyott sorokból csak a legutóbbi néhány marad a listában; a többit a napló őrzi.

@@ -5,6 +5,7 @@
 #include "audio/Engine.h"
 #include "db/Database.h"
 #include "sched/Scheduler.h"
+#include "sched/ExternalPlaylist.h"
 
 #include <QColor>
 #include <QDateTime>
@@ -38,6 +39,8 @@ class ItemEditorDialog;
 class TimedEventsPage;
 class MiniMix;
 class CountdownOverlay;
+class QDockWidget;
+class QToolButton;
 class FileCheck;
 class ProgramLogger;
 namespace remote { class Server; class Connection; class Client; }
@@ -100,6 +103,30 @@ public:
     static QStringList hiddenTabs();
     static void setHiddenTabs(const QStringList &keys);
     void applyTabVisibility();
+    // A fő lejátszó alatti A/B/C sáv (a három lejátszó állapota és a voice track) ki- és bekapcsolása; megmarad.
+    void setPlayerStripVisible(bool on);
+    static bool playerStripVisible();
+    // Dokkolható panelek (Ablakok menü): alaphelyzet, zárolás, mentett elrendezések.
+    void resetLayout();
+    void showPage(int page);              // 0 Adás, 1 Ütemező, 2 Mix editor, 3 Playlist szerkesztő, 4 Időzítések, 5 Mixdown, 6 Stream
+    void setLayoutLocked(bool on);
+    // Önálló (dokkolható) panelek ki- és bekapcsolása; kikapcsolva minden panel fixen az eredeti elrendezésben.
+    void setDockingEnabled(bool on);
+    bool dockingEnabled() const { return docking_; }
+    static bool dockingSetting();
+    bool layoutLocked() const { return layoutLocked_; }
+    QDockWidget *dock(const QString &key) const { return docks_.value(key); }
+    // Fejlesztői tesztekhez: a playlist újratöltése az adatbázisból, és ürítése kérdés nélkül.
+    void reloadPlaylistForTest() { syncRowsFromDb(); reconcile(); refreshTable(); }
+    void clearListForTest() { clearList(false); }
+    // Külső playlistek: a beállítások lapja ezen keresztül éri el; „Beolvasás most” (a jelentés sorai).
+    ExternalPlaylists *externalPlaylists() { return &ext_; }
+    QVector<ExtReport> runExternalNow();
+    QVector<ExtReport> importExternalFile(const QString &path, QString *error);
+    static void showExternalReport(QWidget *parent, const QVector<ExtReport> &reports);
+    bool saveNamedLayout(const QString &name);
+    bool loadNamedLayout(const QString &name);
+    static QStringList namedLayouts();
     PlaylistTable *playlistTable() { return table_; }
     TimedEventsPage *eventsPage() { return eventsPage_; }
     bool following() const { return follow_; }
@@ -125,6 +152,10 @@ signals:
 protected:
     void changeEvent(QEvent *e) override;   // stílusváltás (Beállítások → Megjelenés): a lejátszók színei
     void closeEvent(QCloseEvent *) override;
+    bool eventFilter(QObject *obj, QEvent *ev) override;
+
+public:
+    class QMenu *createPopupMenu() override;   // jobb gomb a panelek fejlécén / a fülsoron
 
 private:
     struct Row {
@@ -174,7 +205,6 @@ private:
     void applySchedule();
     void autoGenerate();
     void trimHistory();
-    void showPage(int page);
 
     // Egy átmenet érvényes beállításai adáshoz: egyedi mix, a számok alapértelmezése vagy automatikus.
     struct MixPlan {
@@ -218,6 +248,34 @@ private:
     void buildMenus();
     QWidget *buildDeck();
     QWidget *buildPlaylistPanel();
+    // Dokkolható panelek
+    void setupDocks();
+    void applyDefaultLayout();
+    void toggleMaximize(QDockWidget *d);
+    QByteArray liveLayoutState();         // az Adás elrendezése (akkor is, ha most más oldal látszik)
+    QStringList liveVisibleDocks();       // a látható panelek (ugyanígy)
+    void applyVisibleDocks(const QStringList &keys);
+    QStringList maxVisible_;
+    void fillWindowsMenu();
+    void fillLayoutMenu(class QMenu *m);
+    void fillPanelsMenu(class QMenu *m);
+    class QAction *lockAction_ = nullptr;
+    QHash<QString, QDockWidget *> docks_;
+    QStringList dockOrder_;
+    QList<QDockWidget *> liveHidden_;     // más oldalra váltáskor elrejtett Adás-panelek
+    QByteArray liveState_;                // az Adás elrendezése, amíg más oldal látszik
+    QByteArray maxState_;                 // a teljes méretre váltás előtti elrendezés
+    QDockWidget *maxDock_ = nullptr;
+    bool layoutLocked_ = false;
+    bool docking_ = true;
+    class QAction *dockingAction_ = nullptr;
+    void applyDockFeatures();
+    bool docksReady_ = false;
+    QWidget *central_ = nullptr;
+    QWidget *playlistPanel_ = nullptr;
+    QWidget *ctlPanel_ = nullptr, *clockPanel_ = nullptr, *mixerPanel_ = nullptr;
+    class QMenu *windowsMenu_ = nullptr;
+    QToolButton *layoutBtn_ = nullptr;
     QWidget *buildPflBar();
 
     void startAudio();
@@ -244,7 +302,7 @@ private:
     void onPlayerEjected(int player);
     void syncRowStates();
     void removeSelected();
-    void clearList();
+    void clearList(bool ask = true);
     void startStandby(int fadeOutPlayer, int fadeMs);
     int standbyPlayer() const;
     int onAirPlayer() const;              // az adásban lévő (nem kiúszó) lejátszó; több közül a későbbi elem
@@ -267,7 +325,8 @@ private:
 
     PlayerWidget *players_[kPlayers] = {nullptr, nullptr, nullptr};
     QStackedWidget *playerStack_ = nullptr;   // a főablakban egyszerre egy lejátszó látszik
-    class PlayerStrip *strip_ = nullptr;      // az A/B/C állapota és a voice track
+    class PlayerStrip *strip_ = nullptr;
+    class QAction *stripAction_ = nullptr;      // az A/B/C állapota és a voice track
     int shownPlayer_ = 0;
     int pinnedPlayer_ = -1, pinnedOnAir_ = -2;               // a sávon kiválasztott lejátszó (egy ideig az látszik)
     qint64 pinnedAt_ = 0;
@@ -314,6 +373,7 @@ private:
     QPointer<QDialog> logDialog_;
     QPointer<ItemEditorDialog> itemEditor_;
     Scheduler scheduler_;
+    ExternalPlaylists ext_;          // külső playlistek (figyelt mappa)
     SchedulerPage *schedPage_ = nullptr;
     QStackedWidget *stack_ = nullptr;
     QWidget *schedWindow_ = nullptr, *mixWindow_ = nullptr;   // az Ütemező és a Mix editor külön ablaka
@@ -527,7 +587,7 @@ private:
     bool webHasNow_ = false;
     QSet<int> requestEntries_;                     // a kérésként betett playlist-sorok
     QToolButton *requestsBtn_ = nullptr;
-    QPointer<QDialog> requestsDlg_;
+    QPointer<QWidget> requestsDlg_;      // a Számkérések panel tartalma
     QTimer *requestTimer_ = nullptr;
     void initWeb();
     void updateWeb();
@@ -572,6 +632,10 @@ private:
     int remoteTick_ = 0;
     QString remoteError_;
     QLabel *schedStatus_ = nullptr;
+    class QToolButton *extStatus_ = nullptr;   // „Külső playlist: 15:00 betöltve”
+    void updateExtStatus();
     int lastGenerateMinute_ = -1;
+    int lastGenerateLogHour_ = -1;   // óránként egy naplósor az automatikus generálásról
+    int topUpBlockedHour_ = -1;      // a lista hossza szerinti pótlás ebben az órában nem talált elemet
     bool waitingForFixed_ = false;
 };

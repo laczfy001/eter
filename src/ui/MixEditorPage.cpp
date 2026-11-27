@@ -2299,6 +2299,7 @@ void MixEditorPage::startPreview(bool forRecording, qint64 atMs)
     engine_->source(kClipCh[firstClip]).play();
     }
     phase_ = 1;
+    previewNowMs_ = previewStartMs_;
     previewBtn_->setText(TR("Leállítás"));
     previewBtn_->setIcon(theme::icon(theme::Icon::Stop, theme::blueSoft));
     previewBtn_->setProperty("active", true);
@@ -2318,6 +2319,7 @@ void MixEditorPage::previewTick()
     const qint64 posMs = cur.position() * 1000 / eter::kRate;
     const qint64 now = pv_.start[k] + (posMs - pv_.cue[k]);        // az idővonal ideje
     timeline_->setPlayhead(now);
+    previewNowMs_ = now;
 
     // A következő elem indítása a mix pontnál
     if (k < pv_.n - 1) {
@@ -2577,6 +2579,12 @@ void MixEditorPage::selectEntries(int fromEntry, int toEntry)
 {
     const int i = pairIndex(pairs_, fromEntry, toEntry);
     if (i >= 0 && currentIndex() != i) selectPair(i);
+}
+
+qint64 MixEditorPage::previewOutMs() const
+{
+    if (phase_ == 0 || previewNowMs_ < 0 || pv_.n < 1) return -1;
+    return previewNowMs_ - pv_.start[0] + pv_.cue[0];
 }
 
 bool MixEditorPage::quickPreviewing(int fromEntry, int toEntry) const

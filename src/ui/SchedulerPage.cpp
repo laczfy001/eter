@@ -30,6 +30,7 @@
 #include <QSpinBox>
 #include <QToolButton>
 #include "sched/Scheduler.h"
+#include "sched/ExternalPlaylist.h"
 #include <QSplitter>
 #include <QTableView>
 #include <QTableWidget>
@@ -249,14 +250,11 @@ QWidget *SchedulerPage::buildGridPanel()
     connect(grid_, &QTableWidget::cellClicked, this, [this](int row, int col) {
         // Egy cellára kattintva a hozzá tartozó séma jelenik meg a szerkesztőben.
         const int id = db_->weekGrid(editGrid_).value(col * 100 + row, 0);
-        if (id && id != currentClockId()) reloadClocks(id);
+        if (id && id != currentClockId() && id != ExternalPlaylists::clockId(db_)) reloadClocks(id);
     });
     connect(grid_, &QTableWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
         QMenu menu(this);
-        for (const Clock &c : db_->clocks())
-            menu.addAction(swatchIcon(QColor(c.color)), c.name, this, [this, c] { assignSelection(c.id); });
-        if (!menu.isEmpty()) menu.addSeparator();
-        menu.addAction(TR("Kiürítés"), this, [this] { assignSelection(0); });
+        fillAssignMenu(&menu);
         menu.exec(grid_->viewport()->mapToGlobal(pos));
     });
     return p;
@@ -408,6 +406,7 @@ void SchedulerPage::reloadGrid()
     const bool validToday = editGrid_ == db_->gridFor(eter::now().date());
     QHash<int, Clock> clocks;
     for (const Clock &c : db_->clocks()) clocks.insert(c.id, c);
+    const int extClock = ExternalPlaylists::clockId(db_);
     const QDateTime now = eter::now();
     const int today = now.date().dayOfWeek() - 1;
     for (int d = 0; d < 7; ++d) {
@@ -422,7 +421,7 @@ void SchedulerPage::reloadGrid()
             }
             const int id = grid.value(d * 100 + h, 0);
             if (id && clocks.contains(id)) {
-                item->setText(clocks[id].name);
+                item->setText(id == extClock ? TR("Külső") : clocks[id].name);
                 item->setBackground(cellColor(clocks[id].color));
                 item->setForeground(theme::c("#e8eaed"));
             } else {
@@ -436,8 +435,7 @@ void SchedulerPage::reloadGrid()
     }
     QMenu *menu = assign_->menu();
     menu->clear();
-    for (const Clock &c : clocks)
-        menu->addAction(swatchIcon(QColor(c.color)), c.name, this, [this, c] { assignSelection(c.id); });
+    fillAssignMenu(menu);
     assign_->setEnabled(!clocks.isEmpty());
 }
 
@@ -460,7 +458,7 @@ QString SchedulerPage::generateInfo() const { return genInfo_->text(); }
 
 void SchedulerPage::generateNow()
 {
-    if (!db_->hasWeekGrid()) {
+    if (!db_->hasWeekGrid() && !ExternalPlaylists(db_).enabled()) {
         emit message(TR("A heti rács üres: előbb rendelj sémát legalább egy órához."));
         return;
     }
@@ -472,7 +470,7 @@ void SchedulerPage::generateNow()
 
 void SchedulerPage::generateDialog()
 {
-    if (!db_->hasWeekGrid()) {
+    if (!db_->hasWeekGrid() && !ExternalPlaylists(db_).enabled()) {
         emit message(TR("A heti rács üres: előbb rendelj sémát legalább egy órához."));
         return;
     }
@@ -964,6 +962,9 @@ QWidget *SchedulerPage::buildClockPanel()
     titleGap_ = spin(TR("Szám újra"), TR(" perc"), 10080, "title_separation_min", "240");
     ahead_ = spin(TR("Előre"), TR(" óra"), 168, "generate_ahead_hours", "24");
     ahead_->setMinimum(1);
+    ahead_->setToolTip(TR("Az automatikus generálás legalább ennyi órányi műsort tart a playlistben: az óra szerint a "
+                          "következő órákat, és ha a lista rövidebb (például a lejátszás az óra elé szaladt), a lista "
+                          "utolsó órája utániakat is."));
     rr->addStretch(1);
     rl->addLayout(rr);
     {
@@ -1256,10 +1257,29 @@ int SchedulerPage::currentSlotRow() const
     return r >= 0 && r < slots_.size() ? r : -1;
 }
 
+// A heti rács „Séma hozzárendelése” menüje: elöl a „Külső playlist” (ha a figyelt mappa be van kapcsolva), utána a
+// sémák, végül a kiürítés.
+void SchedulerPage::fillAssignMenu(QMenu *menu)
+{
+    const int extClock = ExternalPlaylists::clockId(db_);
+    if (extClock && ExternalPlaylists(db_).enabled()) {
+        menu->addAction(swatchIcon(QColor("#5cb0ff")), TR("Külső playlist"), this, [this, extClock] { assignSelection(extClock); });
+        menu->addSeparator();
+    }
+    for (const Clock &c : db_->clocks())
+        if (c.id != extClock)
+            menu->addAction(swatchIcon(QColor(c.color)), c.name, this, [this, c] { assignSelection(c.id); });
+    if (!menu->isEmpty()) menu->addSeparator();
+    menu->addAction(TR("Kiürítés"), this, [this] { assignSelection(0); });
+}
+
 void SchedulerPage::reloadClocks(int selectId)
 {
     loading_ = true;
-    const QVector<Clock> clocks = db_->clocks();
+    QVector<Clock> clocks = db_->clocks();
+    // A „Külső playlist” séma nem szerkeszthető (elemei a figyelt mappából jönnek).
+    const int extClock = ExternalPlaylists::clockId(db_);
+    clocks.erase(std::remove_if(clocks.begin(), clocks.end(), [extClock](const Clock &c) { return c.id == extClock; }), clocks.end());
     clock_->clear();
     for (const Clock &c : clocks) clock_->addItem(swatchIcon(QColor(c.color)), c.name, c.id);
     int idx = clock_->findData(selectId);

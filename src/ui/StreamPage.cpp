@@ -9,6 +9,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QDateTime>
 #include <QEvent>
 #include <QFrame>
@@ -25,6 +26,7 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QStyle>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
 #include <QStackedWidget>
@@ -125,6 +127,82 @@ protected:
 private:
     QVector<int> parts_;
     int limit_ = 0;
+};
+
+// A hangfeldolgozás egy mérője: felirat, érték és egy vízszintes sáv (jelöléssel: cél vagy plafon).
+class ProcMeter : public QWidget {
+public:
+    enum Mode { Level, Center, Reduction };
+    ProcMeter(const QString &title, Mode m, double lo, double hi, double mark, const QString &unit)
+        : title_(title), mode_(m), lo_(lo), hi_(hi), mark_(mark), unit_(unit)
+    {
+        setMinimumSize(130, 38);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
+    void setValue(double v, bool valid = true)
+    {
+        // a csillapítás-mérők esnek lassan (könnyebb leolvasni)
+        // Lassú visszaesés (könnyebb leolvasni), és egy-egy üres frissítés nem tünteti el az értéket.
+        if (!valid) {
+            if (++invalid_ > 10) valid_ = false;
+            update();
+            return;
+        }
+        invalid_ = 0;
+        if (!valid_) shown_ = v;
+        else if (mode_ == Center) shown_ = v;
+        else if (mode_ == Reduction) shown_ = v > shown_ ? v : std::max(v, shown_ - 0.6);
+        else shown_ = v > shown_ ? v : std::max(v, shown_ - 0.4);
+        valid_ = true;
+        update();
+    }
+    void setMark(double m)
+    {
+        mark_ = m;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        QFont f = font();
+        f.setPixelSize(11);
+        p.setFont(f);
+        p.setPen(theme::c("#9aa3af"));
+        p.drawText(QRect(0, 0, width(), 16), Qt::AlignLeft | Qt::AlignVCenter, title_);
+        p.setPen(theme::c("#e8eaed"));
+        const QString val = valid_ ? QLocale().toString(mode_ == Reduction ? -shown_ : shown_, 'f', 1) + QLatin1Char(' ') + unit_ : QStringLiteral("–");
+        p.drawText(QRect(0, 0, width(), 16), Qt::AlignRight | Qt::AlignVCenter, val);
+        const QRectF bar(0, 21, width(), 10);
+        p.fillRect(bar, theme::c("#121418"));
+        auto xOf = [&](double v) { return bar.left() + std::clamp((v - lo_) / (hi_ - lo_), 0.0, 1.0) * bar.width(); };
+        if (valid_) {
+            if (mode_ == Center) {
+                const double x0 = xOf(0), x1 = xOf(shown_);
+                p.fillRect(QRectF(std::min(x0, x1), bar.top(), std::fabs(x1 - x0), bar.height()), theme::c("#5cb0ff"));
+            } else if (mode_ == Reduction) {
+                p.fillRect(QRectF(bar.left(), bar.top(), xOf(shown_) - bar.left(), bar.height()), theme::c("#f5a524"));
+            } else {
+                const double x = xOf(shown_), xm = xOf(mark_);
+                p.fillRect(QRectF(bar.left(), bar.top(), std::min(x, xm) - bar.left(), bar.height()), theme::c("#45d483"));
+                if (x > xm) p.fillRect(QRectF(xm, bar.top(), x - xm, bar.height()), theme::c("#ff8f85"));
+            }
+        }
+        if (mode_ != Reduction) {
+            const double xm = mode_ == Center ? xOf(0) : xOf(mark_);
+            p.fillRect(QRectF(xm - 0.5, bar.top() - 3, 1.5, bar.height() + 6), theme::c("#e8eaed"));
+        }
+    }
+
+private:
+    QString title_;
+    Mode mode_;
+    double lo_, hi_, mark_;
+    QString unit_;
+    double shown_ = 0;
+    bool valid_ = false;
+    int invalid_ = 0;
 };
 
 QLabel *caption(const QString &text)
@@ -526,13 +604,6 @@ StreamPage::StreamPage(StreamManager *mgr, eter::Engine *engine, QWidget *parent
         meter_ = new LevelBars;
         g->addWidget(meter_, 2, 1);
         v->addLayout(g);
-        auto *limRow = new QHBoxLayout;
-        limiter_ = new QCheckBox(TR("Csúcskorlátozó a kódolás előtt (ne torzítson a stream)"));
-        limRow->addWidget(limiter_, 1);
-        reduction_ = new QLabel;
-        reduction_->setObjectName("small");
-        limRow->addWidget(reduction_);
-        v->addLayout(limRow);
         v->addStretch(1);
         grid->addWidget(f, 1, 0);
         connect(refresh, &QToolButton::clicked, this, [this] { fillSources(editorConfig().source); });
@@ -580,6 +651,155 @@ StreamPage::StreamPage(StreamManager *mgr, eter::Engine *engine, QWidget *parent
         v->addWidget(titleNote_);
         v->addStretch(1);
         grid->addWidget(f, 1, 1);
+    }
+
+    // Hangfeldolgozás (a teljes szélességben): AGC → kompresszor → true-peak limiter, belehallgatással.
+    {
+        auto *f = section();
+        f->setStyleSheet(sep.arg(QStringLiteral("border-top-width: 1px;")));
+        auto *v = new QVBoxLayout(f);
+        v->setContentsMargins(14, 12, 14, 14);
+        v->setSpacing(10);
+        v->addWidget(caption(TR("HANGFELDOLGOZÁS A STREAMRE (AGC, KOMPRESSZOR, LIMITER)")));
+        auto *top = new QHBoxLayout;
+        top->setSpacing(12);
+        presetGroup_ = new QButtonGroup(this);
+        top->addWidget(segment(presetGroup_, {TR("Ki"), TR("Enyhe"), TR("Közepes"), TR("Erős"), TR("Egyéni")}));
+        top->addSpacing(8);
+        top->addWidget(new QLabel(TR("Célhangosság")));
+        target_ = new QDoubleSpinBox;
+        target_->setObjectName("streamTarget");
+        target_->setRange(-30, -8);
+        target_->setSingleStep(0.5);
+        target_->setDecimals(1);
+        target_->setSuffix(QStringLiteral(" LUFS"));
+        target_->setToolTip(TR("A stream átlagos hangossága (rövid távú, ITU-R BS.1770). Webes streamhez −16 LUFS az elterjedt."));
+        top->addWidget(target_);
+        top->addWidget(new QLabel(TR("Plafon")));
+        ceiling_ = new QDoubleSpinBox;
+        ceiling_->setObjectName("streamCeiling");
+        ceiling_->setRange(-6, 0);
+        ceiling_->setSingleStep(0.1);
+        ceiling_->setDecimals(1);
+        ceiling_->setSuffix(QStringLiteral(" dBTP"));
+        ceiling_->setToolTip(TR("A valódi csúcs felső határa. A kódolás (MP3, Vorbis) maga is emel a csúcsokon: −1 dBTP az ajánlott, "
+                                "alacsony bitrátánál −1,5 vagy −2."));
+        top->addWidget(ceiling_);
+        top->addStretch(1);
+        monitor_ = new QPushButton(TR("Belehallgatás"));
+        monitor_->setObjectName("streamMonitor");
+        monitor_->setCheckable(true);
+        monitor_->setToolTip(TR("A feldolgozott stream hangja az előhallgatás kimenetén (fejhallgató) – így hallod, ami az "
+                                "internetre megy, a kódolás előtt. Az enkódernek nem kell futnia."));
+        top->addWidget(monitor_);
+        v->addLayout(top);
+        presetNote_ = small(QString());
+        v->addWidget(presetNote_);
+        monitorNote_ = small(QString());
+        monitorNote_->setStyleSheet(QStringLiteral("color: #ffd28a;"));
+        monitorNote_->hide();
+        v->addWidget(monitorNote_);
+
+        auto *meters = new QHBoxLayout;
+        meters->setSpacing(16);
+        mLoud_ = new ProcMeter(TR("Hangosság (3 mp)"), ProcMeter::Level, -36, -6, -16, QStringLiteral("LUFS"));
+        mAgc_ = new ProcMeter(TR("AGC erősítés"), ProcMeter::Center, -15, 15, 0, QStringLiteral("dB"));
+        mComp_ = new ProcMeter(TR("Kompresszor"), ProcMeter::Reduction, 0, 20, 0, QStringLiteral("dB"));
+        mLim_ = new ProcMeter(TR("Limiter"), ProcMeter::Reduction, 0, 12, 0, QStringLiteral("dB"));
+        mPeak_ = new ProcMeter(TR("Valódi csúcs"), ProcMeter::Level, -24, 0, -1, QStringLiteral("dBTP"));
+        for (QWidget *w : {mLoud_, mAgc_, mComp_, mLim_, mPeak_}) meters->addWidget(w, 1);
+        v->addLayout(meters);
+
+        auto *cg = new QGridLayout;
+        cg->setHorizontalSpacing(10);
+        cg->setVerticalSpacing(6);
+        auto spin = [&](double lo, double hi, double step, int dec, const QString &suffix) {
+            auto *b = new QDoubleSpinBox;
+            b->setRange(lo, hi);
+            b->setSingleStep(step);
+            b->setDecimals(dec);
+            b->setSuffix(suffix);
+            return b;
+        };
+        int col = 0;
+        auto add = [&](int row, const QString &label, QWidget *w) {
+            auto *l = new QLabel(label);
+            l->setObjectName("small");
+            cg->addWidget(l, row, col);
+            cg->addWidget(w, row, col + 1);
+        };
+        agcOn_ = new QCheckBox(TR("AGC"));
+        agcOn_->setToolTip(TR("Lassan a célhangosságra húzza a jelet: a halk és a hangos számok, a jingle-ök és a mikrofon "
+                              "közötti különbséget egyenlíti ki. Csendben nem mozdul."));
+        cg->addWidget(agcOn_, 0, 0, 1, 2);
+        agcGain_ = spin(0, 24, 1, 0, QStringLiteral(" dB"));
+        agcCut_ = spin(0, 24, 1, 0, QStringLiteral(" dB"));
+        agcSpeed_ = spin(1, 30, 1, 0, QStringLiteral(" mp"));
+        add(1, TR("Legnagyobb erősítés"), agcGain_);
+        add(2, TR("Legnagyobb csillapítás"), agcCut_);
+        add(3, TR("Lassúság"), agcSpeed_);
+        col = 2;
+        compOn_ = new QCheckBox(TR("Kompresszor"));
+        compOn_->setToolTip(TR("A rövid távú dinamikát fogja össze (beszéd, dob, refrén): a küszöb fölötti részt az arány "
+                               "szerint halkítja."));
+        cg->addWidget(compOn_, 0, 2, 1, 4);
+        compThr_ = spin(-40, 0, 1, 0, QStringLiteral(" dB"));
+        compRatio_ = spin(1, 20, 0.5, 1, QStringLiteral(" : 1"));
+        compMakeup_ = spin(0, 12, 0.5, 1, QStringLiteral(" dB"));
+        add(1, TR("Küszöb"), compThr_);
+        add(2, TR("Arány"), compRatio_);
+        add(3, TR("Utóerősítés"), compMakeup_);
+        col = 4;
+        compAtk_ = spin(0.5, 200, 1, 1, QStringLiteral(" ms"));
+        compRel_ = spin(20, 2000, 10, 0, QStringLiteral(" ms"));
+        add(1, TR("Felfutás"), compAtk_);
+        add(2, TR("Elengedés"), compRel_);
+        limOn_ = new QCheckBox(TR("Limiter (true peak, előretekintő)"));
+        limOn_->setToolTip(TR("A valódi csúcsot a plafon alatt tartja; 5 ms-mal előre lát, így nem vágja le, hanem előre halkít."));
+        cg->addWidget(limOn_, 0, 6, 1, 2);
+        cg->setColumnMinimumWidth(6, 260);
+        for (int c : {1, 3, 5}) cg->setColumnStretch(c, 1);
+        v->addLayout(cg);
+        grid->addWidget(f, 2, 0, 1, 2);
+
+        connect(presetGroup_, &QButtonGroup::idClicked, this, [this](int id) {
+            if (id != stream::ProcConfig::Custom) {
+                stream::ProcConfig p = stream::ProcConfig::fromPreset(id);
+                p.targetLufs = target_->value();
+                p.ceilingDbTp = ceiling_->value();
+                loadProc(p);
+            } else {
+                loadProc(editorConfig().proc);
+            }
+            scheduleApply();
+        });
+        // Bármelyik részlet módosítása egyéni beállítást jelent.
+        auto toCustom = [this] {
+            if (loading_) return;
+            if (presetGroup_->checkedId() != stream::ProcConfig::Custom && presetGroup_->checkedId() != stream::ProcConfig::Off)
+                presetGroup_->button(stream::ProcConfig::Custom)->setChecked(true);
+            loadProc(editorConfig().proc);
+            scheduleApply();
+        };
+        for (QDoubleSpinBox *b : {agcGain_, agcCut_, agcSpeed_, compThr_, compRatio_, compAtk_, compRel_, compMakeup_})
+            connect(b, &QDoubleSpinBox::valueChanged, this, toCustom);
+        for (QCheckBox *c : {agcOn_, compOn_, limOn_}) connect(c, &QCheckBox::toggled, this, [this, toCustom] {
+            if (loading_) return;
+            presetGroup_->button(stream::ProcConfig::Custom)->setChecked(true);
+            toCustom();
+        });
+        for (QDoubleSpinBox *b : {target_, ceiling_}) connect(b, &QDoubleSpinBox::valueChanged, this, [this] {
+            if (loading_) return;
+            static_cast<ProcMeter *>(mLoud_)->setMark(target_->value());
+            static_cast<ProcMeter *>(mPeak_)->setMark(ceiling_->value());
+            scheduleApply();
+        });
+        connect(monitor_, &QPushButton::toggled, this, [this](bool on) {
+            setMonitor(on);
+            monitor_->setProperty("active", monitor_->isChecked());
+            monitor_->style()->unpolish(monitor_);
+            monitor_->style()->polish(monitor_);
+        });
     }
     grid->setColumnStretch(0, 1);
     grid->setColumnStretch(1, 1);
@@ -671,7 +891,7 @@ StreamPage::StreamPage(StreamManager *mgr, eter::Engine *engine, QWidget *parent
 
     for (QLineEdit *e : {name_, host_, mount_, user_, password_, titleFormat_, station_, desc_, genre_, url_})
         connect(e, &QLineEdit::textEdited, this, &StreamPage::scheduleApply);
-    for (QCheckBox *c : {autoStart_, tls_, limiter_, sendTitle_, likeNp_, public_, reconnect_})
+    for (QCheckBox *c : {autoStart_, tls_, sendTitle_, likeNp_, public_, reconnect_})
         connect(c, &QCheckBox::toggled, this, &StreamPage::scheduleApply);
     for (QSpinBox *s : {port_, sid_, retry_}) connect(s, &QSpinBox::valueChanged, this, &StreamPage::scheduleApply);
     for (QComboBox *c : {mode_, rateHz_, source_}) connect(c, &QComboBox::activated, this, &StreamPage::scheduleApply);
@@ -839,7 +1059,13 @@ void StreamPage::updateCards()
         c.button->style()->polish(c.button);
         if (sel) {
             static_cast<LevelBars *>(meter_)->push(st.peakL, st.peakR);
-            reduction_->setText(st.reduction < 0.97f ? TR("korlátoz: %1 dB").arg(QLocale().toString(20.0 * std::log10(st.reduction), 'f', 1)) : QString());
+            const stream::ProcConfig &pc = cfg.proc;
+            const bool sound = st.proc.shortTermLufs > -69;
+            static_cast<ProcMeter *>(mLoud_)->setValue(st.proc.shortTermLufs, sound);
+            static_cast<ProcMeter *>(mAgc_)->setValue(st.proc.agcGainDb, pc.agc);
+            static_cast<ProcMeter *>(mComp_)->setValue(st.proc.compGrDb, pc.comp);
+            static_cast<ProcMeter *>(mLim_)->setValue(st.proc.limGrDb, pc.limiter);
+            static_cast<ProcMeter *>(mPeak_)->setValue(st.proc.truePeakDb, st.proc.truePeakDb > -69);
             restartBar_->setVisible(e->needsRestart());
             if (!st.message.isEmpty() && (state == State::Error || state == State::Retrying)) log_->setToolTip(st.message);
         }
@@ -876,6 +1102,7 @@ void StreamPage::selectEncoder(const QString &id)
         applyTimer_->stop();
         applyEditor();
     }
+    if (monitor_ && monitor_->isChecked()) monitor_->setChecked(false);     // a belehallgatás a kijelölthöz tartozik
     selected_ = id;
     static_cast<LevelBars *>(meter_)->reset();
     loadEditor();
@@ -936,7 +1163,7 @@ void StreamPage::loadEditor()
     fillSources(c.source);
     gain_->setValue(int(std::lround(c.gainDb * 2)));
     gainLabel_->setText(QStringLiteral("%1%2 dB").arg(c.gainDb > 0 ? QStringLiteral("+") : QString()).arg(QLocale().toString(c.gainDb, 'f', std::fmod(c.gainDb, 1.0) != 0 ? 1 : 0)));
-    limiter_->setChecked(c.limiter);
+    loadProc(c.proc);
     sendTitle_->setChecked(c.sendTitle);
     likeNp_->setChecked(c.titleLikeNowPlaying);
     titleFormat_->setText(c.titleFormat);
@@ -977,7 +1204,24 @@ Config StreamPage::editorConfig() const
     c.mono = mono_->isChecked();
     c.source = source_->currentData().toString();
     c.gainDb = gain_->value() / 2.0;
-    c.limiter = limiter_->isChecked();
+    {
+        stream::ProcConfig &p = c.proc;
+        p.preset = std::max(0, presetGroup_->checkedId());
+        p.agc = agcOn_->isChecked();
+        p.agcMaxGainDb = agcGain_->value();
+        p.agcMaxCutDb = agcCut_->value();
+        p.agcSpeedSec = agcSpeed_->value();
+        p.comp = compOn_->isChecked();
+        p.compThresholdDb = compThr_->value();
+        p.compRatio = compRatio_->value();
+        p.compAttackMs = compAtk_->value();
+        p.compReleaseMs = compRel_->value();
+        p.compMakeupDb = compMakeup_->value();
+        p.limiter = limOn_->isChecked();
+        p.targetLufs = target_->value();
+        p.ceilingDbTp = ceiling_->value();
+        if (p.preset == stream::ProcConfig::Off) p.agc = p.comp = p.limiter = false;
+    }
     c.sendTitle = sendTitle_->isChecked();
     c.titleLikeNowPlaying = likeNp_->isChecked();
     c.titleFormat = titleFormat_->text();
@@ -989,6 +1233,91 @@ Config StreamPage::editorConfig() const
     c.reconnect = reconnect_->isChecked();
     c.retrySec = retry_->value();
     return c;
+}
+
+void StreamPage::loadProc(const stream::ProcConfig &p)
+{
+    const bool was = loading_;
+    loading_ = true;
+    if (QAbstractButton *b = presetGroup_->button(p.preset)) b->setChecked(true);
+    agcOn_->setChecked(p.agc);
+    agcGain_->setValue(p.agcMaxGainDb);
+    agcCut_->setValue(p.agcMaxCutDb);
+    agcSpeed_->setValue(p.agcSpeedSec);
+    compOn_->setChecked(p.comp);
+    compThr_->setValue(p.compThresholdDb);
+    compRatio_->setValue(p.compRatio);
+    compAtk_->setValue(p.compAttackMs);
+    compRel_->setValue(p.compReleaseMs);
+    compMakeup_->setValue(p.compMakeupDb);
+    limOn_->setChecked(p.limiter);
+    target_->setValue(p.targetLufs);
+    ceiling_->setValue(p.ceilingDbTp);
+    static_cast<ProcMeter *>(mLoud_)->setMark(p.targetLufs);
+    static_cast<ProcMeter *>(mPeak_)->setMark(p.ceilingDbTp);
+    const bool off = p.preset == stream::ProcConfig::Off;
+    for (QWidget *w : std::initializer_list<QWidget *>{agcOn_, agcGain_, agcCut_, agcSpeed_, compOn_, compThr_, compRatio_, compAtk_,
+                                                       compRel_, compMakeup_, limOn_, target_, ceiling_})
+        w->setEnabled(!off);
+    for (QWidget *w : {agcGain_, agcCut_, agcSpeed_}) w->setEnabled(!off && p.agc);
+    target_->setEnabled(!off && p.agc);
+    for (QWidget *w : {compThr_, compRatio_, compAtk_, compRel_, compMakeup_}) w->setEnabled(!off && p.comp);
+    ceiling_->setEnabled(!off && p.limiter);
+    switch (p.preset) {
+    case stream::ProcConfig::Off:
+        presetNote_->setText(TR("Nincs feldolgozás: a jel csak a szintállítás után, 0 dBFS-nél levágva megy a kódolóba. "
+                                "Csak akkor ajánlott, ha a hangot egy külső processzor már feldolgozta."));
+        break;
+    case stream::ProcConfig::Light:
+        presetNote_->setText(TR("Enyhe: lassú AGC a célhangosságra és true-peak limiter. Zenei rádióhoz, ahol a számok "
+                                "már masterelve vannak – a hangzásukon nem változtat, csak kiegyenlíti a szinteket."));
+        break;
+    case stream::ProcConfig::Medium:
+        presetNote_->setText(TR("Közepes: AGC, enyhe kompresszor (2,5:1) és limiter. Vegyes műsorhoz: zene, jingle-ök, beszéd."));
+        break;
+    case stream::ProcConfig::Strong:
+        presetNote_->setText(TR("Erős: gyorsabb AGC, határozott kompresszor (4:1) és limiter. Beszédes műsorhoz, élő "
+                                "mikrofonhoz, ahol a szintek nagyon ingadoznak. Zenén pumpálhat."));
+        break;
+    default:
+        presetNote_->setText(TR("Egyéni: a részletek szabadon állíthatók. Belehallgatással érdemes ellenőrizni."));
+        break;
+    }
+    loading_ = was;
+}
+
+void StreamPage::setMonitor(bool on)
+{
+    if (!engine_) return;
+    // Az előző belehallgatás vége.
+    if (Encoder *prev = mgr_->find(monitoredId_)) prev->setMonitor({});
+    monitoredId_.clear();
+    engine_->setMonitor(false);
+    monitorNote_->hide();
+    if (!on) return;
+    Encoder *e = selected();
+    if (!e) {
+        monitor_->setChecked(false);
+        return;
+    }
+    // Ha az előhallgatás ugyanarra a kimenetre szól, mint az adás, a belehallgatás adásba kerülne.
+    const std::string pfl = engine_->route(eter::Engine::Pfl);
+    for (auto ch : {eter::Engine::Player1, eter::Engine::Player2, eter::Engine::Player3})
+        if (engine_->routed(ch) && engine_->route(ch) == pfl) {
+            const QSignalBlocker b(monitor_);
+            monitor_->setChecked(false);
+            monitorNote_->setText(TR("Az előhallgatás ugyanarra a hangkártyára szól, mint az adás, így a belehallgatás az "
+                                     "adásban is hallatszana. Állíts be külön előhallgató kimenetet (Beállítások → Általános "
+                                     "és hang), például egy fejhallgatót."));
+            monitorNote_->show();
+            return;
+        }
+    eter::Engine *eng = engine_;
+    e->setMonitor([eng](const float *d, int n) { eng->pushMonitor(d, n); });
+    engine_->setMonitor(true);
+    monitoredId_ = e->config().id;
+    monitorNote_->setText(TR("Belehallgatás: a(z) „%1” feldolgozott hangja szól az előhallgatáson.").arg(e->config().name));
+    monitorNote_->show();
 }
 
 void StreamPage::scheduleApply()

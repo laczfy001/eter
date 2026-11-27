@@ -73,11 +73,20 @@ tartalék playout egyetlen asztali alkalmazásban.
   adatok*, mind kikapcsolható): fotó, ország, évek, műfaj és életrajz a lejátszóban; az üres album és év kitöltése.
   A külön **Infó ablak** (a hangtár fejlécének *Infó* gombja, *Eszközök → Infó ablak*, Ctrl+I) a kijelölt vagy az
   adásban lévő elem minden ismert adatát mutatja.
+- **Külső playlistek** (*Beállítások → Külső playlistek*): egy másik ütemező (például a StationPlaylist Creator)
+  által írt playlistek (M3U vagy `#EXTM3U`) beolvasása egy figyelt mappából, óránként vagy egész napra. Az elemeket
+  útvonal szerint keresi a hangtárban, a hiányzókat beolvassa; minden óra fix időponttal indul, és ha egy órához nincs
+  fájl, az Éter saját sémája adja a műsort.
+- **Dokkolható panelek** (*Ablakok* menü): a lejátszó, az A/B/C sáv, az adásvezérlés, az óra, a keverő, a playlist,
+  a hangtár, a cartwall és a számkérések panelek: egymás mellé, alá vagy fülként dokkolhatók, átméretezhetők, vagy
+  önálló ablakká emelhetők (akár a második monitorra). Az elrendezés név szerint menthető, az alaphelyzet a megszokott
+  főablak, és adás alatt zárolható. Kikapcsolva minden panel fixen az eredeti elrendezésben marad.
 - **Stream enkóderek** (*Stream* fül, *Eszközök → Stream enkóder…*): az Éter maga küldi az adást Icecast 2 vagy
   Shoutcast (v1, v2) szerverre, MP3-ban (32–320 kbit/s, CBR vagy ABR) vagy Ogg Vorbisban (48–320 kbit/s), enkóderenként
   állítható mintavétellel és mono/sztereó móddal. Több enkóder futhat egyszerre (például egy 128 kbit/s-os MP3 és egy
   64 kbit/s-os mobil stream), mindegyik a fő kimenetről vagy egy hangkártya-bemenetről (keverőpult). Az adásban lévő
-  cím a hallgatókhoz is eljut, csúcskorlátozó óvja a streamet a torzítástól, megszakadáskor újracsatlakozik, és a
+  cím a hallgatókhoz is eljut, AGC, kompresszor és true-peak limiter (*Enyhe*-től *Erős*-ig, belehallgatással az előhallgatáson) tartja egyenletes
+  −16 LUFS-en és túlvezérlés nélkül, megszakadáskor újracsatlakozik, és a
   kifelé menő sávszél összegét a feltöltési kerethez méri. A fülsor STREAM jelzője minden fülről mutatja az állapotot.
 
   ![A Stream fül: az enkóderek kártyái, a kifelé menő sávszél és a kijelölt enkóder beállításai](docs/screenshots/stream-encoders.png)
@@ -102,14 +111,6 @@ tartalék playout egyetlen asztali alkalmazásban.
 - **Adásnapló** CSV-exporttal.
 - **Hibanapló:** minden hiba és figyelmeztetés (váratlan kilépés, összeomlás, felület, adatbázis, hang, stream, weboldal,
   SQL szerver, MIDI, …) napi szövegfájlokban a program mappájában (`logs/`); *Súgó → Hibanapló mappája…*.
-
-| Színsémák és témaszerkesztő | Az automatikus mix előnézete |
-|---|---|
-| ![Beállítások → Megjelenés: színséma, alapszínek, a lejátszók színei](docs/screenshots/colour-schemes.png) | ![Beállítások → Automatikus mix: két mintaelem átmenetének előnézete](docs/screenshots/automatic-mix-preview.png) |
-
-| MIDI-vezérlés tanuló móddal | Külső SQL szerver |
-|---|---|
-| ![Beállítások → MIDI: eszköz, utolsó üzenet, műveletek a Tanítás gombokkal](docs/screenshots/midi.png) | ![Beállítások → SQL szerver: kapcsolat, tesztelés, feltöltés és letöltés](docs/screenshots/sql-server.png) |
 
 | Színsémák és témaszerkesztő | Az automatikus mix előnézete |
 |---|---|

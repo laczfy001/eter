@@ -15,7 +15,9 @@ public:
     explicit MiniMixCanvas(QWidget *parent = nullptr);
     void setPair(const QString &outTitle, const QString &inTitle, const MixParams &p);
     void setWaves(const QVector<float> &outPeaks, qint64 outDur, const QVector<float> &inPeaks, qint64 inDur);
-    void setPlayhead(qint64 outMs);            // −1: nem látszik
+    void setPlayhead(qint64 outMs);            // −1: nem látszik (adásban: a lejátszás helye)
+    // Előhallgatás: a lejátszófej valós időben halad, és ha kifutna a képből, a nézet utánamegy.
+    void setPreviewHead(qint64 outMs);         // −1: nincs előhallgatás
     qint64 mixMs() const { return mix_; }
 
 signals:
@@ -36,7 +38,7 @@ private:
     MixParams p_;
     QVector<float> outPeaks_, inPeaks_;
     qint64 outDur_ = 0, inDur_ = 0;
-    qint64 mix_ = 0, viewStart_ = 0, window_ = 24000, playhead_ = -1;
+    qint64 mix_ = 0, viewStart_ = 0, window_ = 24000, playhead_ = -1, previewHead_ = -1;
     bool drag_ = false;
     double dragX_ = 0;
     qint64 dragMix_ = 0;
@@ -49,6 +51,7 @@ public:
     void setPair(int fromEntry, int toEntry, const QString &outTitle, const QString &inTitle, const MixParams &p, int kind);
     void setWaves(const QVector<float> &outPeaks, qint64 outDur, const QVector<float> &inPeaks, qint64 inDur);
     void setPlayhead(qint64 outMs) { canvas_->setPlayhead(outMs); }
+    void setPreviewHead(qint64 outMs) { canvas_->setPreviewHead(outMs); }
     void setPreviewing(bool on);
     int fromEntry() const { return from_; }
     int toEntry() const { return to_; }

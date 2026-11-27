@@ -808,6 +808,26 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
         });
         refresh();
 
+        cap(TR("ELRENDEZÉS"));
+        auto *strip = new QCheckBox(TR("A, B, C lejátszó sávja a fő lejátszó alatt"));
+        strip->setObjectName("playerStrip");
+        strip->setChecked(MainWindow::playerStripVisible());
+        root->addWidget(strip);
+        small(TR("A sáv a három lejátszó állapotát (adásban, készenlétben, betöltve), a címet, a hátralévő időt és a "
+                 "szóló voice tracket mutatja; kattintásra az a lejátszó látszik fölötte. Kikapcsolva a fő lejátszó "
+                 "magasabb lesz. Az Ablakok menüből is ki- és bekapcsolható."));
+        connect(strip, &QCheckBox::toggled, this, [this](bool on) { main_->setPlayerStripVisible(on); });
+
+        auto *docking = new QCheckBox(TR("Önálló panelek (áthelyezhető, kiemelhető ablakok)"));
+        docking->setObjectName("dockingEnabled");
+        docking->setChecked(MainWindow::dockingSetting());
+        root->addWidget(docking);
+        small(TR("Bekapcsolva a főablak részei (lejátszó, adásvezérlés, óra, keverő, playlist, hangtár, cartwall, "
+                 "számkérések) a fejlécüknél fogva áthelyezhetők, kiemelhetők önálló ablakká, és az elrendezés "
+                 "menthető. Kikapcsolva minden panel fixen az eredeti elrendezésben van; a saját elrendezés megmarad, "
+                 "és visszakapcsoláskor visszajön. Az Ablakok menüből is ki- és bekapcsolható."));
+        connect(docking, &QCheckBox::toggled, this, [this](bool on) { main_->setDockingEnabled(on); });
+
         cap(TR("A FELÜLET MÉRETE"));
         small(TR("Minden felirat, gomb és ablak ennyivel nagyobb. A program következő indításakor lép életbe."));
         auto *scale = new QComboBox;
@@ -1571,6 +1591,8 @@ SettingsDialog::SettingsDialog(MainWindow *main) : QDialog(main), main_(main)
             main_->reloadMixSettings();
         });
     }
+
+    addExternalPage(newPage(TR("Külső playlistek")));
 
     root = newPage(TR("Elemzés"));
     if (LibraryAnalyzer *an = main_->analyzer()) {

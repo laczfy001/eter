@@ -75,11 +75,20 @@ for Icecast and a backup playout in one desktop application.
   country, years, genre and biography in the player; empty album and year filled in. The separate **Info window**
   (library header *Info* button, *Tools → Info window*, Ctrl+I) shows everything known about the selected or the
   on-air item.
+- **External playlists** (*Settings → External playlists*): playlists written by another scheduler (for example
+  StationPlaylist Creator, M3U or `#EXTM3U`) are read from a watched folder, by hour or by whole day. Items are matched
+  to the library by path, missing ones are imported; every hour starts at a fixed time, and hours without a file fall
+  back to an Éter clock.
+- **Dockable panels** (*Windows* menu): the player, the A/B/C strip, on-air control, clock, mixer, playlist, library,
+  cartwall and song requests are panels that can be docked side by side, stacked, tabbed, resized, or popped out into
+  windows of their own (also onto a second monitor). Layouts are saved by name, the default is the usual main window,
+  and the layout can be locked during a show. Switched off, every panel stays fixed in the original layout.
 - **Stream encoders** (*Stream* tab, *Tools → Stream encoder…*): Éter streams to Icecast 2 or Shoutcast (v1, v2)
   servers itself, in MP3 (32–320 kbit/s, CBR or ABR) or Ogg Vorbis (48–320 kbit/s), with sample rate and mono/stereo
   per encoder. Several encoders can run at once (for example a 128 kbit/s MP3 and a 64 kbit/s mobile stream), each from
-  the main output or from a sound card input (a mixing desk). The title on air goes to the listeners, a peak limiter
-  keeps the stream clean, dropped connections are retried, and the total outgoing bandwidth is shown against your
+  the main output or from a sound card input (a mixing desk). The title on air goes to the listeners,
+  an AGC, compressor and true-peak limiter (presets from *Light* to *Strong*, with listening
+  on the preview output) keep it at an even −16 LUFS without overloading, dropped connections are retried, and the total outgoing bandwidth is shown against your
   upload limit. A STREAM badge in the tab row shows the state on every tab.
 
   ![The Stream tab: encoder cards, the outgoing bandwidth and the settings of the selected encoder](docs/screenshots/stream-encoders.png)
@@ -103,14 +112,6 @@ for Icecast and a backup playout in one desktop application.
 - **Play log** with CSV export.
 - **Error log:** every error and warning (unexpected exit, crash, interface, database, audio, stream, website, SQL
   server, MIDI, …) in daily text files in the program folder (`logs/`); *Help → Error log folder…*.
-
-| Colour schemes and the theme editor | Preview of the automatic mix |
-|---|---|
-| ![Settings → Appearance: colour scheme, base colours, player colours](docs/screenshots/colour-schemes.png) | ![Settings → Automatic mix: the preview of a transition between two example items](docs/screenshots/automatic-mix-preview.png) |
-
-| MIDI control with learn mode | External SQL server |
-|---|---|
-| ![Settings → MIDI: device, last message, actions with Learn buttons](docs/screenshots/midi.png) | ![Settings → SQL server: connection, test, upload and download](docs/screenshots/sql-server.png) |
 
 | Colour schemes and the theme editor | Preview of the automatic mix |
 |---|---|

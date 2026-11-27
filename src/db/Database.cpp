@@ -1069,6 +1069,14 @@ bool Database::playlistGenerated(int playlistId)
     return run(q) && q.next() && q.value(0).toBool();
 }
 
+int Database::playlistEntryCount(int playlistId)
+{
+    QSqlQuery q;
+    q.prepare("SELECT COUNT(*) FROM playlist_entries WHERE playlist_id = ?");
+    q.addBindValue(playlistId);
+    return run(q) && q.next() ? q.value(0).toInt() : 0;
+}
+
 void Database::markGenerated(int playlistId, int clockId)
 {
     QSqlQuery q;

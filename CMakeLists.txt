@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(eter VERSION 0.37.0 LANGUAGES C CXX)
+project(eter VERSION 0.39.0 LANGUAGES C CXX)
 if(WIN32)
     enable_language(RC)
 endif()
@@ -66,6 +66,7 @@ add_executable(eter
     src/ui/TimedEventsPage.cpp
     src/ui/MiniMix.cpp
     src/sched/Scheduler.cpp
+    src/sched/ExternalPlaylist.cpp
     src/ui/SettingsDialog.cpp
     src/net/Remote.cpp
     src/net/WebSync.cpp
@@ -80,6 +81,7 @@ add_executable(eter
     src/audio/Mixdown.cpp
     src/core/CrashReport.cpp
     src/core/ErrorLog.cpp
+    src/core/BadFiles.cpp
     src/ui/MainWindowFiles.cpp
     src/ui/MainWindowTiming.cpp
     src/ui/MainWindowRequests.cpp
@@ -92,7 +94,11 @@ add_executable(eter
     src/audio/SmartMix.cpp
     src/stream/StreamEncoder.cpp
     src/stream/StreamManager.cpp
+    src/stream/Processor.cpp
     src/ui/StreamPage.cpp
+    src/ui/SettingsExternal.cpp
+    src/ui/DockPanels.cpp
+    src/ui/MainWindowDocks.cpp
     resources/resources.qrc
 )
 

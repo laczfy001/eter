@@ -14,6 +14,11 @@ struct GenerateResult {
     // hangnem, ének), 2 a hely energiasávja, 3 az ismétlés (előadó, szám), 4 a napszak.
     int relaxedBy[5] = {0, 0, 0, 0, 0};
     int empty = 0;          // ennyi helyre nem jutott elem (üres kategória)
+    int noClock = 0;        // ennyi órához nincs séma a heti rácsban
+    int alreadyDone = 0;    // ennyi óra már elkészült (marad)
+    int refilled = 0;       // ennyi már generált, de azóta kiürített jövőbeli óra készült el újra
+    int external = 0;       // ennyi óra készült külső playlistből (figyelt mappa)
+    int fallback = 0;       // ennyi „Külső” óra készült a tartalék sémából (nem volt fájl)
     void noteRelaxed(int level)
     {
         ++relaxed;
@@ -41,6 +46,8 @@ public:
 
     // Ezek az elemek nem kerülnek be (például mert a fájljuk nem érhető el).
     void setUnavailable(const QSet<int> &itemIds) { unavailable_ = itemIds; }
+    // Külső playlistek (figyelt mappa): a „Külső playlist” sémájú és a séma nélküli órák ebből készülnek.
+    void setExternal(class ExternalPlaylists *ext) { ext_ = ext; }
 
     // Napszakok: 0 éjjel, 1 reggel, 2 napközben, 3 délután, 4 este. A kezdő órák az adatbázis beállításában
     // (daypart_starts, alapból „0,6,10,15,19”).
@@ -58,5 +65,6 @@ public:
 
 private:
     Database *db_;
+    class ExternalPlaylists *ext_ = nullptr;
     QSet<int> unavailable_;
 };
